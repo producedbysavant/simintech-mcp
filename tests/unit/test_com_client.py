@@ -183,3 +183,37 @@ def test_typed_read_write_via_signal(monkeypatch):
     sig.write(3.0)
     assert ("ReadAsFloat", 1000, 0) in fake.calls
     assert ("WriteAsFloat", 1000, 0, 3.0) in fake.calls
+
+
+def test_owned_pid_only_for_new_process(monkeypatch):
+    """shutdown() завершает только процесс, порождённый этим клиентом."""
+    from simintech_api.core import com_client as cc
+
+    fake = FakeServer()
+    client = _make_client(monkeypatch, fake)
+
+    # Случай 1: mmain.exe уже был запущен (его PID есть до connect) — не наш
+    monkeypatch.setattr(cc, "_snapshot_mmain_pids", lambda: {12345})
+    client.connect()
+    assert client._owned_pid is None
+    # shutdown() не должен звать taskkill
+    killed = []
+    monkeypatch.setattr(
+        cc.subprocess, "run",
+        lambda *a, **k: killed.append(a[0]) or None,
+    ) if hasattr(cc, "subprocess") else None
+    client.shutdown()
+    assert not killed
+
+
+def test_owned_pid_set_for_new_process(monkeypatch):
+    """Процесс появился только после connect — наш, shutdown() убьёт его."""
+    from simintech_api.core import com_client as cc
+
+    fake = FakeServer()
+    client = _make_client(monkeypatch, fake)
+
+    # Случай 2: mmain.exe не было до connect — появился наш (12345)
+    monkeypatch.setattr(cc, "_snapshot_mmain_pids", lambda: set())
+    client.connect()
+    assert client._owned_pid == 12345

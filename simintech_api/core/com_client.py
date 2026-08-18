@@ -37,6 +37,8 @@ class COMClient:
         self._connected = False
         self._silent_mode = silent_mode
         self._com_progid = com_progid
+        # PID процесса, порождённого ЭТИМ клиентом (только его можно завершать).
+        self._owned_pid: Optional[int] = None
 
     # ─── Жизненный цикл ─────────────────────────────────────────────
 
@@ -68,6 +70,12 @@ class COMClient:
                 "Библиотека comtypes не установлена: pip install comtypes"
             ) from exc
 
+        # Запоминаем PID'ы mmain.exe, существовавшие ДО нашего подключения.
+        # Если после CreateObject появился новый процесс — он наш, и только
+        # его разрешено завершать в shutdown(). Чужие (запущенные не нами)
+        # не трогаем.
+        pids_before = _snapshot_mmain_pids()
+
         # Список идентификаторов для перебора
         if self._com_progid:
             candidates = [self._com_progid]
@@ -97,6 +105,17 @@ class COMClient:
         if self._silent_mode:
             self._safe_call("SetSilentMode", 1)
 
+        # Если процесс mmain.exe появился только сейчас — он порождён нами,
+        # и shutdown() может его завершить. Иначе owned_pid остаётся None,
+        # и shutdown() только отсоединится, не трогая чужой процесс.
+        # Вызываем напрямую (call() требует _connected=True, которого ещё нет).
+        try:
+            pid = _as_int(self._server.GetProcessID())
+            if pid and pid not in pids_before:
+                self._owned_pid = pid
+        except Exception:
+            self._owned_pid = None
+
         self._connected = True
         return self
 
@@ -105,18 +124,18 @@ class COMClient:
         self._server = None
         self._connected = False
 
-    def shutdown(self) -> None:
-        """Отсоединиться и завершить процесс SimInTech (mmain.exe).
+    def shutdown(self, force: bool = False) -> None:
+        """Отсоединиться и (если можно) завершить процесс SimInTech.
 
-        COM-сервер запускается как отдельный процесс; после disconnect()
-        он может остаться висеть. Принудительно закрываем по PID.
-        Вызывается автоматически в teardown integration-тестов.
+        Завершается ТОЛЬКО процесс, порождённый этим клиентом (owned_pid —
+        mmain.exe, появившийся при нашем connect). Процессы, запущенные
+        пользователем или другими клиентами, не трогаются.
+
+        Args:
+            force: принудительно завершить процесс даже если он не наш
+                (используется с осторожностью; по умолчанию False).
         """
-        pid = None
-        try:
-            pid = self.get_process_id()
-        except Exception:
-            pass
+        pid = self._owned_pid
         self.disconnect()
         if pid and sys.platform == "win32":
             try:
@@ -184,6 +203,31 @@ class COMClient:
             return desc
         # comtypes может вернуть кортеж из [out]-структуры — восстановим
         return _to_descriptor(desc)
+
+
+def _snapshot_mmain_pids() -> set:
+    """Вернуть множество PID запущенных процессов mmain.exe (Windows).
+
+    Используется чтобы отличать процесс SimInTech, порождённый нашим
+    клиентом, от уже запущенных пользователем. Вне Windows — пустое множество.
+    """
+    if sys.platform != "win32":
+        return set()
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq mmain.exe",
+             "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:
+        return set()
+    pids: set = set()
+    for line in out.splitlines():
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if len(parts) >= 2 and parts[1].isdigit():
+            pids.add(int(parts[1]))
+    return pids
 
 
 def _as_int(value: Any) -> int:
