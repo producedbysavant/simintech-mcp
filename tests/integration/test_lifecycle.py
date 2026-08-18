@@ -57,13 +57,19 @@ def test_new_project_save_close(client):
 
 
 def test_open_project_signals(client):
-    """Открытие демо-проекта и чтение списка сигналов."""
+    """Открытие демо-проекта и чтение списка сигналов.
+
+    GetProjectSignalList работает только после ProjectStart (модель
+    компилируется и список сигналов становится доступен).
+    """
     from simintech_api import Project
 
     if not os.path.exists(FSM_DEMO):
         pytest.skip(f"Демо-модель не найдена: {FSM_DEMO}")
 
     prj = Project.open(client, FSM_DEMO)
+    sim = prj.simulation()
+    sim.start()                 # инициализация — сигналы появляются в списке
     signals = prj.list_signals()
     assert len(signals) > 0, "Список сигналов пуст"
     # Проверяем, что у каждого сигнала есть имя и дескриптор
@@ -71,6 +77,7 @@ def test_open_project_signals(client):
         assert info.name, "Сигнал без имени"
         assert info.descriptor is not None
         assert info.descriptor.is_valid
+    sim.stop()
     prj.close()
 
 
@@ -82,6 +89,8 @@ def test_read_write_signal(client):
         pytest.skip(f"Демо-модель не найдена: {FSM_DEMO}")
 
     prj = Project.open(client, FSM_DEMO)
+    sim = prj.simulation()
+    sim.start()                 # инициализация до получения списка сигналов
     signals = prj.list_signals()
     assert len(signals) > 0
 
@@ -93,9 +102,6 @@ def test_read_write_signal(client):
             break
     if sig is None:
         pytest.skip("В демо-модели нет double-сигналов")
-
-    sim = prj.simulation()
-    sim.start()
 
     # Чтение
     val = sig.read()

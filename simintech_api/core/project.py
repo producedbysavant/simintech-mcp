@@ -82,7 +82,11 @@ class Project:
     # ─── Сигналы ────────────────────────────────────────────────────
 
     def find_signal(self, name: str) -> TDataDescriptor:
-        """Найти сигнал по имени; вернуть TDataDescriptor (или SignalError)."""
+        """Найти сигнал по имени; вернуть TDataDescriptor (или SignalError).
+
+        Как и list_signals, требует предварительного ProjectStart (sim.start())
+        — до инициализации сигналы не найдены.
+        """
         desc = self._client.find_signal(name, self._id)
         if not desc.is_valid:
             raise SignalError(f"Сигнал '{name}' не найден в проекте")
@@ -94,7 +98,12 @@ class Project:
         return Signal(self, self.find_signal(name), name)
 
     def list_signals(self) -> List[SignalInfo]:
-        """Получить список всех сигналов проекта."""
+        """Получить список всех сигналов проекта.
+
+        Важно: список сигналов доступен только после инициализации проекта
+        (ProjectStart / sim.start()) — модель компилируется и сигналы
+        появляются в списке. До старта вернётся пустой список.
+        """
         from ..utils.converters import _to_descriptor
         list_id = _as_i64(self._client.call("GetProjectSignalList", self._id))
         count = _as_i64(self._client.call("GetListCount", list_id))
