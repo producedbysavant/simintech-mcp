@@ -123,6 +123,19 @@ python -m pytest tests/integration -m integration
 - `docs/api.md` — API Reference (все классы и методы).
 - `docs/algorithms.md` — алгоритмы размещения (Sugiyama) и трассировки (A*).
 - `docs/architecture.md` — архитектура и ключевые решения.
-- `examples/` — рабочие примеры: RC-цепь, ПИД-регулятор, модель с обратной связью.
+- `docs/simintech-language/` — справочник встроенного языка SimInTech
+  (резервный путь создания блоков, перенесён из `simintech-code-library`).
+- `examples/` — рабочие примеры: модель 1 (усилитель), модель 2 (ПИД),
+  модель 3 (layout+router), RC-цепь, обратная связь.
+- `examples/demo.ipynb` — Jupyter Notebook с пояснениями на русском.
+- `REPORT.md` — отчёт о разработке и тестировании.
 - Полная карта методов COM API и DataType — в `sitECRT/doc/reference/com_api_inventory.md`.
 - Официальная спецификация: `SIT_SimInTech_Vneshnij_API.pdf`, `source/exe/mmain.hpp`.
+
+## Смежные репозитории
+
+- `sitECRT` — тестовый тулкит и справочники COM API.
+- `simintech-connector` — **заархивирован** (его COM-функционал перенесён
+  в `simintech-api`; см. `ARCHIVED.md`).
+- `simintech-code-library` — **заархивирован** (содержимое перенесено в
+  `docs/simintech-language/`).
