@@ -66,6 +66,47 @@ router = AStarRouter()
 points = router.route((20, 20), (250, 20), grid)  # опорные точки для SetWirePoint
 ```
 
+## MCP-сервер
+
+`simintech-api` поставляется с **FastMCP-сервером** (18 инструментов) для
+управления SimInTech из ИИ-агента (Claude Code и др.). Работает на Windows
+(требует `mmain.exe /regserver`).
+
+```bash
+pip install -e ".[test]"     # ставит comtypes + mcp + fastmcp
+simintech-mcp                # запуск сервера (stdio)
+```
+
+Подключение к Claude Code:
+
+```bash
+claude mcp add simintech -- simintech-mcp
+# или вручную в claude.json:
+# { "mcpServers": { "simintech": { "command": "simintech-mcp" } } }
+```
+
+Инструменты:
+
+| Группа | Инструменты |
+|---|---|
+| Подключение | `status`, `disconnect` |
+| Проекты | `create_project`, `open_project`, `save_project`, `close_project` |
+| Блоки/связи | `add_block`, `connect`, `list_blocks` |
+| Расчёт | `run`, `step`, `stop`, `get_time` |
+| Сигналы | `list_signals`, `get_signal`, `set_signal` |
+| Layout | `layout_place` (авто-расстановка блоков) |
+| Справка | `help_text` |
+
+Пример использования из ИИ-агента:
+```
+create_project "RC"
+add_block "Ступенька" name="Step" props="yk=5"
+add_block "Усилитель" name="Gain" props="a=2"
+connect "Step" to "Gain"
+run to_time=10
+get_signal "Gain"
+```
+
 ## Текстовые команды для ИИ-агента
 
 `SimInTechAgent` — единая точка входа для LLM-агента. Принимает команды на
