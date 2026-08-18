@@ -307,10 +307,86 @@ def help_text() -> str:
         "  run(to_time) / step(n) / stop / get_time\n"
         "  get_signal(имя) / set_signal(имя, значение)\n"
         "  layout_place(блоки, связи) — авто-расстановка\n"
+        "\n"
+        "Ресурсы (read-only):\n"
+        "  simintech://status, simintech://project/blocks\n"
+        "\n"
+        "Промпты (шаблоны):\n"
+        "  create_pid_model, create_rc_chain\n"
+    )
+
+
+# ─── Ресурсы (read-only) ──────────────────────────────────────────
+
+@mcp.resource("simintech://status")
+def resource_status() -> str:
+    """Статус COM-сервера SimInTech (аналог инструмента status)."""
+    return status()
+
+
+@mcp.resource("simintech://project/blocks")
+def resource_project_blocks() -> str:
+    """Список блоков текущего проекта (read-only представление)."""
+    try:
+        return list_blocks()
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+# ─── Промпты (шаблоны) ────────────────────────────────────────────
+
+@mcp.prompt()
+def create_pid_model(kp: float = 1.0, ki: float = 0.5,
+                     kd: float = 0.1, setpoint: float = 1.0) -> str:
+    """Шаблон создания ПИД-регулятора в SimInTech.
+
+    Возвращает последовательность команд для сборки ПИД-контура
+    с обратной связью через инструменты MCP-сервера.
+
+    Args:
+        kp, ki, kd: коэффициенты ПИД-регулятора.
+        setpoint: уставка (значение ступеньки).
+    """
+    return (
+        f"Создай ПИД-регулятор в SimInTech:\n"
+        f"1. create_project \"pid\"\n"
+        f"2. add_block \"Ступенька\" name=\"Step\" props=\"yk={setpoint}\"\n"
+        f"3. add_block \"Сумматор\" name=\"Err\" props=\"a=[1.0,-1.0]\"\n"
+        f"4. add_block \"Усилитель\" name=\"Kp\" props=\"a={kp}\"\n"
+        f"5. add_block \"Усилитель\" name=\"Ki\" props=\"a={ki}\"\n"
+        f"6. add_block \"Усилитель\" name=\"Kd\" props=\"a={kd}\"\n"
+        f"7. add_block \"Сумматор\" name=\"PID\" props=\"a=[1.0,1.0,1.0]\"\n"
+        f"8. add_block \"Интегратор\" name=\"Plant\" props=\"k=1.0,x0=0.0\"\n"
+        f"9. connect \"Step\" to \"Err\"\n"
+        f"10. connect \"Err\" to \"Kp\", \"Err\" to \"Ki\", \"Err\" to \"Kd\"\n"
+        f"11. connect \"Kp\" to \"PID\", \"Ki\" to \"PID\", \"Kd\" to \"PID\"\n"
+        f"12. connect \"PID\" to \"Plant\"\n"
+        f"13. connect \"Plant\" to \"Err\" (обратная связь)\n"
+        f"14. run to_time=20\n"
+    )
+
+
+@mcp.prompt()
+def create_rc_chain(rc: float = 1.0, amplitude: float = 5.0) -> str:
+    """Шаблон создания RC-цепи (ступенька → усилитель → интегратор)."""
+    return (
+        f"Создай RC-цепь в SimInTech:\n"
+        f"1. create_project \"rc\"\n"
+        f"2. add_block \"Ступенька\" name=\"Step\" props=\"yk={amplitude}\"\n"
+        f"3. add_block \"Усилитель\" name=\"Gain\" props=\"a={_gain_for_rc(rc)}\"\n"
+        f"4. add_block \"Интегратор\" name=\"Integrator\" props=\"k=1.0,x0=0.0\"\n"
+        f"5. connect \"Step\" to \"Gain\"\n"
+        f"6. connect \"Gain\" to \"Integrator\"\n"
+        f"7. run to_time={5.0 * rc}\n"
     )
 
 
 # ─── Внутреннее ───────────────────────────────────────────────────
+
+def _gain_for_rc(rc: float) -> float:
+    """Коэффициент усилителя для RC-цепи: 1/RC (защита от деления на 0)."""
+    return 1.0 / rc if rc else 1.0
+
 
 def _parse_val(text: str):
     text = text.strip()

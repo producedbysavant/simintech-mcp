@@ -57,3 +57,45 @@ async def test_layout_place_works_without_com():
     assert "A:" in text
     assert "B:" in text
     assert "C:" in text
+
+
+@pytest.mark.anyio
+async def test_resources_registered():
+    """Зарегистрированы ресурсы simintech://."""
+    res = await mcp.list_resources()
+    uris = {str(getattr(r, "uri", r)) for r in res}
+    assert "simintech://status" in uris
+    assert "simintech://project/blocks" in uris
+
+
+@pytest.mark.anyio
+async def test_prompts_registered():
+    """Зарегистрированы промпты-шаблоны."""
+    prompts = await mcp.list_prompts()
+    names = {getattr(p, "name", str(p)) for p in prompts}
+    assert "create_pid_model" in names
+    assert "create_rc_chain" in names
+
+
+@pytest.mark.anyio
+async def test_render_prompt_pid():
+    """Промпт create_pid_model подставляет параметры."""
+    rendered = await mcp.render_prompt(
+        "create_pid_model",
+        arguments={"kp": "1.5", "setpoint": "2.0"},
+    )
+    text = str(rendered)
+    assert "create_project" in text
+    assert "yk=2.0" in text
+
+
+@pytest.mark.anyio
+async def test_render_prompt_rc():
+    """Промпт create_rc_chain работает."""
+    rendered = await mcp.render_prompt(
+        "create_rc_chain",
+        arguments={"rc": "1.0", "amplitude": "3.0"},
+    )
+    text = str(rendered)
+    assert "create_project" in text
+    assert "yk=3.0" in text
