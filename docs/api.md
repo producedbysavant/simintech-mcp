@@ -51,7 +51,8 @@ prj.close()
 | `get_current_page() -> Page` | Текущая страница. |
 | `find_signal(name) -> TDataDescriptor` | Поиск сигнала по имени **блока** (FindSignalData; SignalError, если нет). |
 | `signal(name) -> Signal` | Объект Signal для чтения/записи. |
-| `list_signals() -> list[SignalInfo]` | Список **внешних (обменных)** сигналов (блоки «Вход/Выход алгоритма»); для моделей без них — пустой. |
+| `list_signals() -> list[SignalInfo]` | Список сигналов: сначала обменные (COM), при пустом — имена из `.xprt` (fallback). |
+| `get_signal_names_from_xml() -> list[str]` | Имена сигналов из XML-представления проекта (`.xprt`). |
 | `simulation() -> Simulation` | Управление расчётом. |
 | `run() / stop()` | Удобные обёртки расчёта. |
 

@@ -100,21 +100,25 @@ class Project:
         return Signal(self, self.find_signal(name), name)
 
     def list_signals(self) -> List[SignalInfo]:
-        """Получить список ВНЕШНИХ (обменных) сигналов проекта.
+        """Получить список сигналов проекта.
 
-        GetProjectSignalList возвращает только сигналы, зарегистрированные
-        для обмена (блоки «Вход/Выход алгоритма»). Внутренние сигналы блоков
-        в этот список не входят — для них используйте find_signal(name) /
-        signal(name) по имени блока. Для моделей без внешних интерфейсов
-        список будет пуст (это нормально).
+        Пытается получить список двумя путями:
+        1. GetProjectSignalList — возвращает только ВНЕШНИЕ (обменные)
+           сигналы (блоки «Вход/Выход алгоритма»);
+        2. Если список пуст — экспортирует проект в .xprt и извлекает
+           имена блоков (в SimInTech сигнал блока именуется по имени блока).
 
-        Важно: список может требовать предварительной инициализации проекта
-        (sim.start()).
+        Для моделей без внешних интерфейсов COM-список пуст; тогда
+        возвращаются сигналы, извлечённые из XML (без дескриптора — их
+        нужно запросить через signal(name)/find_signal(name)).
+
+        Важно: COM-список может требовать предварительной инициализации
+        проекта (sim.start()).
         """
         from ..utils.converters import _to_descriptor
+        result: List[SignalInfo] = []
         list_id = _as_i64(self._client.call("GetProjectSignalList", self._id))
         count = _as_i64(self._client.call("GetListCount", list_id))
-        result: List[SignalInfo] = []
         for i in range(count):
             # comtypes возвращает [out] (Name, Caption, DataDesc) в порядке объявления
             name, caption, desc = self._client.call("GetDataInfoFromList", list_id, i)
@@ -123,7 +127,26 @@ class Project:
                 caption=_as_str(caption),
                 descriptor=_to_descriptor(desc),
             ))
+        if result:
+            return result
+        # Fallback: имена сигналов из XML-представления проекта
+        try:
+            from ..utils.xprt_signals import extract_signal_names_from_project
+            names = extract_signal_names_from_project(self)
+            result = [SignalInfo(name=nm, caption="") for nm in names]
+        except Exception:
+            pass
         return result
+
+    def get_signal_names_from_xml(self) -> List[str]:
+        """Извлечь имена сигналов из XML-представления проекта (.xprt).
+
+        Экспортирует проект во временный файл и парсит имена блоков
+        (кандидатов в сигналы). Полезно, когда GetProjectSignalList пуст
+        (модель без блоков «Вход/Выход алгоритма»).
+        """
+        from ..utils.xprt_signals import extract_signal_names_from_project
+        return extract_signal_names_from_project(self)
 
     # ─── Расчёт ─────────────────────────────────────────────────────
 

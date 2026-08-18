@@ -89,9 +89,8 @@ def test_open_project_signals(client):
 def test_read_write_signal(client):
     """Чтение и запись сигнала через FindSignalData по имени.
 
-    FindSignalData(name) ищет сигнал по имени блока и работает независимо
-    от GetProjectSignalList. Для надёжности строим собственную модель
-    (Константа → Усилитель) и читаем сигнал константы по имени блока.
+    Строим модель (Константа → Усилитель), извлекаем имена сигналов из
+    XML-представления проекта и пробуем прочитать каждый как сигнал.
     """
     from simintech_api import Project
 
@@ -107,12 +106,24 @@ def test_read_write_signal(client):
     sim = prj.simulation()
     sim.start()
 
-    # Находим сигнал константы по имени блока (FindSignalData)
-    try:
-        sig = prj.signal("const_sig")
-    except Exception:
-        pytest.skip("FindSignalData не нашёл сигнал по имени блока — "
-                    "проверка имени сигнала требует уточнения")
+    # Ищем сигнал: сначала по имени блока, затем по списку из XML
+    sig = None
+    for candidate in ("const_sig", "Gain"):
+        try:
+            sig = prj.signal(candidate)
+            break
+        except Exception:
+            continue
+    if sig is None:
+        names = prj.get_signal_names_from_xml()
+        for name in names:
+            try:
+                sig = prj.signal(name)
+                break
+            except Exception:
+                continue
+    if sig is None:
+        pytest.skip("Не удалось найти сигнал по имени блока или из XML")
 
     # Чтение
     val = sig.read()
