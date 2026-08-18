@@ -29,6 +29,25 @@ def _array_to_str(values: List[Any]) -> str:
     return f"[{inner}]"
 
 
+def _to_descriptor(value: Any) -> TDataDescriptor:
+    """Восстановить TDataDescriptor из результата comtypes-вызова.
+
+    comtypes может возвращать структуру напрямую (объект TDataDescriptor),
+    кортеж (DataId, DataType) или объект с полями .DataId/.DataType.
+    """
+    if isinstance(value, TDataDescriptor):
+        return value
+    if value is None:
+        return TDataDescriptor()
+    if isinstance(value, (tuple, list)):
+        data_id = value[0] if len(value) > 0 else 0
+        data_type = value[1] if len(value) > 1 else 0
+        return TDataDescriptor(int(data_id), int(data_type))
+    data_id = getattr(value, "DataId", getattr(value, "data_id", 0))
+    data_type = getattr(value, "DataType", getattr(value, "data_type", 0))
+    return TDataDescriptor(int(data_id), int(data_type))
+
+
 def parse_points(points_str: Optional[str]) -> List[Tuple[float, float]]:
     """Разобрать строку свойства Points в список пар (x, y).
 

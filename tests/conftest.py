@@ -64,7 +64,11 @@ def simintech_available(pytestconfig) -> bool:
 
 @pytest.fixture()
 def client(simintech_available):
-    """Подключённый COMClient (только integration)."""
+    """Подключённый COMClient (только integration).
+
+    В teardown — принудительное завершение процесса SimInTech, чтобы
+    после тестов не оставался висеть mmain.exe.
+    """
     if not simintech_available:
         pytest.skip("COM SimInTech недоступен (нужна Windows + mmain.exe /regserver)")
     from simintech_api import COMClient
@@ -72,6 +76,9 @@ def client(simintech_available):
     c.connect()
     yield c
     try:
-        c.disconnect()
+        c.shutdown()          # disconnect + taskkill по PID
     except Exception:
-        pass
+        try:
+            c.disconnect()
+        except Exception:
+            pass

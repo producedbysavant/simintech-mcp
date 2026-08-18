@@ -105,6 +105,29 @@ class COMClient:
         self._server = None
         self._connected = False
 
+    def shutdown(self) -> None:
+        """Отсоединиться и завершить процесс SimInTech (mmain.exe).
+
+        COM-сервер запускается как отдельный процесс; после disconnect()
+        он может остаться висеть. Принудительно закрываем по PID.
+        Вызывается автоматически в teardown integration-тестов.
+        """
+        pid = None
+        try:
+            pid = self.get_process_id()
+        except Exception:
+            pass
+        self.disconnect()
+        if pid and sys.platform == "win32":
+            try:
+                import subprocess
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass
+
     # ─── Низкоуровневые вызовы ──────────────────────────────────────
 
     def call(self, method: str, *args: Any) -> Any:
