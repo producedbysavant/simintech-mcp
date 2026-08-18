@@ -68,6 +68,11 @@ def _cleanup_mmain_processes():
 
     Отключение очистки (если нужно сохранить процессы): переменная
     окружения SIMINTECH_KEEP_MMAIN=1.
+
+    Полная очистка ВСЕХ процессов mmain.exe (включая предсуществующие,
+    например накопленный мусор прошлых прогонов): переменная окружения
+    SIMINTECH_KILL_ALL_MMAIN=1. Осторожно: убьёт и процессы, запущенные
+    вручную.
     """
     if os.environ.get("SIMINTECH_KEEP_MMAIN") == "1":
         yield
@@ -78,15 +83,29 @@ def _cleanup_mmain_processes():
     from simintech_api.utils.processes import get_mmain_pids, kill_pids
     import time
 
+    kill_all = os.environ.get("SIMINTECH_KILL_ALL_MMAIN") == "1"
     before = set(get_mmain_pids())
     print(f"\n[simintech] mmain.exe ДО тестов: "
           f"{sorted(before) if before else '(не обнаружены)'}", file=sys.stderr)
     yield
     time.sleep(1.0)  # дать процессам завершить работу
     after = set(get_mmain_pids())
-    new = after - before
+
+    if kill_all:
+        # Полная очистка: все процессы mmain.exe
+        print(f"[simintech] SIMINTECH_KILL_ALL_MMAIN: завершаю ВСЕ: "
+              f"{sorted(after) if after else '(нет)'}", file=sys.stderr)
+        kill_pids(after)
+        time.sleep(0.5)
+        still = set(get_mmain_pids())
+        if still:
+            print(f"[simintech] ВНИМАНИЕ: не удалось завершить: "
+                  f"{sorted(still)}", file=sys.stderr)
+        return
+
     print(f"[simintech] mmain.exe ПОСЛЕ тестов: "
           f"{sorted(after) if after else '(не обнаружены)'}", file=sys.stderr)
+    new = after - before
     if new:
         print(f"[simintech] Завершаю процессы, порождённые тестами: "
               f"{sorted(new)}", file=sys.stderr)
