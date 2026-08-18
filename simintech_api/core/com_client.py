@@ -18,13 +18,21 @@ class COMClient:
 
     Args:
         silent_mode: запустить SimInTech в скрытом режиме (без UI).
-        com_progid: ProgID COM-объекта. По умолчанию "MVTU.Server"
-            (кокласс MVTU_Server, интерфейс IMVTU_Server).
+        com_progid: ProgID COM-объекта. Если None — пробуются стандартные
+            ProgID и CLSID (mmain.MVTU_Server, MVTU.Server,
+            {ACE730D7-1712-4C70-87C8-7E4C55622E91}).
     """
 
-    PROGID = "MVTU.Server"
+    # Реально зарегистрированные идентификаторы кокласса MVTU_Server
+    # (библиотека mmain, см. mmain_TLB.pas / mmain.ridl):
+    CLSID_MVTU_SERVER = "{ACE730D7-1712-4C70-87C8-7E4C55622E91}"
+    DEFAULT_PROGIDS = (
+        "mmain.MVTU_Server",   # стандартный ProgID (library.coclass)
+        "MVTU.Server",         # псевдоним из simintech-connector
+    )
 
-    def __init__(self, silent_mode: bool = True, com_progid: str = PROGID):
+    def __init__(self, silent_mode: bool = True,
+                 com_progid: Optional[str] = None):
         self._server: Any = None
         self._connected = False
         self._silent_mode = silent_mode
@@ -52,14 +60,37 @@ class COMClient:
                 "COM API SimInTech работает только на Windows. "
                 "Текущая платформа: " + sys.platform
             )
+
         try:
             import comtypes.client
-            self._server = comtypes.client.CreateObject(self._com_progid)
-        except Exception as exc:
+        except ImportError as exc:  # pragma: no cover — только Windows
             raise ComConnectionError(
-                f"Не удалось создать COM-объект '{self._com_progid}': {exc}. "
-                f"Убедитесь, что SimInTech установлен и выполнен mmain.exe /regserver"
+                "Библиотека comtypes не установлена: pip install comtypes"
             ) from exc
+
+        # Список идентификаторов для перебора
+        if self._com_progid:
+            candidates = [self._com_progid]
+        else:
+            candidates = list(self.DEFAULT_PROGIDS) + [self.CLSID_MVTU_SERVER]
+
+        last_error = None
+        for ident in candidates:
+            try:
+                self._server = comtypes.client.CreateObject(ident)
+                self._com_progid = ident
+                break
+            except Exception as exc:
+                last_error = exc
+                self._server = None
+
+        if self._server is None:
+            raise ComConnectionError(
+                f"Не удалось создать COM-объект SimInTech "
+                f"(пробовали: {', '.join(map(str, candidates))}). "
+                f"Последняя ошибка: {last_error}. Убедитесь, что SimInTech "
+                f"установлен и выполнен: bin\\mmain.exe /regserver"
+            ) from last_error
 
         # Защита от автозавершения сервера при отсоединении последнего клиента
         self._safe_call("SetNoCloseAppFlag", 1)
