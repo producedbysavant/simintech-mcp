@@ -99,7 +99,26 @@ class AStarRouter:
         start: Tuple[int, int],
         end: Tuple[int, int],
     ) -> Optional[List[Tuple[int, int]]]:
-        """A* на сетке; возвращает список узлов (gx, gy) включая концы."""
+        """A* на сетке; возвращает список узлов (gx, gy) включая концы.
+
+        Стартовая и целевая ячейки всегда проходимы (это точки портов,
+        расположенные на границе блоков) — они исключаются из препятствий.
+        """
+        # Исключаем старт/цель из препятствий: порт всегда на блоке,
+        # и линия должна иметь возможность выйти из него.
+        blocked_cache = {}
+
+        def is_blocked(gx: int, gy: int) -> bool:
+            key = (gx, gy)
+            if key in blocked_cache:
+                return blocked_cache[key]
+            if key == start or key == end:
+                res = False
+            else:
+                res = grid.is_blocked(gx, gy)
+            blocked_cache[key] = res
+            return res
+
         open_set: List[Tuple[float, int, int, Tuple[int, int]]] = []
         heapq.heappush(open_set, (0.0, start[0], start[1], start))
         came_from: dict = {start: None}
@@ -119,7 +138,7 @@ class AStarRouter:
             dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
             for dx, dy in dirs:
                 nxt = (cx + dx, cy + dy)
-                if grid.is_blocked(*nxt):
+                if is_blocked(*nxt):
                     continue
                 move_cost = 1.0
                 prev_dir = came_dir.get(current)
@@ -185,8 +204,13 @@ def _smooth(points: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
 
 def _stub_from_port(port: Tuple[float, float], side: int,
                     grid_size: int) -> Tuple[float, float]:
-    """Точка «вылета» из порта по нормали к стороне (PORT_STUB, кратно сетке)."""
-    stub = max(PORT_STUB, grid_size)
+    """Точка «вылета» из порта по нормали к стороне.
+
+    Вылет должен проходить сквозь margin-зону блоков (add_rect расширяет
+    блок на 1 узел = grid_size), поэтому берём 2×grid_size, иначе стартовая
+    точка пути попадает внутрь препятствия.
+    """
+    stub = max(PORT_STUB, 2 * grid_size)
     x, y = port
     if side == 1:      # right
         return (x + stub, y)

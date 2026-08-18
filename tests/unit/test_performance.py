@@ -63,6 +63,41 @@ def test_router_scales():
     assert elapsed < 5.0, f"Router 200 линий занял {elapsed:.2f}s"
 
 
+def test_cross_links_route():
+    """Перекрёстные связи: 14 линий через 12 блоков, все маршруты найдены.
+
+    Соответствует модели 3 (model3_complex.py): линии не пересекают блоки,
+    но могут минимально пересекаться между собой.
+    """
+    spec = ['src1', 'src2', 'sum1', 'g1', 'g2', 'int1', 'sum2',
+            'g3', 'g4', 'int2', 'sum3', 'plot']
+    links = [
+        ('src1', 'sum1'), ('src2', 'sum1'), ('sum1', 'g1'), ('sum1', 'g2'),
+        ('g1', 'int1'), ('g2', 'sum2'), ('int1', 'sum2'), ('g1', 'sum2'),
+        ('sum2', 'g3'), ('sum2', 'g4'), ('g3', 'int2'), ('int2', 'sum3'),
+        ('g4', 'sum3'), ('sum3', 'plot'),
+    ]
+    w, h = 60.0, 40.0
+    pos = LayeredPlacer().place(
+        spec, [(s, d) for s, d in links], sizes={k: (w, h) for k in spec})
+
+    grid = ObstacleGrid(250, 150)
+    for bid, (cx, cy) in pos.items():
+        grid.add_rect(cx - w / 2, cy - h / 2, w, h)
+
+    router = AStarRouter()
+    for src, dst in links:
+        s, d = pos[src], pos[dst]
+        p1 = (s[0] + w / 2, s[1])
+        p2 = (d[0] - w / 2, d[1])
+        pts = router.route(p1, p2, grid, start_side=1, end_side=0)
+        # Ни одна опорная точка не внутри блока
+        for (px, py) in pts:
+            for (cx, cy) in pos.values():
+                assert not (abs(px - cx) <= w / 2 and abs(py - cy) <= h / 2), \
+                    f"Точка линии ({px},{py}) внутри блока"
+
+
 def test_placer_branching_tree_scales():
     """Placer: бинарное дерево (ветвление) из 127 блоков."""
     placer = LayeredPlacer()

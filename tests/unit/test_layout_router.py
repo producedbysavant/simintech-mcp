@@ -36,9 +36,10 @@ def test_route_ends_at_ports():
     grid.add_rect(100, 50, 60, 40)
     router = AStarRouter()
     path = router.route((20, 20), (250, 20), grid, start_side=1, end_side=0)
-    # Вылет справа из порта (20,20): (40,20); слева в порт (250,20): (230,20)
-    assert path[0] == (40, 20)
-    assert path[-1] == (230, 20)
+    # Вылет справа из порта (20,20): (20 + 2*20, 20) = (60, 20)
+    # Вылет слева в порт (250,20): (250 - 2*20, 20) = (210, 20)
+    assert path[0] == (60, 20)
+    assert path[-1] == (210, 20)
 
 
 def test_route_impossible_raises():
