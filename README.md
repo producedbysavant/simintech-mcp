@@ -66,6 +66,32 @@ router = AStarRouter()
 points = router.route((20, 20), (250, 20), grid)  # опорные точки для SetWirePoint
 ```
 
+## Текстовые команды для ИИ-агента
+
+`SimInTechAgent` — единая точка входа для LLM-агента. Принимает команды на
+русском/английском и выполняет их:
+
+```
+create project "MyModel"
+add block "Константа" as k1 at (0, 0) with y0=5
+add block "Усилитель" as g1 at (200, 0) with a=2
+connect k1.out to g1.in
+run for 10 seconds
+get signal "g1.out"
+save project "MyModel.xprt"
+```
+
+```python
+from simintech_api.agent import SimInTechAgent
+
+agent = SimInTechAgent()
+result = agent.execute('add block "Усилитель" as g1 with a=2')
+print(result)  # [OK] Блок 'Усилитель' добавлен как 'g1' (id=...)
+```
+
+CLI-обёртка: `simintech-cli "create project \"Model\"" "add block \"Константа\""` —
+выполняет команды из консоли или интерактивно.
+
 ## Структура пакета
 
 ```
