@@ -119,6 +119,10 @@ python -m pytest tests/integration -m integration
 
 ## Документация
 
+- `docs/guide.md` — руководство пользователя (пошаговое создание первой модели).
+- `docs/api.md` — API Reference (все классы и методы).
+- `docs/algorithms.md` — алгоритмы размещения (Sugiyama) и трассировки (A*).
 - `docs/architecture.md` — архитектура и ключевые решения.
+- `examples/` — рабочие примеры: RC-цепь, ПИД-регулятор, модель с обратной связью.
 - Полная карта методов COM API и DataType — в `sitECRT/doc/reference/com_api_inventory.md`.
 - Официальная спецификация: `SIT_SimInTech_Vneshnij_API.pdf`, `source/exe/mmain.hpp`.
