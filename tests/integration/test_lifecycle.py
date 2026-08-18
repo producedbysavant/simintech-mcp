@@ -80,8 +80,10 @@ def test_open_project_signals(client):
                     "список пуст, пропускаем проверку содержимого")
     for info in signals[:10]:
         assert info.name, "Сигнал без имени"
-        assert info.descriptor is not None
-        assert info.descriptor.is_valid
+        # Сигналы из XML-представления не имеют COM-дескриптора
+        # (descriptor=None) — их нужно запрашивать через signal(name).
+        if info.descriptor is not None:
+            assert info.descriptor.is_valid
     sim.stop()
     prj.close()
 

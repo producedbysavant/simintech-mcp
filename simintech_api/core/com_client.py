@@ -106,13 +106,16 @@ class COMClient:
         if self._silent_mode:
             self._safe_call("SetSilentMode", 1)
 
-        # Если процесс mmain.exe появился только сейчас — он порождён нами,
-        # и shutdown() может его завершить. Иначе owned_pid остаётся None,
-        # и shutdown() только отсоединится, не трогая чужой процесс.
-        # Вызываем напрямую (call() требует _connected=True, которого ещё нет).
+        # Определяем, порождён ли процесс нами. Правило безопасности:
+        # завершать в shutdown() можно ТОЛЬКО если до нашего connect НЕ БЫЛО
+        # ни одного процесса mmain.exe (т.е. запущенный процесс точно наш).
+        # Если до был хоть один процесс ИЛИ snapshot неопределён (None) —
+        # не трогаем процессы: подключение могло произойти к существующему
+        # экземпляру, и убийство заденет чужой процесс.
+        self._owned_pid = None
         try:
             pid = _as_int(self._server.GetProcessID())
-            if pid and pid not in pids_before:
+            if pids_before is not None and pid and not pids_before:
                 self._owned_pid = pid
         except Exception:
             self._owned_pid = None
@@ -211,10 +214,10 @@ def _snapshot_mmain_pids() -> set:
     """Вернуть множество PID запущенных процессов mmain.exe (Windows).
 
     Используется чтобы отличать процесс SimInTech, порождённый нашим
-    клиентом, от уже запущенных пользователем. Вне Windows — пустое множество.
+    клиентом, от уже запущенных пользователем. Вне Windows — None.
     """
     if sys.platform != "win32":
-        return set()
+        return None
     try:
         import subprocess
         out = subprocess.run(
@@ -223,7 +226,8 @@ def _snapshot_mmain_pids() -> set:
             capture_output=True, text=True, timeout=10,
         ).stdout
     except Exception:
-        return set()
+        # Неопределённость: не можем проверить — лучше не трогать процессы
+        return None
     pids: set = set()
     for line in out.splitlines():
         parts = [p.strip().strip('"') for p in line.split(",")]
