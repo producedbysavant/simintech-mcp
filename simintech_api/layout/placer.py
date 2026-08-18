@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from ..constants import BLOCK_GAP, LAYER_GAP
-from ..exceptions import LayoutError
 
 
 class LayeredPlacer:
@@ -103,9 +102,11 @@ class LayeredPlacer:
             layers.append(layer)
             for bid in layer:
                 layer_of[bid] = len(layers) - 1
-            frontier = [b for b in next_frontier
-                        if b not in placed and b not in (item for sub in layers
-                                                          for item in sub)]
+            frontier = [
+                b for b in next_frontier
+                if b not in placed
+                and b not in (item for sub in layers for item in sub)
+            ]
 
         # Если что-то не разместилось (например, изолированные в цикле) — довесок
         remaining = [b for b in block_ids if b not in placed]
@@ -129,13 +130,6 @@ class LayeredPlacer:
         # 3) Координаты центров
         result: Dict[int, Tuple[float, float]] = {}
         cx0, cy0 = origin
-        total_width = 0.0
-        # Ширина каждого слоя = сумма ширин + зазоры
-        layer_widths: List[float] = []
-        for layer in layers:
-            w = sum(sizes.get(b, (60.0, 40.0))[0] for b in layer)
-            w += self.block_gap * max(0, len(layer) - 1)
-            layer_widths.append(w)
 
         # Общая высота компоновки для вертикального центрирования
         max_layer_height = max(

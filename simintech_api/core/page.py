@@ -9,7 +9,7 @@ from ..constants import (
     DEFAULT_BLOCK_W,
     WIRE_TYPE_AUTOMATICS,
 )
-from ..exceptions import BlockError, PageError, UnsupportedBlockError
+from ..exceptions import BlockError, UnsupportedBlockError
 
 if TYPE_CHECKING:
     from .project import Project
@@ -27,10 +27,12 @@ class Page:
 
     @property
     def id(self) -> int:
+        """COM-идентификатор страницы."""
         return self._id
 
     @property
     def project(self) -> "Project":
+        """Проект, которому принадлежит страница."""
         return self._project
 
     # ─── Активация страницы ─────────────────────────────────────────

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any, List, Optional, Tuple
 
-from ..constants import DataType
 from ..model import TDataDescriptor
 
 
@@ -17,7 +16,11 @@ def value_to_prop_string(value: Any) -> str:
         return "1" if value else "0"
     if isinstance(value, (int, float)):
         # float -> компактная запись без хвостовых нулей
-        return str(int(value)) if float(value).is_integer() and not isinstance(value, bool) else repr(float(value))
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if float(value).is_integer():
+            return str(int(value))
+        return repr(float(value))
     if isinstance(value, (list, tuple)):
         return _array_to_str(list(value))
     return str(value)

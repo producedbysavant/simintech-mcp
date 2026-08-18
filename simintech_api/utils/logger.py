@@ -15,8 +15,6 @@ import sys
 import threading
 from typing import Callable, Optional
 
-from ..exceptions import ComCallError
-
 
 class PipeLogger:
     """Фоновый перехватчик лога SimInTech.

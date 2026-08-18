@@ -22,18 +22,22 @@ class Port:
 
     @property
     def id(self) -> int:
+        """COM-идентификатор порта."""
         return self._id
 
     @property
     def block(self) -> "Block":
+        """Блок, к которому относится порт."""
         return self._block
 
     @property
     def index(self) -> Optional[int]:
+        """Индекс порта (если известен)."""
         return self._index
 
     @property
     def client(self):
+        """COM-клиент проекта."""
         return self._block.client
 
     # ─── Информация о порте ─────────────────────────────────────────
@@ -67,9 +71,11 @@ class Port:
         raise PortError(f"GetPortInfo вернул неожиданный формат: {type(raw).__name__}")
 
     def get_name(self) -> str:
+        """Имя порта."""
         return self.get_info().name
 
     def get_side(self) -> PortSide:
+        """Сторона порта (PortSide)."""
         try:
             return PortSide(self.get_info().side)
         except ValueError:
@@ -83,14 +89,17 @@ class Port:
     # ─── Настройка порта ────────────────────────────────────────────
 
     def set_name(self, name: str) -> "Port":
+        """Установить имя порта."""
         self.client.call("SetPortName", self._id, name)
         return self
 
     def set_side(self, side: PortSide | int) -> "Port":
+        """Установить сторону порта."""
         self.client.call("SetPortSide", self._id, int(side))
         return self
 
     def set_mode(self, mode: int) -> "Port":
+        """Установить режим порта."""
         self.client.call("SetPortMode", self._id, int(mode))
         return self
 
@@ -98,7 +107,6 @@ class Port:
 
     def connect(self, other: "Port", points: Optional[list] = None):
         """Соединить этот порт (источник) с другим (приёмник) линией."""
-        from .page import Page
         page = self._block.project.get_current_page()
         return page.create_wire(self, other, points)
 

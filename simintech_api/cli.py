@@ -19,6 +19,7 @@ from .agent import SimInTechAgent
 
 
 def main(argv=None) -> int:
+    """Точка входа CLI."""
     parser = argparse.ArgumentParser(
         prog="simintech-cli",
         description="Управление SimInTech через COM API текстовыми командами.",

@@ -61,6 +61,7 @@ class SimInTechAgent:
 
     @property
     def client(self) -> COMClient:
+        """COM-клиент (автоподключение при первом обращении)."""
         if self._client is None or not self._client.connected:
             if not self._auto_connect:
                 raise RuntimeError(
@@ -136,7 +137,8 @@ class SimInTechAgent:
 
     def _cmd_add_block(self, class_name, alias, x, y, props) -> CommandResult:
         if not self._project:
-            return CommandResult(False, "Нет открытого проекта. Сначала: create project")
+            return CommandResult(
+                False, "Нет открытого проекта. Сначала: create project")
         cx = float(x) if x else 0.0
         cy = float(y) if y else 0.0
         page = self._project.get_main_page()
@@ -175,9 +177,10 @@ class SimInTechAgent:
         sim.start()
         if seconds:
             sim.run_to(float(seconds))
+            t = sim.get_time()
             return CommandResult(
                 True,
-                f"Расчёт выполнен до {seconds} с (модельное время={sim.get_time():.3f})",
+                f"Расчёт выполнен до {seconds} с (модельное время={t:.3f})",
             )
         sim.run()
         return CommandResult(True, "Расчёт запущен")
@@ -215,7 +218,10 @@ class SimInTechAgent:
     def _cmd_list_blocks(self) -> CommandResult:
         if not self._blocks:
             return CommandResult(True, "Нет созданных блоков")
-        lines = [f"  {name}: {b.class_name} (id={b.id})" for name, b in self._blocks.items()]
+        lines = [
+            f"  {name}: {b.class_name} (id={b.id})"
+            for name, b in self._blocks.items()
+        ]
         return CommandResult(True, "Блоки:\n" + "\n".join(lines))
 
     def _cmd_list_signals(self) -> CommandResult:

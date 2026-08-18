@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from ..exceptions import WireError
-
 if TYPE_CHECKING:
     from .project import Project
     from .port import Port
@@ -30,22 +28,27 @@ class Wire:
 
     @property
     def id(self) -> int:
+        """COM-идентификатор линии."""
         return self._id
 
     @property
     def project(self) -> "Project":
+        """Проект линии."""
         return self._project
 
     @property
     def client(self):
+        """COM-клиент проекта."""
         return self._project.client
 
     @property
     def start_port(self) -> Optional["Port"]:
+        """Порт-источник (если задан)."""
         return self._start_port
 
     @property
     def end_port(self) -> Optional["Port"]:
+        """Порт-приёмник (если задан)."""
         return self._end_port
 
     # ─── Опорные точки ──────────────────────────────────────────────
@@ -81,8 +84,6 @@ class Wire:
             port: порт-приёмник.
             point_index: номер точки ветвления на родительской линии (с 0).
         """
-        from .page import Page
-        page = self._project.get_current_page()
         wire_id = _as_i64(self.client.call(
             "CreateWire",
             self._project.id, 0, 0, self._id, point_index,

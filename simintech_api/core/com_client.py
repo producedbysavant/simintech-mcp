@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from ..exceptions import ComConnectionError, ComCallError
 from ..model import TDataDescriptor
@@ -49,6 +49,7 @@ class COMClient:
 
     @property
     def connected(self) -> bool:
+        """True, если клиент подключён к серверу."""
         return self._connected
 
     def connect(self) -> "COMClient":
@@ -161,7 +162,8 @@ class COMClient:
             )
         func = getattr(self._server, method, None)
         if func is None:
-            raise ComCallError(method, message=f"метод не найден в интерфейсе IMVTU_Server")
+            raise ComCallError(
+                method, message="метод не найден в интерфейсе IMVTU_Server")
         try:
             return func(*args)
         except Exception as exc:

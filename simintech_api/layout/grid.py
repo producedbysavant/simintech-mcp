@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 
 from ..constants import GRID_SIZE
 
@@ -31,9 +31,11 @@ class ObstacleGrid:
     # ─── Конверсия координат ────────────────────────────────────────
 
     def to_grid(self, x: float, y: float) -> Tuple[int, int]:
+        """Конвертировать координаты схемы в узел сетки."""
         return (int(round(x / self.grid_size)), int(round(y / self.grid_size)))
 
     def to_scheme(self, gx: int, gy: int) -> Tuple[float, float]:
+        """Конвертировать узел сетки в координаты схемы."""
         return (gx * self.grid_size, gy * self.grid_size)
 
     # ─── Препятствия ────────────────────────────────────────────────
@@ -53,17 +55,21 @@ class ObstacleGrid:
                 self._mark(gx, gy, label)
 
     def add_point(self, x: float, y: float, label: str = "obstacle") -> None:
+        """Пометить точку как препятствие."""
         self._mark(*self.to_grid(x, y), label)
 
     def is_blocked(self, gx: int, gy: int) -> bool:
+        """Проверить, занят ли узел сетки."""
         if not (0 <= gx < self.width and 0 <= gy < self.height):
             return True  # за пределами сетки считаем занятым
         return (gx, gy) in self._obstacles
 
     def is_blocked_scheme(self, x: float, y: float) -> bool:
+        """Проверить точку схемы на занятость."""
         return self.is_blocked(*self.to_grid(x, y))
 
     def clear(self) -> None:
+        """Очистить все препятствия."""
         self._obstacles.clear()
 
     # ─── Внутреннее ─────────────────────────────────────────────────

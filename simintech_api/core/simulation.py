@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
-
-from ..exceptions import SimulationError
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .com_client import COMClient
@@ -40,10 +38,12 @@ class Simulation:
         return self
 
     def pause(self) -> "Simulation":
+        """Приостановить расчёт."""
         self._client.call("ProjectPause", self._id)
         return self
 
     def stop(self) -> "Simulation":
+        """Остановить расчёт."""
         self._client.call("ProjectStop", self._id)
         return self
 
@@ -71,26 +71,32 @@ class Simulation:
     # ─── Пакет ──────────────────────────────────────────────────────
 
     def pack_start(self) -> "Simulation":
+        """Инициализировать пакет."""
         self._client.call("PackStart", self._id)
         return self
 
     def pack_run(self) -> "Simulation":
+        """Запустить расчёт пакета."""
         self._client.call("PackRun", self._id)
         return self
 
     def pack_step(self) -> "Simulation":
+        """Шаг расчёта пакета."""
         self._client.call("PackStep", self._id)
         return self
 
     def pack_pause(self) -> "Simulation":
+        """Пауза пакета."""
         self._client.call("PackPause", self._id)
         return self
 
     def pack_stop(self) -> "Simulation":
+        """Остановить пакет."""
         self._client.call("PackStop", self._id)
         return self
 
     def run_to_pack(self, target_time: float) -> bool:
+        """Расчёт пакета до заданного времени; True при достижении."""
         result = self._client.call("RunToPack", self._id, float(target_time))
         if _as_int(result) == 0:
             wait = self._client.call("WaitForTimePack", self._id, float(target_time))
@@ -100,6 +106,7 @@ class Simulation:
     # ─── Реальное время ─────────────────────────────────────────────
 
     def set_realtime_delay(self, delay_flag: int, delay_scale: float) -> "Simulation":
+        """Синхронизация с реальным временем."""
         self._client.call("SetProjectRealTimeDelay", self._id, delay_flag,
                           float(delay_scale))
         return self

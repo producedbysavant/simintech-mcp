@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional
 
-from ..exceptions import BlockError, PortError
+from ..exceptions import PortError
 from ..utils.converters import value_to_prop_string
 
 if TYPE_CHECKING:
@@ -29,14 +29,17 @@ class Block:
 
     @property
     def id(self) -> int:
+        """COM-идентификатор блока."""
         return self._id
 
     @property
     def project(self) -> "Project":
+        """Проект, которому принадлежит блок."""
         return self._project
 
     @property
     def client(self):
+        """COM-клиент проекта."""
         return self._project.client
 
     @property
@@ -67,9 +70,11 @@ class Block:
         return self.get_property("Points")
 
     def get_name(self) -> str:
+        """Имя блока (свойство Name)."""
         return self.get_property("Name")
 
     def set_name(self, name: str) -> "Block":
+        """Установить имя блока."""
         return self.set_property("Name", name)
 
     # ─── Позиция и размеры ──────────────────────────────────────────
@@ -112,6 +117,7 @@ class Block:
     # ─── Порты ──────────────────────────────────────────────────────
 
     def get_port_count(self) -> int:
+        """Количество портов блока."""
         return _as_int(self.client.call("GetPortCount", self._id))
 
     def get_block_port(self, index: int) -> "Port":
@@ -159,7 +165,6 @@ class Block:
 
     def connect(self, other: "Block", out_index: int = 0, in_index: int = 0):
         """Соединить выход self с входом other линией связи."""
-        from .page import Page
         page = self.project.get_current_page()
         out_port = self.get_out_port(out_index)
         in_port = other.get_in_port(in_index)

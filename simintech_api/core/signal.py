@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import TYPE_CHECKING, Any, List
 
 from ..constants import DataType, READ_METHODS, WRITE_METHODS
 from ..exceptions import SignalError
@@ -28,18 +28,22 @@ class Signal:
 
     @property
     def project(self) -> "Project":
+        """Проект, к которому относится сигнал."""
         return self._project
 
     @property
     def name(self) -> str:
+        """Имя сигнала."""
         return self._name
 
     @property
     def descriptor(self) -> TDataDescriptor:
+        """COM-дескриптор сигнала (TDataDescriptor)."""
         return self._descriptor
 
     @property
     def data_type(self) -> DataType:
+        """Тип данных сигнала (DataType)."""
         try:
             return DataType(self._descriptor.DataType)
         except ValueError:
@@ -68,11 +72,13 @@ class Signal:
         return result
 
     def read_array_element(self, index: int) -> float:
+        """Прочитать один элемент массива."""
         getter = ("GetExtArrayElement" if self.data_type == DataType.ARRAY
                   else "GetIntArrayElement")
         return self._project.client.call(getter, self._descriptor, index)
 
     def array_count(self) -> int:
+        """Размер массива сигнала."""
         return int(self._project.client.call("GetArrayCount", self._descriptor))
 
     # ─── Запись ─────────────────────────────────────────────────────
@@ -104,6 +110,7 @@ class Signal:
         return self
 
     def set_array_element(self, index: int, value: float) -> "Signal":
+        """Записать один элемент массива."""
         setter = ("SetExtArrayElement" if self.data_type == DataType.ARRAY
                   else "SetIntArrayElement")
         if self.data_type == DataType.ARRAY:
@@ -113,6 +120,7 @@ class Signal:
         return self
 
     def set_array_count(self, count: int) -> "Signal":
+        """Установить размер массива."""
         self._project.client.call("SetArrayCount", self._descriptor, int(count))
         return self
 

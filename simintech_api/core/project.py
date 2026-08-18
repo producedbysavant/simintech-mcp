@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List
 
 from ..exceptions import ProjectError, SignalError
 from ..model import SignalInfo, TDataDescriptor
@@ -92,7 +92,7 @@ class Project:
             raise SignalError(f"Сигнал '{name}' не найден в проекте")
         return desc
 
-    def signal(self, name: str) -> "Signal":
+    def signal(self, name: str) -> "Signal":  # noqa: F821 — Signal импортируется ниже
         """Вернуть объект Signal по имени сигнала."""
         from .signal import Signal
         return Signal(self, self.find_signal(name), name)
