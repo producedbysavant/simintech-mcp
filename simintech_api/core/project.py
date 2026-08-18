@@ -82,10 +82,12 @@ class Project:
     # ─── Сигналы ────────────────────────────────────────────────────
 
     def find_signal(self, name: str) -> TDataDescriptor:
-        """Найти сигнал по имени; вернуть TDataDescriptor (или SignalError).
+        """Найти сигнал по имени блока; вернуть TDataDescriptor (или SignalError).
 
-        Как и list_signals, требует предварительного ProjectStart (sim.start())
-        — до инициализации сигналы не найдены.
+        Работает через FindSignalData — сигнал ищется по имени блока
+        независимо от GetProjectSignalList. Как правило доступен сразу после
+        открытия проекта; при необходимости инициализации вызывайте
+        sim.start() перед поиском.
         """
         desc = self._client.find_signal(name, self._id)
         if not desc.is_valid:
@@ -98,11 +100,16 @@ class Project:
         return Signal(self, self.find_signal(name), name)
 
     def list_signals(self) -> List[SignalInfo]:
-        """Получить список всех сигналов проекта.
+        """Получить список ВНЕШНИХ (обменных) сигналов проекта.
 
-        Важно: список сигналов доступен только после инициализации проекта
-        (ProjectStart / sim.start()) — модель компилируется и сигналы
-        появляются в списке. До старта вернётся пустой список.
+        GetProjectSignalList возвращает только сигналы, зарегистрированные
+        для обмена (блоки «Вход/Выход алгоритма»). Внутренние сигналы блоков
+        в этот список не входят — для них используйте find_signal(name) /
+        signal(name) по имени блока. Для моделей без внешних интерфейсов
+        список будет пуст (это нормально).
+
+        Важно: список может требовать предварительной инициализации проекта
+        (sim.start()).
         """
         from ..utils.converters import _to_descriptor
         list_id = _as_i64(self._client.call("GetProjectSignalList", self._id))

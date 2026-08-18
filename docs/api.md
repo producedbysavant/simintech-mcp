@@ -49,9 +49,9 @@ prj.close()
 | `close()` | Закрыть проект. |
 | `get_main_page() -> Page` | Главная страница. |
 | `get_current_page() -> Page` | Текущая страница. |
-| `find_signal(name) -> TDataDescriptor` | Поиск сигнала (SignalError, если нет). |
+| `find_signal(name) -> TDataDescriptor` | Поиск сигнала по имени **блока** (FindSignalData; SignalError, если нет). |
 | `signal(name) -> Signal` | Объект Signal для чтения/записи. |
-| `list_signals() -> list[SignalInfo]` | Список сигналов проекта. |
+| `list_signals() -> list[SignalInfo]` | Список **внешних (обменных)** сигналов (блоки «Вход/Выход алгоритма»); для моделей без них — пустой. |
 | `simulation() -> Simulation` | Управление расчётом. |
 | `run() / stop()` | Удобные обёртки расчёта. |
 
