@@ -65,21 +65,41 @@ def _cleanup_mmain_processes():
 
     Собирает PID'ы ДО прогона; после — убивает ТОЛЬКО разность
     (появившиеся). Предсуществующие процессы SimInTech не трогаются.
+
+    Отключение очистки (если нужно сохранить процессы): переменная
+    окружения SIMINTECH_KEEP_MMAIN=1.
     """
+    if os.environ.get("SIMINTECH_KEEP_MMAIN") == "1":
+        yield
+        return
     if sys.platform != "win32":
         yield
         return
     from simintech_api.utils.processes import get_mmain_pids, kill_pids
-    before = set(get_mmain_pids())
-    yield
     import time
-    time.sleep(0.3)  # дать процессам завершить работу
+
+    before = set(get_mmain_pids())
+    print(f"\n[simintech] mmain.exe ДО тестов: "
+          f"{sorted(before) if before else '(не обнаружены)'}", file=sys.stderr)
+    yield
+    time.sleep(1.0)  # дать процессам завершить работу
     after = set(get_mmain_pids())
     new = after - before
+    print(f"[simintech] mmain.exe ПОСЛЕ тестов: "
+          f"{sorted(after) if after else '(не обнаружены)'}", file=sys.stderr)
     if new:
-        print(f"\n[simintech] Завершаю процессы mmain.exe, порождённые "
-              f"тестами: {sorted(new)}", file=sys.stderr)
+        print(f"[simintech] Завершаю процессы, порождённые тестами: "
+              f"{sorted(new)}", file=sys.stderr)
         kill_pids(new)
+        time.sleep(0.5)
+        # Повторная проверка — сообщаем, если что-то осталось
+        still = set(get_mmain_pids()) - before
+        if still:
+            print(f"[simintech] ВНИМАНИЕ: не удалось завершить: "
+                  f"{sorted(still)}", file=sys.stderr)
+    else:
+        print("[simintech] Новых процессов не обнаружено — очистка не требуется.",
+              file=sys.stderr)
 
 
 @pytest.fixture()
