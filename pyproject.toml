@@ -34,4 +34,5 @@ packages = [
 testpaths = ["tests"]
 markers = [
     "integration: тесты, требующие реального COM-сервера SimInTech на Windows (deselect через -m 'not integration')",
+    "performance: бенчмарки производительности placer/router",
 ]
