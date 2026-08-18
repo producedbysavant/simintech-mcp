@@ -71,12 +71,6 @@ class COMClient:
                 "Библиотека comtypes не установлена: pip install comtypes"
             ) from exc
 
-        # Запоминаем PID'ы mmain.exe, существовавшие ДО нашего подключения.
-        # Если после CreateObject появился новый процесс — он наш, и только
-        # его разрешено завершать в shutdown(). Чужие (запущенные не нами)
-        # не трогаем.
-        pids_before = _snapshot_mmain_pids()
-
         # Список идентификаторов для перебора
         if self._com_progid:
             candidates = [self._com_progid]
@@ -106,17 +100,13 @@ class COMClient:
         if self._silent_mode:
             self._safe_call("SetSilentMode", 1)
 
-        # Определяем, порождён ли процесс нами. Правило безопасности:
-        # завершать в shutdown() можно ТОЛЬКО если до нашего connect НЕ БЫЛО
-        # ни одного процесса mmain.exe (т.е. запущенный процесс точно наш).
-        # Если до был хоть один процесс ИЛИ snapshot неопределён (None) —
-        # не трогаем процессы: подключение могло произойти к существующему
-        # экземпляру, и убийство заденет чужой процесс.
+        # Запоминаем PID процесса SimInTech, к которому подключились.
+        # Убийство процесса НЕ выполняется здесь автоматически — вызывающая
+        # сторона (тесты/утилиты) сама решает, какие процессы завершать,
+        # по принципу «только появившиеся после начала работы» (см. conftest).
         self._owned_pid = None
         try:
-            pid = _as_int(self._server.GetProcessID())
-            if pids_before is not None and pid and not pids_before:
-                self._owned_pid = pid
+            self._owned_pid = _as_int(self._server.GetProcessID())
         except Exception:
             self._owned_pid = None
 
@@ -128,28 +118,23 @@ class COMClient:
         self._server = None
         self._connected = False
 
-    def shutdown(self, force: bool = False) -> None:
-        """Отсоединиться и (если можно) завершить процесс SimInTech.
+    def shutdown(self, kill_pids=None) -> None:
+        """Отсоединиться от сервера.
 
-        Завершается ТОЛЬКО процесс, порождённый этим клиентом (owned_pid —
-        mmain.exe, появившийся при нашем connect). Процессы, запущенные
-        пользователем или другими клиентами, не трогаются.
+        По умолчанию НЕ завершает процессы SimInTech (это безопасно: не
+        трогает процессы, запущенные пользователем). Для принудительного
+        завершения укажите kill_pids — список PID'ов, которые можно убить
+        (например, только появившиеся после начала работы).
 
         Args:
-            force: принудительно завершить процесс даже если он не наш
-                (используется с осторожностью; по умолчанию False).
+            kill_pids: итерация PID'ов mmain.exe, разрешённых к завершению.
+                Пусто (по умолчанию) — ничего не убивать.
         """
-        pid = self._owned_pid
         self.disconnect()
-        if pid and sys.platform == "win32":
-            try:
-                import subprocess
-                subprocess.run(
-                    ["taskkill", "/F", "/PID", str(pid)],
-                    capture_output=True, timeout=10,
-                )
-            except Exception:
-                pass
+        if not kill_pids or sys.platform != "win32":
+            return
+        from ..utils.processes import kill_pids as _kill
+        _kill(kill_pids)
 
     # ─── Низкоуровневые вызовы ──────────────────────────────────────
 
@@ -208,32 +193,6 @@ class COMClient:
             return desc
         # comtypes может вернуть кортеж из [out]-структуры — восстановим
         return _to_descriptor(desc)
-
-
-def _snapshot_mmain_pids() -> set:
-    """Вернуть множество PID запущенных процессов mmain.exe (Windows).
-
-    Используется чтобы отличать процесс SimInTech, порождённый нашим
-    клиентом, от уже запущенных пользователем. Вне Windows — None.
-    """
-    if sys.platform != "win32":
-        return None
-    try:
-        import subprocess
-        out = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq mmain.exe",
-             "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, timeout=10,
-        ).stdout
-    except Exception:
-        # Неопределённость: не можем проверить — лучше не трогать процессы
-        return None
-    pids: set = set()
-    for line in out.splitlines():
-        parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) >= 2 and parts[1].isdigit():
-            pids.add(int(parts[1]))
-    return pids
 
 
 def _as_int(value: Any) -> int:

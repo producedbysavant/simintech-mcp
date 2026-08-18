@@ -185,35 +185,54 @@ def test_typed_read_write_via_signal(monkeypatch):
     assert ("WriteAsFloat", 1000, 0, 3.0) in fake.calls
 
 
-def test_owned_pid_only_for_new_process(monkeypatch):
-    """shutdown() завершает только процесс, порождённый этим клиентом."""
+def test_owned_pid_records_client_pid(monkeypatch):
+    """_owned_pid запоминает PID процесса, к которому подключился клиент."""
     from simintech_api.core import com_client as cc
 
     fake = FakeServer()
     client = _make_client(monkeypatch, fake)
-
-    # Случай 1: mmain.exe уже был запущен (его PID есть до connect) — не наш
-    monkeypatch.setattr(cc, "_snapshot_mmain_pids", lambda: {12345})
     client.connect()
-    assert client._owned_pid is None
-    # shutdown() не должен звать taskkill
-    killed = []
-    monkeypatch.setattr(
-        cc.subprocess, "run",
-        lambda *a, **k: killed.append(a[0]) or None,
-    ) if hasattr(cc, "subprocess") else None
-    client.shutdown()
-    assert not killed
-
-
-def test_owned_pid_set_for_new_process(monkeypatch):
-    """Процесс появился только после connect — наш, shutdown() убьёт его."""
-    from simintech_api.core import com_client as cc
-
-    fake = FakeServer()
-    client = _make_client(monkeypatch, fake)
-
-    # Случай 2: mmain.exe не было до connect — появился наш (12345)
-    monkeypatch.setattr(cc, "_snapshot_mmain_pids", lambda: set())
-    client.connect()
+    # FakeServer.GetProcessID возвращает 12345
     assert client._owned_pid == 12345
+
+
+def test_shutdown_no_kill_by_default(monkeypatch):
+    """shutdown() по умолчанию НЕ завершает процессы (только disconnect)."""
+    from simintech_api.core import com_client as cc
+    from simintech_api.utils import processes as proc
+
+    fake = FakeServer()
+    client = _make_client(monkeypatch, fake)
+    client.connect()
+
+    killed = []
+    monkeypatch.setattr(proc, "_pids_wmic", lambda: set())
+    monkeypatch.setattr(proc, "_pids_tasklist", lambda: set())
+    monkeypatch.setattr(proc, "_pids_powershell", lambda: set())
+    monkeypatch.setattr(proc.subprocess, "run",
+                        lambda *a, **k: killed.append(a[0]) or None)
+    client.shutdown()          # без kill_pids — не убивать
+    assert killed == []
+
+
+def test_shutdown_kills_explicit_pids(monkeypatch):
+    """shutdown(kill_pids=...) завершает ТОЛЬКО переданные PID'ы."""
+    from simintech_api.core import com_client as cc
+    from simintech_api.utils import processes as proc
+
+    fake = FakeServer()
+    client = _make_client(monkeypatch, fake)
+    client.connect()
+
+    killed = []
+    monkeypatch.setattr(proc, "_pids_wmic", lambda: set())
+    monkeypatch.setattr(proc, "_pids_tasklist", lambda: set())
+    monkeypatch.setattr(proc, "_pids_powershell", lambda: set())
+    monkeypatch.setattr(proc.subprocess, "run",
+                        lambda *a, **k: killed.append(a[0]) or None)
+    client.shutdown(kill_pids=[999, 888])
+    # Каждый PID убивается отдельным taskkill
+    assert killed
+    assert all(args and args[0] == "taskkill" for args in killed)
+    assert ["taskkill", "/F", "/PID", "999"] in killed
+    assert ["taskkill", "/F", "/PID", "888"] in killed
