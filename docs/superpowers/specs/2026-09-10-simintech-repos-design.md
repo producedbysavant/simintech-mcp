@@ -175,6 +175,17 @@ simintech-mcp    ------->  simintech-code     установочная (install-
 После переноса папка `C:\git\simintech-connector` удаляется целиком.
 Репозиторий на GitHub удалять не нужно — его не существует.
 
+**Статус переноса (2026-09-10, план подготовки выполнен):**
+
+| Файл | Состояние |
+|---|---|
+| `sdb_adapter.py` | ✅ перенесён в `simintech_api/sdb.py`, 4 теста |
+| `cli_adapter.py` | ✅ перенесён в `simintech_api/cli_runner.py`, 9 тестов; `SimulationResult` → `CLIResult` |
+| `run_macro.py`, `run_pak.py` | ✅ переписаны в `examples/` без жёстких путей |
+| `models.py` | ✅ разобран: `DataType` дублирует `constants`, `SignalInfo` конфликтует именем с `model.SignalInfo`, `ProjectState`/`ProjectInfo` нигде не используются |
+| `com_adapter.py`, `server.py`, `examples/basic_usage.py` | ⬜ удаляются вместе с папкой в плане 2 |
+| `.ruff_cache/`, `.remember/`, `.claude.json` | ⬜ удаляются вместе с папкой в плане 2 |
+
 ## 7. Инструменты сборки
 
 - **Метаданные:** PEP 621 (`[project]`) как единственный источник.
