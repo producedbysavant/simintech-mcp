@@ -89,8 +89,10 @@ class Project:
         открытия проекта; при необходимости инициализации вызывайте
         sim.start() перед поиском.
         """
+        from ..utils.converters import descriptor_is_valid
+
         desc = self._client.find_signal(name, self._id)
-        if not desc.is_valid:
+        if not descriptor_is_valid(desc):
             raise SignalError(
                 f"Сигнал '{name}' не найден в проекте. Обмен данными идёт "
                 f"через список сигналов проекта и подключённую базу сигналов; "

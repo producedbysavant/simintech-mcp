@@ -32,23 +32,53 @@ def _array_to_str(values: List[Any]) -> str:
     return f"[{inner}]"
 
 
-def _to_descriptor(value: Any) -> TDataDescriptor:
-    """Восстановить TDataDescriptor из результата comtypes-вызова.
+def descriptor_is_valid(desc: Any) -> bool:
+    """Указывает ли дескриптор на реальный элемент данных.
 
-    comtypes может возвращать структуру напрямую (объект TDataDescriptor),
-    кортеж (DataId, DataType) или объект с полями .DataId/.DataType.
+    Работает и с нашим `TDataDescriptor`, и с классом, сгенерированным
+    comtypes из библиотеки типов: проверяется значение `DataId`, а не тип.
     """
-    if isinstance(value, TDataDescriptor):
-        return value
+    if desc is None:
+        return False
+    return int(getattr(desc, "DataId", 0) or 0) != 0
+
+
+def is_descriptor(value: Any) -> bool:
+    """Похоже ли значение на TDataDescriptor.
+
+    Проверка по атрибутам, а не по `isinstance`: comtypes генерирует
+    собственный класс `TDataDescriptor` из библиотеки типов, и он не является
+    экземпляром нашего одноимённого класса.
+    """
+    return hasattr(value, "DataId") and hasattr(value, "DataType")
+
+
+def _to_descriptor(value: Any) -> Any:
+    """Нормализовать дескриптор из результата comtypes-вызова.
+
+    **Родной дескриптор comtypes возвращается как есть.** Это не мелочь:
+    `ReadAsFloat`/`WriteAsFloat` принимают только экземпляр типа из библиотеки
+    типов и падают с «expected TDataDescriptor instance instead of
+    TDataDescriptor», если подсунуть наш одноимённый класс. Проверено на
+    SimInTech64: с родным дескриптором чтение возвращает значение (1.0), с
+    подменённым — ошибку. Именно эта подмена и делала чтение сигналов
+    неработающим.
+
+    Наш `TDataDescriptor` конструируется только когда comtypes вернул кортеж
+    или чего-то не хватает (например, в тестах с фейковым COM).
+    """
     if value is None:
         return TDataDescriptor()
+    if is_descriptor(value):
+        return value
     if isinstance(value, (tuple, list)):
         data_id = value[0] if len(value) > 0 else 0
         data_type = value[1] if len(value) > 1 else 0
-        return TDataDescriptor(int(data_id), int(data_type))
-    data_id = getattr(value, "DataId", getattr(value, "data_id", 0))
-    data_type = getattr(value, "DataType", getattr(value, "data_type", 0))
-    return TDataDescriptor(int(data_id), int(data_type))
+        try:
+            return TDataDescriptor(int(data_id), int(data_type))
+        except (TypeError, ValueError):
+            return TDataDescriptor()
+    return TDataDescriptor()
 
 
 def parse_points(points_str: Optional[str]) -> List[Tuple[float, float]]:

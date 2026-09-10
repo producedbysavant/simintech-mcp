@@ -193,13 +193,13 @@ class COMClient:
         """Вернуть PID процесса mmain.exe."""
         return _as_int(self.call("GetProcessID"))
 
-    def find_signal(self, name: str, project_id: int) -> TDataDescriptor:
-        """Найти сигнал по имени в проекте; вернуть TDataDescriptor."""
-        desc = self.call("FindSignalData", name, project_id)
-        if isinstance(desc, TDataDescriptor):
-            return desc
-        # comtypes может вернуть кортеж из [out]-структуры — восстановим
-        return _to_descriptor(desc)
+    def find_signal(self, name: str, project_id: int) -> Any:
+        """Найти сигнал по имени в проекте; вернуть дескриптор.
+
+        Возвращается дескриптор comtypes как есть — его нельзя подменять
+        нашей одноимённой структурой (см. `_to_descriptor`).
+        """
+        return _to_descriptor(self.call("FindSignalData", name, project_id))
 
 
 # RPC_E_CHANGED_MODE: поток уже инициализирован COM в другом режиме.
@@ -244,20 +244,22 @@ def _as_int(value: Any) -> int:
     return int(value)
 
 
-def _to_descriptor(value: Any) -> TDataDescriptor:
-    """Восстановить TDataDescriptor из результата comtypes-вызова.
+def _to_descriptor(value: Any) -> Any:
+    """Нормализовать дескриптор из результата comtypes-вызова.
 
-    comtypes может возвращать структуру напрямую (объект TDataDescriptor),
-    кортеж (DataId, DataType) или объект с полями .DataId/.DataType.
+    Родной дескриптор comtypes возвращается как есть — см.
+    `utils.converters._to_descriptor`: подмена его нашим одноимённым классом
+    ломает Read*/Write* («expected TDataDescriptor instance instead of
+    TDataDescriptor»).
     """
-    if isinstance(value, TDataDescriptor):
-        return value
+    from ..utils.converters import is_descriptor
+
     if value is None:
         return TDataDescriptor()
+    if is_descriptor(value):
+        return value
     if isinstance(value, (tuple, list)):
         data_id = value[0] if len(value) > 0 else 0
         data_type = value[1] if len(value) > 1 else 0
         return TDataDescriptor(_as_int(data_id), _as_int(data_type))
-    data_id = getattr(value, "DataId", getattr(value, "data_id", 0))
-    data_type = getattr(value, "DataType", getattr(value, "data_type", 0))
-    return TDataDescriptor(_as_int(data_id), _as_int(data_type))
+    return TDataDescriptor()
