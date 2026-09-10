@@ -84,8 +84,8 @@ b2 = page.create_block("Усилитель", 200, 0, width=60, height=40)
 
 ```python
 b1 = page.create_block("Константа", 0, 0)
-b1.set_property("y0", 5.0)              # значения приводятся к строке
-b1.set_property("a", [1, 1, 1])         # массивы тоже
+b1.set_property("a", 5.0)               # значения приводятся к строке
+b1.set_property("a", [1, 1, 1])         # массивы тоже (здесь — для примера)
 name = b1.get_property("Name")          # чтение как str
 b1.set_position(left, top, width, height, angle)
 b1.set_center(cx, cy, width, height)    # по центру

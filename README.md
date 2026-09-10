@@ -1,4 +1,4 @@
-# simintech-api
+# simintech-mcp
 
 Python-библиотека для программного управления средой динамического моделирования **SimInTech** через внешний **COM API** (`IMVTU_Server`, сервер `mmain.exe`).
 
@@ -34,7 +34,7 @@ page = prj.get_main_page()
 
 # Блоки: Константа (5) -> Усилитель (x2)
 b1 = page.create_block("Константа", 0, 0)
-b1.set_property("y0", 5.0)
+b1.set_property("a", 5.0)     # у «Константы» параметр `a`, не `y0`
 
 b2 = page.create_block("Усилитель", 200, 0)
 b2.set_property("a", 2.0)
@@ -68,7 +68,7 @@ points = router.route((20, 20), (250, 20), grid)  # опорные точки д
 
 ## MCP-сервер
 
-`simintech-api` поставляется с **FastMCP-сервером** (20 инструментов,
+`simintech-mcp` поставляется с **FastMCP-сервером** (20 инструментов,
 2 ресурса, 2 промпта) для управления SimInTech из ИИ-агента (Claude Code и др.).
 Работает на Windows (требует `mmain.exe /regserver`).
 
@@ -101,11 +101,24 @@ claude mcp add simintech -- simintech-mcp
 Ресурсы: `simintech://status`, `simintech://project/blocks`.
 Промпты: `create_pid_model`, `create_rc_chain`.
 
-**Имена параметров блоков короткие** — `a`, `y0`, `x0`, `xn`, `k`, `yk`.
-Перечислить свойства через COM нельзя, поэтому они берутся из каталога
+**Имена параметров блоков короткие и неочевидные.** Перечислить свойства через
+COM нельзя, поэтому они берутся из каталога
 (`simintech_api/data/block_catalog.json`). Каталог генерируется из реального
 SimInTech: `python scripts/generate_block_catalog.py` (Windows) — см.
 `skills-catalog/simintech-library-curation/`.
+
+| Класс | Параметры |
+|---|---|
+| Константа | `a`, `src_type`, `txt`, `formula_visible` |
+| Усилитель | `a` |
+| Сумматор | `a` — массив весов; число входов = длина массива |
+| Интегратор | `k`, `x0` |
+| Ступенька | `t`, `y0`, `yk` |
+| Синусоида | `a`, `w`, `f` |
+
+Осторожно: запись в несуществующее имя свойства **не даёт ошибки** — параметр
+не меняется, а модель считается с прежним значением. Так, `y0` у «Константы»
+и `xn` у «Сумматора» молча ничего не делают.
 
 Пример использования из ИИ-агента:
 ```
@@ -124,7 +137,7 @@ get_signal "Gain"
 
 ```
 create project "MyModel"
-add block "Константа" as k1 at (0, 0) with y0=5
+add block "Константа" as k1 at (0, 0) with a=5
 add block "Усилитель" as g1 at (200, 0) with a=2
 connect k1.out to g1.in
 run for 10 seconds
@@ -187,6 +200,6 @@ python -m pytest tests/integration -m integration
 
 - `sitECRT` — тестовый тулкит и справочники COM API.
 - `simintech-connector` — **заархивирован** (его COM-функционал перенесён
-  в `simintech-api`; см. `ARCHIVED.md`).
+  в `simintech-mcp`; см. `ARCHIVED.md`).
 - `simintech-code-library` — **заархивирован** (содержимое перенесено в
   `docs/simintech-language/`).
