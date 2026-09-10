@@ -28,18 +28,22 @@ def main() -> None:
     prj = Project.new(client)
     page = prj.get_main_page()
 
-    # Уставка (Константа) — вход задания
+    # Уставка (Константа) — вход задания.
+    # ВНИМАНИЕ: у «Константы» параметр называется `a`, а не `y0`.
+    # Запись в несуществующее имя (`y0`) не даёт ошибки и ни на что не влияет —
+    # отказ молчаливый. Имена параметров сверены с реальным SimInTech.
     setpoint = page.create_block("Константа", 0, -80)
-    setpoint.set_property("y0", SETPOINT)
+    setpoint.set_property("a", SETPOINT)
 
     # Измерение (в примере — константа; в реальности — датчик/обратная связь)
     measurement = page.create_block("Константа", 0, 80)
-    measurement.set_property("y0", 0.0)
+    measurement.set_property("a", 0.0)
 
-    # Сумматор ошибки: e = задание - измерение
+    # Сумматор ошибки: e = задание - измерение.
+    # Число входов определяется длиной массива `a`; отдельного параметра `xn`
+    # у «Сумматора» не существует.
     err_sum = page.create_block("Сумматор", 200, 0)
     err_sum.set_property("a", [1.0, -1.0])
-    err_sum.set_property("xn", 2)   # 2 входа
 
     # Пропорциональная ветвь
     kp_gain = page.create_block("Усилитель", 380, -100)
@@ -58,10 +62,9 @@ def main() -> None:
     kd_gain = page.create_block("Усилитель", 520, 100)
     kd_gain.set_property("a", KD)
 
-    # Сумматор выхода
+    # Сумматор выхода (три входа — по длине массива `a`)
     out_sum = page.create_block("Сумматор", 660, 0)
     out_sum.set_property("a", [1.0, 1.0, 1.0])
-    out_sum.set_property("xn", 3)
 
     # --- Соединения ---
     setpoint.connect(err_sum, in_index=0)      # задание -> e+

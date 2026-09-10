@@ -100,7 +100,7 @@ def test_read_write_signal(client):
     page = prj.get_main_page()
     konst = page.create_block("Константа", 0, 0)
     konst.set_property("Name", "const_sig")
-    konst.set_property("y0", 5.0)
+    konst.set_property("a", 5.0)   # у «Константы» параметр `a`, не `y0`
     gain = page.create_block("Усилитель", 200, 0)
     gain.set_property("a", 2.0)
     konst.connect(gain)
@@ -152,7 +152,7 @@ def test_build_simple_model(client):
     page = prj.get_main_page()
 
     b1 = page.create_block("Константа", 0, 0, width=60, height=40)
-    b1.set_property("y0", 5.0)   # значение константы
+    b1.set_property("a", 5.0)    # значение константы (параметр `a`, не `y0`)
     b2 = page.create_block("Усилитель", 200, 0, width=60, height=40)
     b2.set_property("a", 2.0)    # коэффициент усиления
 
