@@ -68,9 +68,9 @@ points = router.route((20, 20), (250, 20), grid)  # опорные точки д
 
 ## MCP-сервер
 
-`simintech-api` поставляется с **FastMCP-сервером** (18 инструментов) для
-управления SimInTech из ИИ-агента (Claude Code и др.). Работает на Windows
-(требует `mmain.exe /regserver`).
+`simintech-api` поставляется с **FastMCP-сервером** (20 инструментов,
+2 ресурса, 2 промпта) для управления SimInTech из ИИ-агента (Claude Code и др.).
+Работает на Windows (требует `mmain.exe /regserver`).
 
 ```bash
 pip install -e ".[test]"     # ставит comtypes + mcp + fastmcp
@@ -92,10 +92,20 @@ claude mcp add simintech -- simintech-mcp
 | Подключение | `status`, `disconnect` |
 | Проекты | `create_project`, `open_project`, `save_project`, `close_project` |
 | Блоки/связи | `add_block`, `connect`, `list_blocks` |
+| Параметры | `get_block_params`, `set_block_param` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal` |
 | Layout | `layout_place` (авто-расстановка блоков) |
 | Справка | `help_text` |
+
+Ресурсы: `simintech://status`, `simintech://project/blocks`.
+Промпты: `create_pid_model`, `create_rc_chain`.
+
+**Имена параметров блоков короткие** — `a`, `y0`, `x0`, `xn`, `k`, `yk`.
+Перечислить свойства через COM нельзя, поэтому они берутся из каталога
+(`simintech_api/data/block_catalog.json`). Каталог генерируется из реального
+SimInTech: `python scripts/generate_block_catalog.py` (Windows) — см.
+`skills-catalog/simintech-library-curation/`.
 
 Пример использования из ИИ-агента:
 ```
