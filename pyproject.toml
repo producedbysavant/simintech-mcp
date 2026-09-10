@@ -7,11 +7,12 @@ name = "simintech-api"
 version = "0.1.0"
 description = "Python-библиотека для программного управления SimInTech через внешний COM API"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "EVS360" }]
 dependencies = [
-    "comtypes>=1.1.0",
+    # comtypes — только Windows: COM API SimInTech там и работает
+    "comtypes>=1.1.0; sys_platform == 'win32'",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
 ]
