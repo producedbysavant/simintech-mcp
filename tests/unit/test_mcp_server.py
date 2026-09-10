@@ -1,5 +1,6 @@
 """Тесты MCP-сервера: регистрация инструментов и логика без COM."""
 
+import io
 import os
 import sys
 
@@ -19,6 +20,7 @@ async def test_all_tools_registered():
         "status", "disconnect",
         "create_project", "open_project", "save_project", "close_project",
         "add_block", "connect", "list_blocks",
+        "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",
         "list_signals", "get_signal", "set_signal",
         "layout_place", "help_text",
@@ -99,3 +101,275 @@ async def test_render_prompt_rc():
     text = str(rendered)
     assert "create_project" in text
     assert "yk=3.0" in text
+
+
+# ─── Параметры блоков (без COM) ───────────────────────────────────
+
+class _FakeBlock:
+    """Подделка блока: свойства хранятся в словаре."""
+
+    def __init__(self, class_name, props=None):
+        self._class_name = class_name
+        self._props = dict(props or {})
+        self.inited = False
+
+    @property
+    def class_name(self):
+        return self._class_name
+
+    def get_properties(self, catalog=None):
+        from simintech_api.catalog import load_default_catalog
+        source = catalog or load_default_catalog()
+        return {p: self._props[p] for p in source.props_for(self._class_name)
+                if p in self._props}
+
+    def set_property(self, name, value):
+        from simintech_api.utils.converters import value_to_prop_string
+        self._props[name] = value_to_prop_string(value)
+        return self
+
+    def init(self):
+        self.inited = True
+        return self
+
+
+class _FakePage:
+    def __init__(self, blocks):
+        self._blocks = blocks
+
+    def find_block(self, name):
+        return self._blocks.get(name)
+
+
+class _FakeProject:
+    def __init__(self, blocks):
+        self._page = _FakePage(blocks)
+
+    def get_main_page(self):
+        return self._page
+
+
+def _install_fake_project(monkeypatch, blocks):
+    """Подменить открытый проект на подделку с заданными блоками."""
+    from simintech_mcp import server
+    monkeypatch.setattr(server, "_project", _FakeProject(blocks))
+
+
+def _tool_text(result):
+    """Извлечь текст из результата mcp.call_tool() (устойчиво к версиям).
+
+    Разные версии FastMCP возвращают либо кортеж контента, либо объект
+    CallToolResult с полем `.content`.
+    """
+    if isinstance(result, (list, tuple)) and result:
+        return getattr(result[0], "text", str(result[0]))
+    content = getattr(result, "content", None)
+    if content:
+        return getattr(content[0], "text", str(content[0]))
+    return str(result)
+
+
+@pytest.mark.anyio
+async def test_get_block_params_returns_known_props(monkeypatch):
+    """get_block_params читает свойства из каталога."""
+    _install_fake_project(monkeypatch, {
+        "Gain": _FakeBlock("Усилитель", {"Name": "Gain", "a": "2.5"}),
+    })
+
+    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Gain"}))
+
+    assert "Усилитель" in text
+    assert "a = 2.5" in text
+
+
+@pytest.mark.anyio
+async def test_get_block_params_missing_block(monkeypatch):
+    """Несуществующий блок — сообщение, а не исключение."""
+    _install_fake_project(monkeypatch, {})
+
+    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Нет"}))
+
+    assert text.startswith("ERROR")
+    assert "не найден" in text
+
+
+@pytest.mark.anyio
+async def test_get_block_params_unknown_class(monkeypatch):
+    """Класс вне каталога — явное сообщение, а не пустой список."""
+    _install_fake_project(monkeypatch, {
+        "X": _FakeBlock("Неизвестный класс", {"a": "1"}),
+    })
+
+    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "X"}))
+
+    assert "неизвестны" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_applies_and_inits(monkeypatch):
+    """set_block_param меняет свойство и переинициализирует блок."""
+    block = _FakeBlock("Усилитель", {"a": "1"})
+    _install_fake_project(monkeypatch, {"Gain": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param", {"name": "Gain", "param": "a", "value": "3.5"}))
+
+    assert block._props["a"] == "3.5"
+    assert block.inited is True
+    assert "ERROR" not in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_accepts_array(monkeypatch):
+    """Массив в стиле SimInTech разбирается в список."""
+    block = _FakeBlock("Сумматор", {})
+    _install_fake_project(monkeypatch, {"Sum": block})
+
+    await mcp.call_tool(
+        "set_block_param", {"name": "Sum", "param": "a", "value": "[1, -1]"})
+
+    assert block._props["a"] == "[1, -1]"
+
+
+@pytest.mark.anyio
+async def test_set_block_param_warns_on_unknown_param(monkeypatch):
+    """Неизвестный параметр — предупреждение (отказ был бы молчаливым)."""
+    block = _FakeBlock("Усилитель", {})
+    _install_fake_project(monkeypatch, {"Gain": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param", {"name": "Gain", "param": "неттакого", "value": "1"}))
+
+    assert "неттакого" in text
+    assert "отсутствует в каталоге" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_missing_block(monkeypatch):
+    _install_fake_project(monkeypatch, {})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param", {"name": "Нет", "param": "a", "value": "1"}))
+
+    assert text.startswith("ERROR")
+
+
+def test_coerce_param_value_parses_scalars():
+    from simintech_mcp.server import _coerce_param_value
+
+    assert _coerce_param_value("2") == 2
+    assert _coerce_param_value("2.5") == 2.5
+    assert _coerce_param_value(" -3 ") == -3
+    assert _coerce_param_value("текст") == "текст"
+
+
+def test_coerce_param_value_parses_arrays():
+    from simintech_mcp.server import _coerce_param_value
+
+    assert _coerce_param_value("[1, -1]") == [1, -1]
+    assert _coerce_param_value("[1.5,2]") == [1.5, 2]
+    assert _coerce_param_value("[]") == []
+
+
+# ─── Изоляция stdout ──────────────────────────────────────────────
+
+class _FakeStdout(io.StringIO):
+    """Подделка stdout: текстовый поток плюс отдельный бинарный «буфер».
+
+    Повторяет структуру настоящего sys.stdout, у которого есть `.buffer` —
+    именно через него транспорт MCP пишет JSON-RPC.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.buffer = io.StringIO()
+
+
+def _install_fake_streams(monkeypatch):
+    """Подменить sys.stdout/sys.stderr и вернуть (stdout, stderr)."""
+    real = _FakeStdout()
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", real)
+    monkeypatch.setattr(sys, "stderr", err)
+    return real, err
+
+
+def test_stdout_guard_routes_text_to_stderr(monkeypatch):
+    """Посторонний вывод уходит в stderr, а .buffer остаётся настоящим."""
+    from simintech_mcp.server import isolate_stdout
+
+    real, err = _install_fake_streams(monkeypatch)
+    isolate_stdout()
+
+    # Транспорт MCP пишет протокол через sys.stdout.buffer.
+    sys.stdout.buffer.write('{"jsonrpc": "2.0"}\n')
+    # Посторонний вывод — print() из библиотеки, логов, предупреждений.
+    print("диагностика")
+
+    assert real.buffer.getvalue() == '{"jsonrpc": "2.0"}\n'
+    assert "диагностика" not in real.buffer.getvalue()
+    assert "диагностика" in err.getvalue()
+    assert real.getvalue() == ""  # в текстовый stdout не попало ничего
+
+
+def test_stdout_guard_keeps_buffer_identity(monkeypatch):
+    """`.buffer` прокси — тот же объект, что и до изоляции."""
+    from simintech_mcp.server import isolate_stdout
+
+    real, _ = _install_fake_streams(monkeypatch)
+    buffer_before = sys.stdout.buffer
+
+    isolate_stdout()
+
+    assert sys.stdout.buffer is buffer_before
+
+
+def test_isolate_stdout_idempotent(monkeypatch):
+    """Повторный вызов не оборачивает прокси второй раз."""
+    from simintech_mcp.server import isolate_stdout
+
+    _install_fake_streams(monkeypatch)
+    isolate_stdout()
+    first = sys.stdout
+    isolate_stdout()
+
+    assert sys.stdout is first
+
+
+def test_stdout_guard_survives_flush_and_isatty(monkeypatch):
+    """Служебные методы потока не падают и не пишут в stdout."""
+    from simintech_mcp.server import isolate_stdout
+
+    real, _ = _install_fake_streams(monkeypatch)
+    isolate_stdout()
+
+    sys.stdout.flush()
+    assert sys.stdout.isatty() is False
+    assert real.getvalue() == ""
+
+
+def test_stdout_guard_private_attr_raises_without_recursion(monkeypatch):
+    """Приватные имена не делегируются — иначе возможна бесконечная рекурсия."""
+    from simintech_mcp.server import isolate_stdout
+
+    _install_fake_streams(monkeypatch)
+    isolate_stdout()
+
+    with pytest.raises(AttributeError):
+        sys.stdout._nonexistent_attr
+
+
+def test_main_isolates_stdout_before_run(monkeypatch):
+    """main() включает изоляцию ДО запуска транспорта."""
+    from simintech_mcp import server
+
+    _install_fake_streams(monkeypatch)
+    seen = {}
+
+    def fake_run(**kwargs):
+        seen["guard_installed"] = isinstance(sys.stdout, server._StdoutGuard)
+
+    monkeypatch.setattr(server.mcp, "run", fake_run)
+    server.main()
+
+    assert seen["guard_installed"] is True

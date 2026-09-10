@@ -13,11 +13,15 @@ authors = [{ name = "EVS360" }]
 dependencies = [
     "comtypes>=1.1.0",
     "mcp>=1.0.0",
+    "fastmcp>=2.0",
 ]
 
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
+    # Маркер @pytest.mark.anyio из tests/unit/test_mcp_server.py регистрирует
+    # плагин, встроенный в anyio. Пакет pytest-anyio не нужен — это заглушка.
+    "anyio>=4.0",
 ]
 
 [project.scripts]
@@ -32,6 +36,10 @@ packages = [
     "simintech_api.utils",
     "simintech_mcp",
 ]
+
+[tool.setuptools.package-data]
+# Каталог свойств блоков читается из пакета во время работы
+simintech_api = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

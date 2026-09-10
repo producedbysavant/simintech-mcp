@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from ..exceptions import PortError
 from ..utils.converters import value_to_prop_string
@@ -64,6 +64,41 @@ class Block:
     def get_property(self, name: str) -> str:
         """Прочитать свойство блока как строку."""
         return _as_str(self.client.call("GetBlockPropAsString", self._id, name))
+
+    def get_properties(self, catalog=None) -> Dict[str, str]:
+        """Прочитать известные свойства блока.
+
+        COM API не умеет перечислять свойства блока (нет `GetPropCount`/
+        `GetPropName`), поэтому читаются только имена из каталога
+        (`simintech_api.catalog`). Свойства, чтение которых не удалось
+        (например, отсутствующие у этого варианта блока), в результат не
+        попадают — их отсутствие не отличимо от пустого значения.
+
+        Args:
+            catalog: каталог для использования; по умолчанию — загруженный
+                из `data/block_catalog.json`.
+        """
+        from ..catalog import load_default_catalog
+
+        source = catalog if catalog is not None else load_default_catalog()
+        result: Dict[str, str] = {}
+        for prop in source.props_for(self.class_name):
+            try:
+                result[prop] = self.get_property(prop)
+            except Exception:
+                continue
+        return result
+
+    def init(self) -> "Block":
+        """Переинициализировать блок (`InitBlock`).
+
+        Нужно после изменения параметров: `SetBlockProp` меняет значение
+        свойства, но уже инициализированные блоки (например, «Константа»)
+        продолжают считать по старому значению — карта COM API прямо
+        отмечает, что `SetBlockProp("a")` может не влиять на расчёт.
+        """
+        self.client.call("InitBlock", self._id)
+        return self
 
     def get_points(self) -> str:
         """Сырое значение свойства Points (строка SimInTech)."""
