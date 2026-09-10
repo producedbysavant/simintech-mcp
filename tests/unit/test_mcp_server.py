@@ -134,11 +134,47 @@ class _FakeBlock:
 
 
 class _FakePage:
-    def __init__(self, blocks):
+    def __init__(self, blocks, created=None):
         self._blocks = blocks
+        self._created = created if created is not None else []
 
     def find_block(self, name):
         return self._blocks.get(name)
+
+    def create_block(self, class_name, x, y):
+        block = _RenamingBlock(class_name)
+        self._created.append(block)
+        return block
+
+
+class _RenamingBlock:
+    """Блок, который НЕ переименовывается — как реальный SimInTech."""
+
+    AUTO_NAME = "k_0"
+
+    def __init__(self, class_name):
+        self._class_name = class_name
+        self._props = {"Name": self.AUTO_NAME}
+
+    @property
+    def id(self):
+        return 1
+
+    @property
+    def class_name(self):
+        return self._class_name
+
+    def set_name(self, name):
+        # Проверено на SimInTech64: SetBlockProp("Name") не переименовывает
+        # блок — имя остаётся автоматическим.
+        return self
+
+    def set_property(self, name, value):
+        self._props[name] = value
+        return self
+
+    def get_name(self):
+        return self._props["Name"]
 
 
 class _FakeProject:
@@ -269,6 +305,91 @@ def test_coerce_param_value_parses_arrays():
     assert _coerce_param_value("[1, -1]") == [1, -1]
     assert _coerce_param_value("[1.5,2]") == [1.5, 2]
     assert _coerce_param_value("[]") == []
+
+
+# ─── add_block: имя не применяется ────────────────────────────────
+
+class _FakeProjectWithCreate:
+    def __init__(self):
+        self.page = _FakePage({})
+
+    def get_main_page(self):
+        return self.page
+
+
+@pytest.mark.anyio
+async def test_add_block_warns_when_rename_ignored(monkeypatch):
+    """Если имя не применилось, инструмент сообщает об этом и даёт автоимя.
+
+    Иначе агент получит «name=Src», а блок будет называться k_0 — и
+    последующий connect по имени не найдёт блок.
+    """
+    from simintech_mcp import server
+    monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
+
+    text = _tool_text(await mcp.call_tool(
+        "add_block", {"class_name": "Константа", "name": "Src"}))
+
+    assert "НЕ применилось" in text
+    assert "k_0" in text
+
+
+@pytest.mark.anyio
+async def test_add_block_reports_auto_name(monkeypatch):
+    """Без name= инструмент возвращает фактическое автоимя."""
+    from simintech_mcp import server
+    monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
+
+    text = _tool_text(await mcp.call_tool(
+        "add_block", {"class_name": "Константа"}))
+
+    assert "k_0" in text
+    assert "НЕ применилось" not in text
+
+
+def test_com_threaded_uses_single_dedicated_thread():
+    """Все COM-вызовы идут через один поток.
+
+    COM-объект привязан к апартаменту создавшего его потока; использование
+    из другого потока даёт «Объект не подключен к серверу». Проверено на
+    реальном SimInTech.
+    """
+    from simintech_mcp.server import _com_threaded
+
+    @_com_threaded
+    def whoami():
+        import threading
+        return threading.get_ident()
+
+    assert whoami() == whoami() == whoami()
+
+
+def test_com_threaded_returns_result_and_propagates_error():
+    from simintech_mcp.server import _com_threaded
+
+    @_com_threaded
+    def add(a, b):
+        return a + b
+
+    @_com_threaded
+    def boom():
+        raise ValueError("нет проекта")
+
+    assert add(2, 3) == 5
+    with pytest.raises(ValueError, match="нет проекта"):
+        boom()
+
+
+def test_com_threaded_preserves_signature():
+    """functools.wraps сохраняет сигнатуру — иначе FastMCP не увидит аргументы."""
+    from simintech_mcp.server import _com_threaded
+
+    @_com_threaded
+    def sample(name: str, count: int = 1) -> str:
+        return name * count
+
+    import inspect
+    assert list(inspect.signature(sample).parameters) == ["name", "count"]
 
 
 # ─── Изоляция stdout ──────────────────────────────────────────────

@@ -44,14 +44,30 @@ class Block:
 
     @property
     def class_name(self) -> str:
-        """Имя класса блока (кэшируется при создании; иначе — GetBlockPluginName)."""
+        """Имя класса блока (например, «Усилитель»).
+
+        Кэшируется при создании через `Page.create_block`. Для блока, взятого
+        из `Page.get_blocks()`, определяется чтением свойства `ClassName`:
+        оно содержит русское имя класса. Запасной путь — `GetBlockPluginName`,
+        но он возвращает внутреннее имя плагина (`TMBTYBlock`), которое с
+        именами классов в каталоге не совпадает.
+        """
         if self._class_name is None:
-            try:
-                self._class_name = _as_str(self.client.call(
-                    "GetBlockPluginName", self._id))
-            except Exception:
-                self._class_name = ""
+            self._class_name = self._detect_class_name()
         return self._class_name
+
+    def _detect_class_name(self) -> str:
+        """Определить имя класса: свойство `ClassName`, иначе имя плагина."""
+        try:
+            name = self.get_property("ClassName")
+            if name:
+                return name
+        except Exception:
+            pass
+        try:
+            return _as_str(self.client.call("GetBlockPluginName", self._id))
+        except Exception:
+            return ""
 
     # ─── Свойства ───────────────────────────────────────────────────
 

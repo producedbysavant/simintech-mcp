@@ -71,6 +71,13 @@ class COMClient:
                 "Библиотека comtypes не установлена: pip install comtypes"
             ) from exc
 
+        # COM инициализируется ПО ПОТОКАМ. comtypes вызывает CoInitializeEx
+        # при импорте, но только для импортировавшего потока. Асинхронные
+        # серверы (например, MCP/FastMCP) выполняют синхронные инструменты в
+        # рабочих потоках — там COM не инициализирован, и CreateObject падает
+        # с «Не был произведён вызов CoInitialize» (CO_E_NOTINITIALIZED).
+        _ensure_com_initialized()
+
         # Список идентификаторов для перебора
         if self._com_progid:
             candidates = [self._com_progid]
@@ -193,6 +200,39 @@ class COMClient:
             return desc
         # comtypes может вернуть кортеж из [out]-структуры — восстановим
         return _to_descriptor(desc)
+
+
+# RPC_E_CHANGED_MODE: поток уже инициализирован COM в другом режиме.
+# Это не ошибка — работать можно, просто режим другой.
+_RPC_E_CHANGED_MODE = -2147417850
+
+
+def _ensure_com_initialized() -> None:
+    """Инициализировать COM для ТЕКУЩЕГО потока (идемпотентно).
+
+    COM инициализируется по потокам. `comtypes` вызывает `CoInitializeEx`
+    при импорте, но только для импортировавшего потока. Серверы, выполняющие
+    синхронные обработчики в пуле потоков (MCP/FastMCP, любые async-обёртки),
+    попадают в поток без инициализации — `CreateObject` там падает с
+    `CO_E_NOTINITIALIZED` («Не был произведён вызов CoInitialize»).
+
+    Повторный вызов на уже инициализированном потоке безопасен: `CoInitializeEx`
+    увеличивает счётчик и не переключает режим. `CoUninitialize` намеренно не
+    вызывается — потоки пула переиспользуются, и разбалансировка счётчика
+    опаснее, чем неизрасходованный ресурс на время жизни процесса.
+    """
+    try:
+        import comtypes
+    except ImportError:  # pragma: no cover — только Windows
+        return
+    try:
+        comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
+    except OSError as exc:
+        winerror = getattr(exc, "winerror", None)
+        if winerror is None:
+            winerror = getattr(exc, "args", [None])[0]
+        if winerror != _RPC_E_CHANGED_MODE:
+            raise
 
 
 def _as_int(value: Any) -> int:

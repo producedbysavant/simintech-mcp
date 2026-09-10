@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import functools
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from fastmcp import FastMCP
@@ -52,9 +54,30 @@ def _ensure_project() -> Project:
     return _project
 
 
+# ─── Поток для COM ────────────────────────────────────────────────
+
+# COM-объект привязан к апартаменту создавшего его потока. Использование его
+# из другого потока даёт «Объект не подключен к серверу» (CO_E_OBJNOTCONNECTED),
+# а то и зависание. FastMCP выполняет синхронные инструменты в пуле потоков и
+# чередует их, поэтому все обращения к COM идут через ОДИН выделенный поток:
+# клиент и проект создаются и используются в нём же.
+_COM_EXECUTOR = ThreadPoolExecutor(max_workers=1,
+                                   thread_name_prefix="simintech-com")
+
+
+def _com_threaded(fn):
+    """Выполнить функцию в выделенном COM-потоке и дождаться результата."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return _COM_EXECUTOR.submit(fn, *args, **kwargs).result()
+
+    return wrapper
+
+
 # ─── Подключение ──────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def status() -> str:
     """Проверить доступность COM-сервера SimInTech (Windows)."""
     if sys.platform != "win32":
@@ -68,6 +91,7 @@ def status() -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def disconnect() -> str:
     """Отсоединиться от COM-сервера SimInTech (не закрывая приложение)."""
     global _client
@@ -81,6 +105,7 @@ def disconnect() -> str:
 # ─── Проекты ──────────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def create_project(name: str = "model") -> str:
     """Создать новый проект SimInTech."""
     global _project
@@ -90,6 +115,7 @@ def create_project(name: str = "model") -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def open_project(path: str) -> str:
     """Открыть существующий проект SimInTech (.prt/.xprt)."""
     global _project
@@ -99,6 +125,7 @@ def open_project(path: str) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def save_project(path: str) -> str:
     """Сохранить текущий проект в XML (.xprt)."""
     _ensure_project().save_xml(path)
@@ -106,6 +133,7 @@ def save_project(path: str) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def close_project() -> str:
     """Закрыть текущий проект."""
     global _project
@@ -119,6 +147,7 @@ def close_project() -> str:
 # ─── Блоки и связи ────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def add_block(class_name: str, name: str = "",
               x: float = 0.0, y: float = 0.0,
               props: str = "") -> str:
@@ -130,7 +159,10 @@ def add_block(class_name: str, name: str = "",
             'Ступенька', 'Временной график').
         name: имя блока (опционально).
         x, y: координаты центра блока.
-        props: свойства через запятую, напр. 'a=2, y0=5'.
+        props: параметры через запятую, напр. 'a=2' или 'a=[1, -1]'.
+            Имена короткие и различаются по классам: у «Константы» — `a`
+            (не `y0`), у «Сумматора» — `a` (число входов = длина массива).
+            Неизвестное имя принимается без ошибки и ни на что не влияет.
     """
     page = _ensure_project().get_main_page()
     block = page.create_block(class_name, x, y)
@@ -142,11 +174,22 @@ def add_block(class_name: str, name: str = "",
             if "=" in pair:
                 k, _, v = pair.partition("=")
                 block.set_property(k.strip(), _parse_val(v.strip()))
-    block_name = name or block.get_name()
-    return f"Блок '{class_name}' создан (id={block.id}, name={block_name})"
+
+    actual = block.get_name()
+    if name and actual != name:
+        # Проверено на SimInTech64: SetBlockProp("Name") НЕ переименовывает
+        # блок — имя остаётся автоматическим (k_0, kx_0, ...), ни в
+        # get_name(), ни в .xprt. Молчаливое расхождение опаснее отказа:
+        # последующий connect по имени не найдёт блок.
+        return (f"Блок '{class_name}' создан (id={block.id}); имя '{name}' "
+                f"НЕ применилось — блок называется '{actual}'. "
+                f"Переименование через COM не поддерживается. Используйте "
+                f"'{actual}' в connect/get_signal/get_block_params.")
+    return f"Блок '{class_name}' создан (id={block.id}, name={actual})"
 
 
 @mcp.tool()
+@_com_threaded
 def connect(src: str, dst: str,
             out_index: int = 0, in_index: int = 0) -> str:
     """Соединить выход блока src с входом блока dst линией связи.
@@ -169,6 +212,7 @@ def connect(src: str, dst: str,
 
 
 @mcp.tool()
+@_com_threaded
 def list_blocks() -> str:
     """Вывести список блоков текущей страницы проекта."""
     blocks = _ensure_project().get_main_page().get_blocks()
@@ -186,11 +230,14 @@ def list_blocks() -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def get_block_params(name: str) -> str:
     """Прочитать параметры блока по имени.
 
     COM API не умеет перечислять свойства блока, поэтому читаются имена из
-    каталога блоков. Имена короткие: `a`, `y0`, `x0`, `xn`, `k`, `yk`.
+    каталога блоков (`simintech_api/data/block_catalog.json`). Имена короткие
+    и различаются по классам: у «Константы» `a`, у «Ступеньки» `t`/`y0`/`yk`,
+    у «Интегратора» `k`/`x0`.
 
     Args:
         name: имя блока на главной странице проекта.
@@ -213,6 +260,7 @@ def get_block_params(name: str) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def set_block_param(name: str, param: str, value: str) -> str:
     """Установить параметр блока и переинициализировать блок.
 
@@ -222,7 +270,7 @@ def set_block_param(name: str, param: str, value: str) -> str:
 
     Args:
         name: имя блока на главной странице.
-        param: имя параметра (`a`, `y0`, `x0`, `xn`, `k`, `yk`).
+        param: имя параметра блока (см. `get_block_params`).
         value: значение строкой; массивы — в стиле SimInTech, напр. '[1, -1]'.
     """
     page = _ensure_project().get_main_page()
@@ -248,6 +296,7 @@ def set_block_param(name: str, param: str, value: str) -> str:
 # ─── Расчёт ───────────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def run(to_time: Optional[float] = None) -> str:
     """Запустить расчёт проекта (опционально до момента времени).
 
@@ -264,6 +313,7 @@ def run(to_time: Optional[float] = None) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def step(count: int = 1) -> str:
     """Выполнить указанное число шагов расчёта."""
     sim = _ensure_project().simulation()
@@ -274,6 +324,7 @@ def step(count: int = 1) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def stop() -> str:
     """Остановить расчёт."""
     _ensure_project().simulation().stop()
@@ -281,6 +332,7 @@ def stop() -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def get_time() -> float:
     """Вернуть текущее модельное время проекта."""
     return _ensure_project().simulation().get_time()
@@ -289,6 +341,7 @@ def get_time() -> float:
 # ─── Сигналы ──────────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def list_signals() -> str:
     """Вывести список сигналов проекта (внешние + имена блоков из XML)."""
     prj = _ensure_project()
@@ -301,6 +354,7 @@ def list_signals() -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def get_signal(name: str) -> str:
     """Прочитать значение сигнала по имени блока.
 
@@ -316,6 +370,7 @@ def get_signal(name: str) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def set_signal(name: str, value: float) -> str:
     """Записать значение в сигнал (по имени блока).
 
@@ -334,6 +389,7 @@ def set_signal(name: str, value: float) -> str:
 # ─── Утилиты ──────────────────────────────────────────────────────
 
 @mcp.tool()
+@_com_threaded
 def layout_place(block_ids: str, connections: str) -> str:
     """Автоматически расставить блоки без наложений (LayeredPlacer).
 
@@ -356,6 +412,7 @@ def layout_place(block_ids: str, connections: str) -> str:
 
 
 @mcp.tool()
+@_com_threaded
 def help_text() -> str:
     """Справка: список доступных команд MCP-сервера."""
     return (

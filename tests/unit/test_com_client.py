@@ -62,6 +62,42 @@ class FakeServer:
         self.calls.append(("CloseProject", project_id))
 
 
+def test_connect_initializes_com_for_current_thread(monkeypatch):
+    """connect() инициализирует COM в текущем потоке.
+
+    COM привязан к потоку. Серверы, выполняющие обработчики в пуле потоков
+    (MCP/FastMCP), без этого падают с CO_E_NOTINITIALIZED («Не был произведён
+    вызов CoInitialize»). Проверено на реальном SimInTech.
+    """
+    fake = FakeServer()
+    calls = []
+    client = _make_client(monkeypatch, fake)
+    fake_comtypes = sys.modules["comtypes"]
+    fake_comtypes.CoInitializeEx = lambda mode: calls.append(mode)
+
+    client.connect()
+
+    assert calls == [fake_comtypes.COINIT_APARTMENTTHREADED]
+
+
+def test_connect_tolerates_changed_apartment_mode(monkeypatch):
+    """RPC_E_CHANGED_MODE не считается ошибкой: поток уже инициализирован."""
+    fake = FakeServer()
+    _install_fake_comtypes(monkeypatch, fake)
+
+    def raise_changed_mode(mode):
+        exc = OSError("changed mode")
+        exc.winerror = -2147417850
+        raise exc
+
+    sys.modules["comtypes"].CoInitializeEx = raise_changed_mode
+
+    client = _make_client(monkeypatch, fake)
+    client.connect()  # не должно бросить
+
+    assert client.connected
+
+
 def _install_fake_comtypes(monkeypatch, fake: FakeServer):
     """Подменить comtypes и comtypes.client в sys.modules фейками."""
     fake_comtypes = types.ModuleType("comtypes")
@@ -81,6 +117,10 @@ def _install_fake_comtypes(monkeypatch, fake: FakeServer):
     fake_comtypes.Structure = FakeStructure
     fake_comtypes.c_int64 = "int"
     fake_comtypes.c_long = "int"
+    # COM инициализируется по потокам; connect() вызывает CoInitializeEx.
+    fake_comtypes.COINIT_APARTMENTTHREADED = 2
+    fake_comtypes.COINIT_MULTITHREADED = 0
+    fake_comtypes.CoInitializeEx = lambda mode: None
 
     monkeypatch.setitem(sys.modules, "comtypes", fake_comtypes)
     monkeypatch.setitem(sys.modules, "comtypes.client", fake_client)
