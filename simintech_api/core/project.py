@@ -91,7 +91,14 @@ class Project:
         """
         desc = self._client.find_signal(name, self._id)
         if not desc.is_valid:
-            raise SignalError(f"Сигнал '{name}' не найден в проекте")
+            raise SignalError(
+                f"Сигнал '{name}' не найден в проекте. Обмен данными идёт "
+                f"через список сигналов проекта и подключённую базу сигналов; "
+                f"у проекта без базы их нет, и имя блока сигналом не является. "
+                f"Проверьте GetProjectDB и список сигналов "
+                f"(list_signals): записи с source='xml' — это имена блоков, "
+                f"они не читаются."
+            )
         return desc
 
     def signal(self, name: str) -> "Signal":  # noqa: F821 — Signal импортируется ниже
@@ -102,18 +109,19 @@ class Project:
     def list_signals(self) -> List[SignalInfo]:
         """Получить список сигналов проекта.
 
-        Пытается получить список двумя путями:
-        1. GetProjectSignalList — возвращает только ВНЕШНИЕ (обменные)
-           сигналы (блоки «Вход/Выход алгоритма»);
-        2. Если список пуст — экспортирует проект в .xprt и извлекает
-           имена блоков (в SimInTech сигнал блока именуется по имени блока).
+        Два источника, различимых по `SignalInfo.source`:
 
-        Для моделей без внешних интерфейсов COM-список пуст; тогда
-        возвращаются сигналы, извлечённые из XML (без дескриптора — их
-        нужно запросить через signal(name)/find_signal(name)).
+        1. ``"com"`` — `GetProjectSignalList` → `GetListCount` →
+           `GetDataInfoFromList`. Это настоящие сигналы, у них есть
+           дескриптор, и `Signal.read()` по ним работает.
+        2. ``"xml"`` — если COM-список пуст, имена извлекаются из .xprt.
+           Это **имена блоков, а не сигналы**: `readable` у них ``False``,
+           прочитать значение нельзя. Возвращаются как подсказка о том, что
+           есть на схеме, а не как пригодные к чтению сигналы.
 
-        Важно: COM-список может требовать предварительной инициализации
-        проекта (sim.start()).
+        У проекта, созданного `Project.new()`, список обычно пуст: обмен
+        идёт через базу сигналов, а её к такому проекту не подключают
+        (`GetProjectDB` → `(None, None)`). Проверено на SimInTech64.
         """
         from ..utils.converters import _to_descriptor
         result: List[SignalInfo] = []
@@ -129,11 +137,15 @@ class Project:
             ))
         if result:
             return result
-        # Fallback: имена сигналов из XML-представления проекта
+        # Запасной путь: имена блоков из XML. Это НЕ сигналы — помечаем
+        # источником "xml", чтобы вызывающий код не принял их за читаемые.
         try:
             from ..utils.xprt_signals import extract_signal_names_from_project
             names = extract_signal_names_from_project(self)
-            result = [SignalInfo(name=nm, caption="") for nm in names]
+            result = [
+                SignalInfo(name=nm, caption="", descriptor=None, source="xml")
+                for nm in names
+            ]
         except Exception:
             pass
         return result

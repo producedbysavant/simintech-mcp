@@ -49,11 +49,29 @@ class TDataDescriptor(Structure):
 
 @dataclass
 class SignalInfo:
-    """Информация о сигнале проекта (из GetDataInfoFromList)."""
+    """Информация о сигнале проекта (из GetDataInfoFromList).
+
+    Args:
+        name: имя сигнала.
+        caption: подпись.
+        descriptor: COM-дескриптор; без него прочитать значение нельзя.
+        source: откуда запись получена — ``"com"`` (список сигналов проекта)
+            или ``"xml"`` (имена блоков из .xprt, **не** сигналы).
+    """
 
     name: str
     caption: str
     descriptor: Optional[TDataDescriptor] = None
+    source: str = "com"
+
+    @property
+    def readable(self) -> bool:
+        """Можно ли прочитать значение этого сигнала.
+
+        ``False`` для имён, извлечённых из XML: это имена блоков, а не
+        элементы данных, и `Project.signal()` по ним не сработает.
+        """
+        return self.descriptor is not None
 
 
 @dataclass

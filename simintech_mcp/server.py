@@ -348,14 +348,31 @@ def get_time() -> float:
 @mcp.tool()
 @_com_threaded
 def list_signals() -> str:
-    """Вывести список сигналов проекта (внешние + имена блоков из XML)."""
+    """Вывести читаемые сигналы проекта и имена блоков отдельно.
+
+    Сигналы (source='com') имеют дескриптор и читаются через `get_signal`.
+    Имена блоков из XML читать нельзя — это подсказка о содержимом схемы.
+    """
     prj = _ensure_project()
     signals = prj.list_signals()
     if not signals:
-        return "Сигналов нет (модель без внешних интерфейсов)"
-    lines = [f"  {s.name}" for s in signals[:50]]
-    more = f"\n  ... и ещё {len(signals) - 50}" if len(signals) > 50 else ""
-    return "Сигналы:\n" + "\n".join(lines) + more
+        return ("Сигналов нет. Обмен идёт через базу сигналов проекта; у этой "
+                "модели она не подключена, поэтому читать нечего.")
+
+    readable = [s for s in signals if s.readable]
+    names_only = [s for s in signals if not s.readable]
+
+    parts = []
+    if readable:
+        parts.append("Читаемые сигналы:\n" + "\n".join(
+            f"  {s.name}" for s in readable[:50]))
+    else:
+        parts.append("Читаемых сигналов нет: у проекта не подключена база "
+                     "сигналов, поэтому get_signal работать не будет.")
+    if names_only:
+        parts.append("Имена блоков на схеме (НЕ читаются через get_signal):\n"
+                     + "\n".join(f"  {s.name}" for s in names_only[:50]))
+    return "\n\n".join(parts)
 
 
 @mcp.tool()
