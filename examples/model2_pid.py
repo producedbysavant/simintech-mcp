@@ -57,6 +57,9 @@ def main() -> None:
     # Сумматор ПИД: u = P + I + D
     pid_sum = page.create_block("Сумматор", 520, -120)
     pid_sum.set_property("Name", "PID")
+    # Входов у «Сумматора» по умолчанию два; задать более длинный `a`
+    # недостаточно — число портов меняется только через SetPortCount.
+    pid_sum.set_in_port_count(3)
     pid_sum.set_property("a", [1.0, 1.0, 1.0])
 
     # Объект управления — интегратор
@@ -85,10 +88,28 @@ def main() -> None:
     sim = prj.simulation()
     sim.start()
 
-    # Шаговый расчёт с чтением выхода
-    signals = {s.name: s for s in prj.list_signals()}
-    out_name = _find_signal(signals, "Plant")
-    print(f"Сигнал выхода объекта: {out_name}")
+    # Шаговый расчёт с чтением выхода.
+    # ВНИМАНИЕ: чтение внутренних сигналов блоков через COM не работает —
+    # FindSignalData их не находит (см. REPORT.md, пропущенный
+    # test_read_write_signal). Список имён получить можно, а читаемое
+    # значение — нет, поэтому явно сообщаем, а не пишем молча nan.
+    names = [s.name for s in prj.list_signals()]
+    out_name = _find_signal(names, "Plant")
+    signal = None
+    if out_name:
+        try:
+            signal = prj.signal(out_name)
+        except Exception as exc:
+            print(f"Чтение сигнала '{out_name}' недоступно: {exc}")
+
+    if signal is None:
+        sim.stop()
+        prj.close()
+        client.shutdown()
+        print("Схема ПИД построена, но выгрузка переходной характеристики "
+              "невозможна: чтение внутренних сигналов через COM не "
+              "поддерживается. Список имён: " + ", ".join(names))
+        return
 
     csv_path = os.path.join(os.path.dirname(__file__), "model2_pid.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
@@ -97,11 +118,7 @@ def main() -> None:
         t = 0.0
         while t <= T_FINAL:
             sim.step()
-            try:
-                y = signals[out_name].read()
-            except Exception:
-                y = float("nan")
-            writer.writerow([f"{t:.2f}", f"{y:.6f}"])
+            writer.writerow([f"{t:.2f}", f"{signal.read():.6f}"])
             t += DT
 
     sim.stop()
@@ -113,14 +130,14 @@ def main() -> None:
           "ошибки (интегральная составляющая).")
 
 
-def _find_signal(signals: dict, block_name: str) -> str:
+def _find_signal(names: list, block_name: str) -> str:
     """Найти имя сигнала по имени блока (точное или по подстроке)."""
-    if block_name in signals:
+    if block_name in names:
         return block_name
-    for name in signals:
+    for name in names:
         if block_name.lower() in name.lower():
             return name
-    return next(iter(signals), "")
+    return ""
 
 
 if __name__ == "__main__":

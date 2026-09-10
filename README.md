@@ -196,6 +196,23 @@ python -m pytest tests/integration -m integration
 - `docs/reference/com_api_inventory.md` — полная карта методов `IMVTU_Server`
   (CLSID, IID, сигнатуры, статусы проверки) и типы данных.
 
+### Официальная справка SimInTech (help.simintech.ru)
+
+Первоисточник по всем вопросам SimInTech — электронная справка. Полезные разделы:
+
+| Раздел | Ссылка |
+|---|---|
+| API SimInTech — обзор | https://help.simintech.ru/27_SimInTech_api/KEY_SimInTech_api.html |
+| API — формат и параметры | https://help.simintech.ru/27_SimInTech_api/DIR_api.html |
+| Командная строка (`mmain.exe`, `/run`, `/macros`) | https://help.simintech.ru/27_SimInTech_api/DIR_komandnaya_stroka.html |
+| Библиотеки блоков | https://help.simintech.ru/10_biblioteki_blokov/KEY_biblioteki_blokov.html |
+| Работа с библиотеками блоков | https://help.simintech.ru/10_biblioteki_blokov/DIR_obsh_inform_po_rabote_s_bibliotek_blokov.html |
+| Язык программирования SimInTech | https://help.simintech.ru/11_yazyk_programmirovaniya/KEY_yazik_programmirovania.html |
+
+Вендорные материалы из поставки SimInTech (`SIT_SimInTech_Vneshnij_API.pdf`,
+`source/exe/mmain.hpp`) в репозиторий не включены — они доступны локально, а
+официальный первоисточник — справка выше.
+
 ## Смежные репозитории
 
 - Официальная спецификация COM API — `SIT_SimInTech_Vneshnij_API.pdf` и

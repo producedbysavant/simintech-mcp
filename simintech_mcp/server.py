@@ -150,7 +150,7 @@ def close_project() -> str:
 @_com_threaded
 def add_block(class_name: str, name: str = "",
               x: float = 0.0, y: float = 0.0,
-              props: str = "") -> str:
+              props: str = "", in_ports: int = 0) -> str:
     """Добавить блок на главную страницу проекта.
 
     Args:
@@ -161,13 +161,18 @@ def add_block(class_name: str, name: str = "",
         x, y: координаты центра блока.
         props: параметры через запятую, напр. 'a=2' или 'a=[1, -1]'.
             Имена короткие и различаются по классам: у «Константы» — `a`
-            (не `y0`), у «Сумматора» — `a` (число входов = длина массива).
-            Неизвестное имя принимается без ошибки и ни на что не влияет.
+            (не `y0`), у «Сумматора» — `a` (веса входов). Неизвестное имя
+            принимается без ошибки и ни на что не влияет.
+        in_ports: число входных портов (0 — не менять). Нужно для блоков с
+            настраиваемым числом входов: у «Сумматора» их по умолчанию два,
+            и более длинный `a` сам по себе портов не добавляет.
     """
     page = _ensure_project().get_main_page()
     block = page.create_block(class_name, x, y)
     if name:
         block.set_name(name)
+    if in_ports:
+        block.set_in_port_count(in_ports)
     if props:
         for pair in props.split(","):
             pair = pair.strip()
@@ -475,7 +480,8 @@ def create_pid_model(kp: float = 1.0, ki: float = 0.5,
         f"4. add_block \"Усилитель\" name=\"Kp\" props=\"a={kp}\"\n"
         f"5. add_block \"Усилитель\" name=\"Ki\" props=\"a={ki}\"\n"
         f"6. add_block \"Усилитель\" name=\"Kd\" props=\"a={kd}\"\n"
-        f"7. add_block \"Сумматор\" name=\"PID\" props=\"a=[1.0,1.0,1.0]\"\n"
+        f"7. add_block \"Сумматор\" name=\"PID\" in_ports=3 "
+        f"props=\"a=[1.0,1.0,1.0]\"\n"
         f"8. add_block \"Интегратор\" name=\"Plant\" props=\"k=1.0,x0=0.0\"\n"
         f"9. connect \"Step\" to \"Err\"\n"
         f"10. connect \"Err\" to \"Kp\", \"Err\" to \"Ki\", \"Err\" to \"Kd\"\n"

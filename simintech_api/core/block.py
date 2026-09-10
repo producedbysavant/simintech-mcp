@@ -212,6 +212,31 @@ class Block:
                 break
         return result
 
+    def set_in_port_count(self, count: int) -> "Block":
+        """Задать число входных портов (`SetPortCount`).
+
+        Увеличить число входов, задав массив весов `a` длиннее текущего,
+        **недостаточно**: коэффициентов становится больше, а входных портов
+        остаётся столько же. Число портов меняется только через `SetPortCount`,
+        причём его параметр `Count` — общее число портов, включая выход, то
+        есть для N входов нужно N + 1.
+        """
+        if count < 1:
+            raise PortError(f"Число входов должно быть >= 1, получено {count}")
+        self.client.call("SetPortCount", self._id, count + 1, 0, 0, 0)
+        return self
+
+    def get_in_port_count(self) -> int:
+        """Число входных портов блока (перебором `GetInPort`)."""
+        found = 0
+        for index in range(self.get_port_count() + 1):
+            try:
+                self.get_in_port(index)
+                found += 1
+            except PortError:
+                break
+        return found
+
     # ─── Соединение ─────────────────────────────────────────────────
 
     def connect(self, other: "Block", out_index: int = 0, in_index: int = 0):

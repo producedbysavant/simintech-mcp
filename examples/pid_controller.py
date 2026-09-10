@@ -62,8 +62,10 @@ def main() -> None:
     kd_gain = page.create_block("Усилитель", 520, 100)
     kd_gain.set_property("a", KD)
 
-    # Сумматор выхода (три входа — по длине массива `a`)
+    # Сумматор выхода: три ветви P + I + D.
+    # Входов у «Сумматора» по умолчанию два — число портов задаётся явно.
     out_sum = page.create_block("Сумматор", 660, 0)
+    out_sum.set_in_port_count(3)
     out_sum.set_property("a", [1.0, 1.0, 1.0])
 
     # --- Соединения ---

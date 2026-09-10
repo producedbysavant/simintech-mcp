@@ -8,6 +8,10 @@ description: Use when writing SimInTech built-in language code (the "Язык п
 Справочник целиком: `docs/simintech-language/` (`language/`, `blocks/`,
 `patterns/`, `tutorials/`). Здесь — то, что чаще всего ломает работу агента.
 
+**Официальная справка:**
+[Язык программирования SimInTech](https://help.simintech.ru/11_yazyk_programmirovaniya/KEY_yazik_programmirovania.html)
+— первоисточник по синтаксису и функциям.
+
 ## Когда нужен этот язык
 
 Второй (после COM API) способ построения моделей: `createblock` /

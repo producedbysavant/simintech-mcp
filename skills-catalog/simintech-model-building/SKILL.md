@@ -44,6 +44,9 @@ layout_place(block_ids="A,B,C", connections="A->B,B->C")
 Проверить доступные имена: `get_block_params("имя_блока")`. Он читает имена
 из каталога блоков (`simintech_api/data/block_catalog.json`).
 
+Состав и назначение блоков — [Библиотеки блоков](https://help.simintech.ru/10_biblioteki_blokov/KEY_biblioteki_blokov.html)
+в официальной справке.
+
 ## Формат значений
 
 `add_block` и `set_block_param` принимают `props` / `value` строкой:

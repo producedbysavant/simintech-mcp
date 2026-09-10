@@ -2,6 +2,10 @@
 
 Перенесено из `simintech-code-library` (архивирован 2026-08).
 
+Официальная справка по языку:
+[Язык программирования SimInTech](https://help.simintech.ru/11_yazyk_programmirovaniya/KEY_yazik_programmirovania.html).
+Состав блоков — [Библиотеки блоков](https://help.simintech.ru/10_biblioteki_blokov/KEY_biblioteki_blokov.html).
+
 Справочник по **встроенному языку программирования SimInTech** — механизму
 создания блоков и схем скриптом (`createblock`/`createmodel`). Это **отдельный
 от COM API** способ построения моделей; используется как резервный путь для

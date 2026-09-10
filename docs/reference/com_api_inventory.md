@@ -3,6 +3,9 @@
 
 # COM API SimInTech: полный справочник методов IMVTU_Server
 
+Официальная справка: [API SimInTech](https://help.simintech.ru/27_SimInTech_api/DIR_api.html),
+[Командная строка](https://help.simintech.ru/27_SimInTech_api/DIR_komandnaya_stroka.html).
+
 Источник: `mmain.hpp` (MIDL), `SIT COM DEMO.cpp`, эксплуатация через comtypes.
 CLSID: `{ACE730D7-1712-4C70-87C8-7E4C55622E91}`
 IID: `{145848B3-2BE8-4497-9A6B-8A42DA658844}`

@@ -100,4 +100,5 @@ skills-catalog/       # доменные скиллы: model-building, simulatio
 - `REPORT.md` — состояние интеграционных тестов, найденные на реальном COM баги и принятые решения; актуален на 2026-08-18.
 - `examples/` — рабочие модели (усилитель, ПИД, layout+router, RC-цепь, обратная связь) и `demo.ipynb`.
 - В репозитории: `docs/reference/com_api_inventory.md` — карта методов `IMVTU_Server` (CLSID, IID, сигнатуры, статусы).
-- Вне поставки (в репозиторий не входят): `SIT_SimInTech_Vneshnij_API.pdf` и `source/exe/mmain.hpp` (MIDL) — лежат в установке SimInTech, напр. `C:\SimInTech64\source\exe\mmain.hpp`.
+- **Официальная справка SimInTech: https://help.simintech.ru/** — брать документацию отсюда. Ключевые разделы: [API](https://help.simintech.ru/27_SimInTech_api/DIR_api.html), [командная строка](https://help.simintech.ru/27_SimInTech_api/DIR_komandnaya_stroka.html), [библиотеки блоков](https://help.simintech.ru/10_biblioteki_blokov/KEY_biblioteki_blokov.html), [язык программирования](https://help.simintech.ru/11_yazyk_programmirovaniya/KEY_yazik_programmirovania.html). Полный список — в README.
+- Вендорные `SIT_SimInTech_Vneshnij_API.pdf` и `mmain.hpp` в репозиторий **не входят**; лежат в установке, напр. `C:\SimInTech64\source\exe\mmain.hpp`.
