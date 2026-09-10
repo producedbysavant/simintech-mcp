@@ -28,6 +28,7 @@ test = [
 [project.scripts]
 simintech-cli = "simintech_api.cli:main"
 simintech-mcp = "simintech_mcp.server:main"
+simintech-generate-catalog = "simintech_api.catalog_tool:main"
 
 [tool.setuptools]
 packages = [
