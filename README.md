@@ -193,12 +193,13 @@ python -m pytest tests/integration -m integration
   модель 3 (layout+router), RC-цепь, обратная связь.
 - `examples/demo.ipynb` — Jupyter Notebook с пояснениями на русском.
 - `REPORT.md` — отчёт о разработке и тестировании.
-- Полная карта методов COM API и DataType — в `sitECRT/doc/reference/com_api_inventory.md`.
-- Официальная спецификация: `SIT_SimInTech_Vneshnij_API.pdf`, `source/exe/mmain.hpp`.
+- `docs/reference/com_api_inventory.md` — полная карта методов `IMVTU_Server`
+  (CLSID, IID, сигнатуры, статусы проверки) и типы данных.
 
 ## Смежные репозитории
 
-- `sitECRT` — тестовый тулкит и справочники COM API.
+- Официальная спецификация COM API — `SIT_SimInTech_Vneshnij_API.pdf` и
+  `source/exe/mmain.hpp` из поставки SimInTech (в репозиторий не входят).
 - `simintech-connector` — **заархивирован** (его COM-функционал перенесён
   в `simintech-mcp`; см. `ARCHIVED.md`).
 - `simintech-code-library` — **заархивирован** (содержимое перенесено в

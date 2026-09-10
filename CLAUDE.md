@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Точки входа: `simintech-cli` → `simintech_api.cli:main`, `simintech-mcp` → `simintech_mcp.server:main` (stdio).
 
-Смежные наработки в `/mnt/c/git/`: `sitECRT` (тестовый тулкит, точная карта методов COM API), `evs360_simintech` (модели бортовой логики). Репозитории `simintech-connector` и `simintech-code-library` **заархивированы** — их содержимое перенесено сюда (второй — в `docs/simintech-language/`).
+Репозитории `simintech-connector` и `simintech-code-library` **заархивированы** — их содержимое перенесено сюда (второй — в `docs/simintech-language/`). Карта методов COM API — в `docs/reference/`.
 
 ## Ключевые факты
 
@@ -99,4 +99,5 @@ skills-catalog/       # доменные скиллы: model-building, simulatio
 - `docs/simintech-language/` — справочник встроенного языка SimInTech (резервный путь создания блоков).
 - `REPORT.md` — состояние интеграционных тестов, найденные на реальном COM баги и принятые решения; актуален на 2026-08-18.
 - `examples/` — рабочие модели (усилитель, ПИД, layout+router, RC-цепь, обратная связь) и `demo.ipynb`.
-- Внешние источники: `sitECRT/doc/reference/com_api_inventory.md`, `SIT_SimInTech_Vneshnij_API.pdf`, `source/exe/mmain.hpp`.
+- В репозитории: `docs/reference/com_api_inventory.md` — карта методов `IMVTU_Server` (CLSID, IID, сигнатуры, статусы).
+- Вне поставки (в репозиторий не входят): `SIT_SimInTech_Vneshnij_API.pdf` и `source/exe/mmain.hpp` (MIDL) — лежат в установке SimInTech, напр. `C:\SimInTech64\source\exe\mmain.hpp`.

@@ -4,7 +4,7 @@ Python-библиотека для управления SimInTech через COM
 
 ## Ключевые решения (по итогам исследования Фазы 1)
 
-1. **COM-движок — comtypes** (не pywin32). Причина: `TDataDescriptor` — структура `VT_RECORD`; pywin32 ломает её marshalling. Проверено в sitECRT `com_api_inventory.md`.
+1. **COM-движок — comtypes** (не pywin32). Причина: `TDataDescriptor` — структура `VT_RECORD`; pywin32 ломает её marshalling. Проверено в `docs/reference/com_api_inventory.md`.
 2. **Один интерфейс `IMVTU_Server`, 176 методов.** Все результаты — через `[out]`-параметры, идентификаторы — `__int64` (VT_I8), строки `[in]` = BSTR.
 3. **`TDataDescriptor{DataId: i64, DataType: long}`** — центральная структура: `Find*` возвращает по указателю, `Read*/Write*` принимают по значению. DataType: 0=double, 1=int, 2=bool, 4=string, 5=array(double[]), 12=intarray.
 4. **Два механизма создания моделей**: COM API (`CreateBlock`, имя класса строкой) и встроенный язык SimInTech (`createblock`/`createmodel` — отдельный механизм для обхода неработающих классов). Резервный путь создания через макросы/`.inc` и `SetPageScript`.

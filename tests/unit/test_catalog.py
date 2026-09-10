@@ -389,7 +389,9 @@ def test_default_catalog_is_generated_not_handwritten():
     catalog = load_default_catalog(reload=True)
 
     assert catalog.meta.get("source") == "generated"
-    assert catalog.meta.get("failed"), "должны быть зафиксированы несозданные классы"
+    # «failed» — список классов, которые CreateBlock не создал. Сейчас пуст:
+    # не создаваемые классы перенесены в UNSUPPORTED_COM_BLOCK_CLASSES.
+    assert catalog.meta.get("failed") == []
 
 
 def test_default_catalog_records_computed_params():

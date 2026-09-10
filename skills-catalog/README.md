@@ -32,7 +32,7 @@
 
 Имена свойств блоков и поведение COM API в этих скиллах взяты из проверенных
 источников: рабочего кода `examples/`, карты методов
-`sitECRT/doc/reference/com_api_inventory.md` и `REPORT.md`.
+`docs/reference/com_api_inventory.md` и `REPORT.md`.
 
 **Чего в скиллах нет намеренно:** имён свойств из
 `docs/simintech-language/blocks/`. Там используются читаемые имена
