@@ -58,11 +58,27 @@ def _check_arg(value: str, name: str, *, option_like: bool = False) -> str:
             f"mmain.exe разберёт их как разделители аргументов"
         )
     if option_like and value.startswith(("/", "-")):
-        raise ValueError(
-            f"{name}: значение не должно начинаться с '/' или '-' "
-            f"(будет принято за опцию mmain.exe)"
-        )
+        # Числа — исключение: отрицательное значение параметра начинается
+        # с '-', но опцией не является. Отбраковывать его нельзя.
+        if not _is_number(value):
+            raise ValueError(
+                f"{name}: значение не должно начинаться с '/' или '-' "
+                f"(будет принято за опцию mmain.exe)"
+            )
     return value
+
+
+def _is_number(text: str) -> bool:
+    """Похоже ли значение на число (в том числе отрицательное).
+
+    Десятичный разделитель допускается и точкой, и запятой: SimInTech
+    принимает оба.
+    """
+    try:
+        float(text.replace(",", "."))
+    except ValueError:
+        return False
+    return True
 
 
 class CLIAdapter:

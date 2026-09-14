@@ -156,3 +156,39 @@ def test_normal_values_pass_validation(monkeypatch):
 
     cli.save_as("model.prt", "C:\\out.xprt")
     assert calls["args"][1] == "/saveas C:\\out.xprt"
+
+
+# ─── Отрицательные значения не должны отбраковываться ─────────────
+
+@pytest.mark.parametrize("value", ["-1.5", "-3", "-0.5", "-1,5", "-1e-3"])
+def test_set_parameter_allows_negative_numbers(value):
+    """Уставка бывает отрицательной: '-1.5' — значение, а не опция.
+
+    Защита от подстановки опций отклоняет значения с ведущим '-' или '/',
+    но числа — исключение, иначе запись отрицательного параметра ломалась бы.
+    """
+    calls = {}
+    cli = _cli()
+
+    def fake_run_sync(*args, **kwargs):
+        calls["args"] = args
+        return CLIResult(success=True)
+
+    cli.run_sync = fake_run_sync
+    cli.set_parameter("model.prt", "Kp", value)
+
+    assert calls["args"][1] == f"/setparameter Kp {value}"
+
+
+@pytest.mark.parametrize("value", ["-exit", "/exit", "--force", "/close"])
+def test_set_parameter_rejects_non_numeric_option_like(value):
+    """Похожее на ключ, но не число — по-прежнему отклоняется."""
+    with pytest.raises(ValueError):
+        _cli().set_parameter("model.prt", "Kp", value)
+
+
+@pytest.mark.parametrize("param", ["/exit", "-exit", "/close"])
+def test_param_name_rejects_option_like(param):
+    """Имя параметра опцией быть не может, послабления для чисел тут не нужны."""
+    with pytest.raises(ValueError):
+        _cli().set_parameter("model.prt", param, "5")
