@@ -1,20 +1,19 @@
 [build-system]
-requires = ["setuptools>=64"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = "simintech-api"
+name = "simintech-mcp"
 version = "0.2.0"
-description = "Python-библиотека для программного управления SimInTech через внешний COM API"
+description = "MCP-сервер для управления SimInTech через COM API"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "EVS360" }]
 dependencies = [
-    # comtypes — только Windows: COM API SimInTech там и работает
-    "comtypes>=1.1.0; sys_platform == 'win32'",
-    # разбор XML-выгрузок SimInTech: защита от XXE и разворачивания сущностей
-    "defusedxml>=0.7",
+    # Библиотека-ядро. Для локальной разработки заменить на path-зависимость:
+    # simintech-api = { path = "../simintech-code", editable = true }
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.2.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
 ]
@@ -22,32 +21,21 @@ dependencies = [
 [project.optional-dependencies]
 test = [
     "pytest>=7.0",
-    # Маркер @pytest.mark.anyio из tests/unit/test_mcp_server.py регистрирует
-    # плагин, встроенный в anyio. Пакет pytest-anyio не нужен — это заглушка.
+    # Маркер @pytest.mark.anyio регистрирует плагин, встроенный в anyio.
     "anyio>=4.0",
 ]
 
 [project.scripts]
-simintech-cli = "simintech_api.cli:main"
 simintech-mcp = "simintech_mcp.server:main"
-simintech-generate-catalog = "simintech_api.catalog_tool:main"
 
-[tool.setuptools]
-packages = [
-    "simintech_api",
-    "simintech_api.core",
-    "simintech_api.layout",
-    "simintech_api.utils",
-    "simintech_mcp",
-]
+[tool.hatch.build.targets.wheel]
+packages = ["simintech_mcp"]
 
-[tool.setuptools.package-data]
-# Каталог свойств блоков читается из пакета во время работы
-simintech_api = ["data/*.json"]
+[tool.hatch.metadata]
+# Зависимость объявлена прямой git-ссылкой (см. выше). Hatchling по умолчанию
+# такие ссылки запрещает: без этого флага сборка падает с
+# "Dependency #1 ... cannot be a direct reference".
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = [
-    "integration: тесты, требующие реального COM-сервера SimInTech на Windows (deselect через -m 'not integration')",
-    "performance: бенчмарки производительности placer/router",
-]
