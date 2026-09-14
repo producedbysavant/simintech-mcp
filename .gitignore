@@ -7,3 +7,26 @@ dist/
 .venv/
 
 docs/build/
+
+# Локальная память и временные файлы Claude Code
+.remember/
+.claude/
+
+# Настройки редакторов: у каждого разработчика свои
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Кэши инструментов
+.ruff_cache/
+.mypy_cache/
+
+# Артефакты ОС
+.DS_Store
+Thumbs.db
+
+# Временные файлы примеров и отладки
+examples/*.xprt
+examples/*.csv
+

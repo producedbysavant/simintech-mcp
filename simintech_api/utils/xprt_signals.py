@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import re
 import tempfile
-import xml.etree.ElementTree as ET
+
+# defusedxml, а не stdlib: см. пояснение в simintech_api/sdb.py.
+import defusedxml.ElementTree as ET
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List
 

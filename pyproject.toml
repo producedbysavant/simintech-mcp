@@ -4,14 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simintech-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python-библиотека для программного управления SimInTech через внешний COM API"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "EVS360" }]
 dependencies = [
-    "comtypes>=1.1.0",
+    # comtypes — только Windows: COM API SimInTech там и работает
+    "comtypes>=1.1.0; sys_platform == 'win32'",
+    # разбор XML-выгрузок SimInTech: защита от XXE и разворачивания сущностей
+    "defusedxml>=0.7",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
 ]
@@ -27,6 +30,7 @@ test = [
 [project.scripts]
 simintech-cli = "simintech_api.cli:main"
 simintech-mcp = "simintech_mcp.server:main"
+simintech-generate-catalog = "simintech_api.catalog_tool:main"
 
 [tool.setuptools]
 packages = [

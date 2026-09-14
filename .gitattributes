@@ -1,0 +1,27 @@
+# Переводы строк нормализуются к LF в репозитории, независимо от ОС автора.
+# Так Markdown-файлы одинаково читаются в WSL, Linux и Windows.
+* text=auto eol=lf
+
+# Текстовые файлы проекта
+*.md    text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.json  text eol=lf
+*.toml  text eol=lf
+
+# Windows-скрипты должны остаться с CRLF, иначе их не выполнит cmd.exe
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Бинарные файлы: git не должен пытаться их нормализовать
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.pdf   binary
+*.zip   binary
+
+# Встроенный diff-драйвер: переносы Markdown-абзацев не выглядят как полный
+# перезапись файла в diff и в интерфейсе pull request.
+*.md    diff=markdown

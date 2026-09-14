@@ -530,8 +530,9 @@ def test_signals_are_indexed_by_composite_key(tmp_path):
 - [ ] **Step 4: Запустить тесты**
 
 Run: `python3.11 -m pytest tests/unit/test_sdb.py -v`
-Expected: `4 passed`. Если `get_signal_info` возвращает не словарь, а
-`SDBSignalInfo` — привести тест к фактическому типу, а не менять модуль.
+Expected: `4 passed`. Методы `find_signal` и `get_signal_info` возвращают
+словари с ключами `name`, `full_name`, `group`, `category` (проверено по
+исходнику) — тесты написаны под них.
 
 - [ ] **Step 5: Commit**
 
@@ -899,13 +900,30 @@ Expected: все тесты проходят; flake8 без вывода для 
 (`model1_amplifier.py`, `model2_pid.py`, `model3_complex.py`,
 `feedback_model.py`, `rc_chain.py`, `pid_controller.py`) — они были до работы.
 
-- [ ] **Step 4: Commit и тег**
+- [ ] **Step 4: Поднять версию пакета**
+
+Тег без смены версии вводит в заблуждение: `pyproject.toml` продолжит
+объявлять `0.1.0`. В `pyproject.toml` заменить строку:
+
+```toml
+version = "0.2.0"
+```
+
+Проверка:
+```bash
+python3.11 -c "
+import tomllib, pathlib
+print(tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['project']['version'])"
+```
+Expected: `0.2.0`.
+
+- [ ] **Step 5: Commit и тег**
 
 ```bash
-git add docs/roadmap-agentic-ecosystem.md
-git commit -m "docs: отметить перенос кода из simintech-connector"
+git add pyproject.toml docs/roadmap-agentic-ecosystem.md
+git commit -m "docs: отметить перенос кода из simintech-connector; версия 0.2.0"
 git tag v0.2.0
-git push origin main --tags
+git push origin HEAD --tags
 ```
 
 ---
