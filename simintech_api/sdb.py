@@ -13,7 +13,11 @@
 from __future__ import annotations
 
 import re
-import xml.etree.ElementTree as ET
+
+# defusedxml, а не stdlib: обычный xml.etree разворачивает DTD-сущности, из-за
+# чего документ вида «billion laughs» съедает память, а внешние сущности дают
+# XXE. Выгрузки SimInTech DOCTYPE не содержат, поэтому строгий режим их не ломает.
+import defusedxml.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional

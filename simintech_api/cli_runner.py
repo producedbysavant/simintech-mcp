@@ -36,6 +36,35 @@ class CLIResult:
 DEFAULT_MMAIN_PATH = Path("/mnt/c/SimInTech64/bin/mmain.exe")
 
 
+def _check_arg(value: str, name: str, *, option_like: bool = False) -> str:
+    """Отклонить значение, которое mmain.exe разберёт как лишний ключ.
+
+    Часть опций передаётся одной строкой (`/saveas <путь>`,
+    `/setparameter <имя> <значение>`), а mmain.exe разбирает собственную
+    командную строку сам. Поэтому пробел или перевод строки внутри значения
+    становится разделителем, и остаток превращается в отдельные опции —
+    например, `out.xprt /close /exit` закрыло бы и завершило процесс.
+
+    Args:
+        value: проверяемое значение.
+        name: имя параметра — попадает в сообщение об ошибке.
+        option_like: отклонять ли значения, начинающиеся с `/` или `-`.
+            Включается там, где ожидается имя или число, а не путь: путь
+            может быть абсолютным (в WSL начинается с `/`).
+    """
+    if any(ch.isspace() or ord(ch) < 32 for ch in value):
+        raise ValueError(
+            f"{name}: пробелы и управляющие символы недопустимы — "
+            f"mmain.exe разберёт их как разделители аргументов"
+        )
+    if option_like and value.startswith(("/", "-")):
+        raise ValueError(
+            f"{name}: значение не должно начинаться с '/' или '-' "
+            f"(будет принято за опцию mmain.exe)"
+        )
+    return value
+
+
 class CLIAdapter:
     """Адаптер для управления SimInTech через командную строку."""
 
@@ -160,6 +189,7 @@ class CLIAdapter:
     def save_as(self, project_path: str, output_path: str,
                 timeout: int = 30) -> CLIResult:
         """Открыть проект и сохранить в другом формате."""
+        _check_arg(output_path, "output_path")
         return self.run_sync(
             project_path,
             f"/saveas {output_path}",
@@ -171,6 +201,8 @@ class CLIAdapter:
     def set_parameter(self, project_path: str, param: str, value: str,
                       timeout: int = 30) -> CLIResult:
         """Установить параметр проекта из командной строки."""
+        _check_arg(param, "param", option_like=True)
+        _check_arg(value, "value", option_like=True)
         return self.run_sync(
             project_path,
             f"/setparameter {param} {value}",
@@ -184,6 +216,7 @@ class CLIAdapter:
     def run_macro_file(self, macro_path: str, timeout: int = 300) -> CLIResult:
         """Запустить файл макроса SimInTech (/macros)."""
         macro_abs = str(Path(macro_path).absolute())
+        _check_arg(macro_abs, "macro_path")
         return self.run_sync(f"/macros {macro_abs}", timeout=timeout)
 
     def run_macro(self, macro_content: str, timeout: int = 300) -> CLIResult:

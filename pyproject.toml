@@ -13,6 +13,8 @@ authors = [{ name = "EVS360" }]
 dependencies = [
     # comtypes — только Windows: COM API SimInTech там и работает
     "comtypes>=1.1.0; sys_platform == 'win32'",
+    # разбор XML-выгрузок SimInTech: защита от XXE и разворачивания сущностей
+    "defusedxml>=0.7",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
 ]

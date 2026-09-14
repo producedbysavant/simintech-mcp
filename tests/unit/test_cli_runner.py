@@ -82,7 +82,7 @@ def test_resolve_mmain_path_raises_when_missing(no_mmain):
         CLIAdapter()
 
 
-def test_run_sync_reports_missing_binary(no_mmain):
+def test_run_sync_reports_missing_binary(no_mmain):  # noqa: D103
     """Несуществующий бинарник — результат с success=False, а не исключение."""
     # Создаём с валидным путём и подменяем после: конструктор сам проверяет
     # наличие mmain.exe и на отсутствующем бросил бы исключение раньше.
@@ -94,3 +94,65 @@ def test_run_sync_reports_missing_binary(no_mmain):
     assert isinstance(result, CLIResult)
     assert result.success is False
     assert "не найден" in result.message
+
+
+# ─── Защита от подстановки лишних опций ───────────────────────────
+
+def _cli():
+    """Адаптер с валидным путём (сам mmain.exe не запускается)."""
+    return CLIAdapter(mmain_path=__file__)
+
+
+def test_set_parameter_rejects_whitespace_in_value():
+    """Пробел в значении породил бы лишние опции mmain.exe.
+
+    Опции передаются одной строкой («/setparameter имя значение»), а
+    mmain.exe разбирает командную строку сам — поэтому пробел внутри
+    значения становится разделителем аргументов.
+    """
+    with pytest.raises(ValueError, match="пробел"):
+        _cli().set_parameter("model.prt", "Kp", "1.5 /close /exit")
+
+
+def test_set_parameter_rejects_option_like_param():
+    with pytest.raises(ValueError):
+        _cli().set_parameter("model.prt", "/exit", "1")
+
+
+def test_set_parameter_rejects_option_like_value():
+    with pytest.raises(ValueError):
+        _cli().set_parameter("model.prt", "Kp", "/exit")
+
+
+def test_set_parameter_rejects_control_characters():
+    with pytest.raises(ValueError):
+        _cli().set_parameter("model.prt", "Kp", "1\n/exit")
+
+
+def test_save_as_rejects_whitespace_in_path():
+    with pytest.raises(ValueError, match="пробел"):
+        _cli().save_as("model.prt", "out.xprt /close /exit")
+
+
+def test_run_macro_file_rejects_whitespace_in_path():
+    with pytest.raises(ValueError):
+        _cli().run_macro_file("/tmp/macro.txt /exit")
+
+
+def test_normal_values_pass_validation(monkeypatch):
+    """Обычные значения не отбраковываются: защита не ломает работу."""
+    calls = {}
+    cli = _cli()
+
+    def fake_run_sync(*args, **kwargs):
+        calls["args"] = args
+        return CLIResult(success=True)
+
+    monkeypatch.setattr(cli, "run_sync", fake_run_sync)
+
+    cli.set_parameter("model.prt", "Kp", "1.5")
+    assert calls["args"] == ("model.prt", "/setparameter Kp 1.5",
+                             "/close", "/exit")
+
+    cli.save_as("model.prt", "C:\\out.xprt")
+    assert calls["args"][1] == "/saveas C:\\out.xprt"
