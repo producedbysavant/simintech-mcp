@@ -399,8 +399,27 @@ class _FakeWire:
         return self
 
 
+class _FakePort:
+    """Порт с координатами: по ним считается выравнивание блоков."""
+
+    def __init__(self, block, is_output, index):
+        self._block = block
+        self._is_output = is_output
+        self._index = index
+
+    def get_coords(self):
+        cx, cy = self._block.center or (0.0, 0.0)
+        if self._is_output:
+            return (cx + 16.0, cy)
+        return (cx - 16.0, cy - self._block.in_port_offset)
+
+
 class _ConnectingBlock:
     """Блок, который соединяется и двигается — как настоящий."""
+
+    #: Насколько основной вход ниже центра блока. У «Сумматора» входы стоят на
+    #: четверти и трёх четвертях высоты, поэтому вход не совпадает с центром.
+    in_port_offset = 0.0
 
     def __init__(self, name, block_id, events=None):
         self._name = name
@@ -408,6 +427,12 @@ class _ConnectingBlock:
         self.center = None
         self.wires = []
         self.events = events
+
+    def get_out_port(self, index=0):
+        return _FakePort(self, True, index)
+
+    def get_in_port(self, index=0):
+        return _FakePort(self, False, index)
 
     @property
     def id(self):
@@ -485,7 +510,30 @@ async def test_connect_only_remembers_wire(monkeypatch):
     assert "Соединено" in text
     wire = src.wires[0][0]
     assert wire.normalized == 0, "линия трассирована до расстановки блоков"
-    assert server_module._WIRES == [wire], "линия не запомнена для layout_place"
+    assert server_module._WIRES == [(wire, "k_0", 0, "Integrator_0", 0)], \
+        "линия не запомнена вместе с концами для выравнивания"
+
+
+@pytest.mark.anyio
+async def test_layout_place_aligns_port_heights(monkeypatch):
+    """Блок сдвигается так, чтобы основной вход лёг на высоту выхода.
+
+    Иначе линия идёт с лишним изломом: у «Сумматора» входы на четверти и трёх
+    четвертях высоты, а выход «Усилителя» посередине.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    dst.in_port_offset = 8.0
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+
+    text = _text(await mcp.call_tool(
+        "layout_place",
+        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
+
+    assert dst.center[1] == src.center[1] + 8.0, "вход не выровнен с выходом"
+    assert dst.center[0] > src.center[0], "блоки не разнесены по слоям"
+    assert "ВНИМАНИЕ" not in text
 
 
 @pytest.mark.anyio
@@ -535,7 +583,7 @@ def test_replace_project_clears_wire_registry(monkeypatch):
     src = _ConnectingBlock("k_0", 1)
     dst = _ConnectingBlock("kx_0", 2)
     _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
-    server_module._WIRES.append(_FakeWire(99))
+    server_module._WIRES.append(_FakeWire(99))  # запись целиком не важна
 
     server_module._replace_project(_WireProject({}))
 

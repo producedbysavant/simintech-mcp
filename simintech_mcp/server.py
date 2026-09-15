@@ -425,7 +425,9 @@ def connect(src: str, dst: str,
     if b2 is None:
         return f"ERROR: блок '{dst}' не найден на странице"
     wire = b1.connect(b2, out_index=out_index, in_index=in_index)
-    _WIRES.append(wire)
+    # Храним и концы связи: по ним `layout_place` выравнивает блоки так, чтобы
+    # линия шла без лишнего излома.
+    _WIRES.append((wire, src, out_index, dst, in_index))
     return f"Соединено {src} -> {dst} (wire={wire.id})"
 
 
@@ -916,23 +918,78 @@ def layout_place(block_ids: str, connections: str) -> str:
     sizes = {token: available[token].get_size() for token in tokens}
     positions = LayeredPlacer().place(tokens, links, sizes=sizes)
 
-    applied = []
+    centers = {token: positions[token] for token in tokens}
     for token in tokens:
-        cx, cy = positions[token]
-        available[token].set_center(cx, cy)
-        applied.append(f"  {token}: ({cx:.1f}, {cy:.1f})")
+        available[token].set_center(*centers[token])
+
+    # Перерисовка ДО чтения портов: пока проект не перерисован, порты отдают
+    # координаты блоков на прежних местах, и выравнивание посчиталось бы по
+    # устаревшей геометрии (проверено на SimInTech64 2026-09-15: без этого
+    # шага «Сумматор» уехал на тысячу пикселей вниз).
+    project.repaint()
+
+    # Выравнивание по вертикали: основной вход блока (in_index=0) ставим на
+    # одну высоту с выходом источника. Иначе линия идёт с лишним изломом — у
+    # «Сумматора» входы на четверти и трёх четвертях высоты, а выход
+    # «Усилителя» посередине, и прямой участок не получается. Координаты
+    # берём у самих портов, поэтому считаем по фактической геометрии.
+    unaligned = []
+    # Смещения портов относительно центров читаем один раз: дальше блоки
+    # двигаются, а COM отдаёт координаты портов только после перерисовки —
+    # повторное чтение вернуло бы устаревшие значения.
+    offsets = {}
+    for _wire, src_name, out_index, dst_name, in_index in _WIRES:
+        for name, index, is_output in ((src_name, out_index, True),
+                                       (dst_name, in_index, False)):
+            key = (name, index, is_output)
+            if key in offsets or name not in centers:
+                continue
+            block = available.get(name)
+            if block is None:
+                continue
+            try:
+                port = (block.get_out_port(index) if is_output
+                        else block.get_in_port(index))
+                offsets[key] = port.get_coords()[1] - centers[name][1]
+            except Exception as exc:                          # noqa: BLE001
+                unaligned.append(f"{name}[{index}] ({type(exc).__name__})")
+
+    shifted = False
+    for _wire, src_name, out_index, dst_name, in_index in _WIRES:
+        if in_index != 0:
+            continue
+        out_key = (src_name, out_index, True)
+        in_key = (dst_name, in_index, False)
+        if out_key not in offsets or in_key not in offsets:
+            continue
+        dy = ((centers[src_name][1] + offsets[out_key])
+              - (centers[dst_name][1] + offsets[in_key]))
+        if abs(dy) < 0.5:
+            continue
+        cx, cy = centers[dst_name]
+        centers[dst_name] = (cx, cy + dy)
+        available[dst_name].set_center(cx, cy + dy)
+        shifted = True
+
+    applied = [f"  {token}: ({centers[token][0]:.1f}, {centers[token][1]:.1f})"
+               for token in tokens]
 
     # Порядок обязателен и проверен на SimInTech64: перемещение блоков →
     # перерисовка → трассировка. Без перерисовки SimInTech прокладывает
     # провода по прежним прямоугольникам блоков (они ещё лежат в (0,0) друг на
     # друге) и оставляет в геометрии точки вида (-160,-1056), которые потом не
-    # пересчитываются. Повторная трассировка на расставленной схеме безвредна.
-    project.repaint()
-    for wire in _WIRES:
+    # пересчитываются. Если блоки сдвинулись на выравнивании — перерисовка
+    # нужна ещё раз, уже перед трассировкой.
+    if shifted:
+        project.repaint()
+    for wire, _src, _out, _dst, _in in _WIRES:
         wire.normalize()
     routes = (f"\nЛинии связи: нормализовано {len(_WIRES)} — участки "
               f"ортогональные" if _WIRES
               else "\nЛиний связи в этой сессии нет — трассировать нечего")
+    if unaligned:
+        routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
+                   f"связей: {', '.join(unaligned)}")
     return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
 
 
