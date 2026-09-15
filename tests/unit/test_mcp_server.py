@@ -122,7 +122,10 @@ async def test_read_output_file_defaults_to_standard_dir(tmp_path, monkeypatch):
     text = await _error("read_output_file", {"path": str(outside)})
 
     assert "секрет" not in text
-    assert default_output_dir() in text, "отказ должен называть стандартный каталог"
+    # Сравниваем канонизированный путь: Windows отдаёт gettempdir() в коротком
+    # виде (C:\Users\A-SAVC~1\...), а сервер печатает long-форму после realpath.
+    assert os.path.realpath(default_output_dir()) in text, \
+        "отказ должен называть стандартный каталог"
 
 
 def test_default_output_dir_is_created_private(tmp_path, monkeypatch):
@@ -146,18 +149,31 @@ def test_default_output_dir_rejects_symlink(tmp_path, monkeypatch):
     Каталог результатов лежит в предсказуемом месте: если его заранее создать
     символической ссылкой, `realpath` увёл бы песочницу в выбранное атакующим
     место, и ограничение стало бы фиктивным.
+
+    Проверяется подменой `os.path.islink`, а не настоящей ссылкой: создание
+    ссылок на Windows требует привилегий, а сервер работает именно там — тест
+    с `skip` на Windows не проверял бы ничего на целевой платформе.
     """
-    if sys.platform == "win32":
-        pytest.skip("символические ссылки требуют привилегий на Windows")
     from simintech_mcp import server as server_module
 
-    real_dir = tmp_path / "настоящий"
-    real_dir.mkdir()
-    link = tmp_path / "simintech-output"
-    link.symlink_to(real_dir, target_is_directory=True)
-    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(link))
+    target = tmp_path / "simintech-output"
+    target.mkdir()
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+    monkeypatch.setattr(server_module.os.path, "islink", lambda p: True)
 
     with pytest.raises(ToolError, match="символическая ссылка"):
+        server_module.output_root()
+
+
+def test_default_output_dir_rejects_non_directory(tmp_path, monkeypatch):
+    """Путь существует, но это файл — читать из него нечего."""
+    from simintech_mcp import server as server_module
+
+    target = tmp_path / "simintech-output"
+    target.write_text("не каталог", encoding="utf-8")
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+
+    with pytest.raises(ToolError, match="не является каталогом"):
         server_module.output_root()
 
 
@@ -794,6 +810,291 @@ async def test_close_project_without_project_is_noop(monkeypatch):
     text = _text(await mcp.call_tool("close_project", {}))
 
     assert "Без изменений" in text
+
+
+# ─── Расчёт (без COM) ─────────────────────────────────────────────
+
+class _FakeSimulation:
+    """Расчёт с управляемой последовательностью модельного времени."""
+
+    def __init__(self, times):
+        self._times = list(times)
+        self._last = 0.0
+        self.run_to_calls = []
+        self.stepped = 0
+        self.started = 0
+        self.run_to_result = True
+
+    def start(self):
+        self.started += 1
+        return self
+
+    def get_time(self):
+        if self._times:
+            self._last = self._times.pop(0)
+        return self._last
+
+    def step(self):
+        self.stepped += 1
+        return self
+
+    def run(self):
+        return self
+
+    def stop(self):
+        return self
+
+    def run_to(self, target, timeout=None, stall=None):
+        self.run_to_calls.append((target, timeout, stall))
+        return self.run_to_result
+
+
+class _SimProject:
+    def __init__(self, sim):
+        self._sim = sim
+
+    def simulation(self):
+        return self._sim
+
+
+def _install_fake_simulation(monkeypatch, times):
+    from simintech_mcp import server as server_module
+
+    sim = _FakeSimulation(times)
+    monkeypatch.setattr(server_module, "_project", _SimProject(sim))
+    return sim
+
+
+@pytest.mark.anyio
+async def test_run_reports_failure_when_time_did_not_move(monkeypatch):
+    """run честно сообщает, что расчёт не дошёл, а не «завершён»."""
+    from simintech_mcp import server as server_module
+
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    sim.run_to_result = False
+
+    text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
+
+    assert "не дошёл" in text
+    assert "0.000" in text
+    assert sim.run_to_calls == [(1.0, server_module.CALC_WAIT_SECONDS,
+                                 server_module.CALC_STALL_SECONDS)]
+
+
+@pytest.mark.anyio
+async def test_run_reports_success_with_actual_time(monkeypatch):
+    """Успешный расчёт подтверждается фактическим временем."""
+    sim = _install_fake_simulation(monkeypatch, [1.0])
+
+    text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
+
+    assert "завершён" in text
+    assert "1.000" in text
+
+
+@pytest.mark.anyio
+async def test_run_passes_waits_to_library(monkeypatch):
+    """Параметры ожидания уходят в библиотечный run_to, а не игнорируются."""
+    sim = _install_fake_simulation(monkeypatch, [1.0])
+
+    await mcp.call_tool("run", {"to_time": 1.0, "wait_timeout": 5.0,
+                                "stall_seconds": 0.5})
+
+    assert sim.run_to_calls == [(1.0, 5.0, 0.5)]
+
+
+@pytest.mark.anyio
+async def test_run_without_target_warns_no_confirmation(monkeypatch):
+    """Неблокирующий запуск не выдаётся за подтверждённый результат."""
+    _install_fake_simulation(monkeypatch, [0.0])
+
+    text = _text(await mcp.call_tool("run", {}))
+
+    assert "неблокирующий" in text
+
+
+@pytest.mark.anyio
+async def test_step_reports_stalled_time(monkeypatch):
+    """step — тот же класс, что run: время не сдвинулось, значит расчёт стоит."""
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+
+    text = _text(await mcp.call_tool("step", {"count": 3}))
+
+    assert "не сдвинулось" in text
+    assert sim.stepped == 3
+
+
+@pytest.mark.anyio
+async def test_step_reports_time_delta(monkeypatch):
+    """Успешные шаги подтверждаются дельтой времени."""
+    _install_fake_simulation(monkeypatch, [0.0, 0.003])
+
+    text = _text(await mcp.call_tool("step", {"count": 3}))
+
+    assert "0.000 → 0.003" in text
+
+
+@pytest.mark.anyio
+async def test_step_rejects_non_positive_count(monkeypatch):
+    _install_fake_simulation(monkeypatch, [0.0])
+
+    text = await _error("step", {"count": 0})
+
+    assert "положительным" in text
+
+
+# ─── Создание проекта и время расчёта (без COM) ───────────────────
+
+class _TemplateProject:
+    id = 5
+
+    def __init__(self):
+        self.end_time = None
+        self.closed = False
+
+    def set_calc_end_time(self, seconds):
+        self.end_time = seconds
+        return self
+
+    def close(self):
+        self.closed = True
+
+
+def _install_fake_template(monkeypatch):
+    from simintech_mcp import server as server_module
+
+    opened = []
+    project = _TemplateProject()
+
+    def fake_from_template(client):
+        opened.append(project)
+        return project
+
+    monkeypatch.setattr(server_module.Project, "from_template",
+                        staticmethod(fake_from_template))
+    monkeypatch.setattr(server_module, "_ensure_client", lambda: object())
+    monkeypatch.setattr(server_module, "_project", None)
+    return project, opened
+
+
+@pytest.mark.anyio
+async def test_create_project_uses_template_and_sets_end_time(monkeypatch):
+    """create_project идёт через шаблон и применяет end_time."""
+    from simintech_mcp import server as server_module
+
+    project, opened = _install_fake_template(monkeypatch)
+
+    text = _text(await mcp.call_tool("create_project", {"end_time": 2.5}))
+
+    assert opened == [project], "проект должен создаваться из шаблона"
+    assert project.end_time == 2.5
+    assert "2.5 с" in text
+    assert server_module._project is project
+
+
+@pytest.mark.anyio
+async def test_create_project_rejects_non_positive_end_time(monkeypatch):
+    """Неверное время отвергается ДО открытия шаблона.
+
+    Иначе созданный проект остался бы висеть в mmain.exe: он не попал бы ни в
+    `_project`, ни в закрытие.
+    """
+    _project_obj, opened = _install_fake_template(monkeypatch)
+
+    text = await _error("create_project", {"end_time": 0})
+
+    assert "положительным" in text
+    assert opened == [], "шаблон открывать было нельзя"
+
+
+@pytest.mark.anyio
+async def test_set_calc_time_delegates_to_project(monkeypatch):
+    """set_calc_time передаёт значение в проект."""
+    from simintech_mcp import server as server_module
+
+    project = _TemplateProject()
+    monkeypatch.setattr(server_module, "_project", project)
+
+    text = _text(await mcp.call_tool("set_calc_time", {"seconds": 7.0}))
+
+    assert project.end_time == 7.0
+    assert "7.0 с" in text
+
+
+# ─── Отчёт об отказах закрытия ────────────────────────────────────
+
+def test_replace_project_reports_failed_close(monkeypatch):
+    """Неудачное закрытие предыдущего проекта не выдаётся за успех."""
+    from simintech_mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "_project",
+                        _ClosableProject(raises=True))
+    fresh = _ClosableProject()
+
+    note = server_module._replace_project(fresh)
+
+    assert "ВНИМАНИЕ" in note
+    assert server_module._project is fresh
+
+
+@pytest.mark.anyio
+async def test_disconnect_reports_failed_close(monkeypatch):
+    """disconnect сбрасывает состояние, но сообщает о неудачном закрытии."""
+    from simintech_mcp import server as server_module
+
+    class _Client:
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(server_module, "_project",
+                        _ClosableProject(raises=True))
+    monkeypatch.setattr(server_module, "_client", _Client())
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert server_module._project is None
+    assert "ВНИМАНИЕ" in text
+
+
+# ─── Прочие ветки read_output_file и add_block ────────────────────
+
+@pytest.mark.anyio
+async def test_read_output_file_empty_is_error(tmp_path, monkeypatch):
+    """Пустой файл — отказ: это признак, что расчёт не шёл."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    empty = tmp_path / "empty.txt"
+    empty.write_text("", encoding="utf-8")
+
+    text = await _error("read_output_file", {"path": str(empty)})
+
+    assert "пуст" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_limits_returned_lines(tmp_path, monkeypatch):
+    """max_lines ограничивает выдачу, но число строк в файле сообщается."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    path = tmp_path / "many.txt"
+    path.write_text("\n".join(str(i) for i in range(10)) + "\n", encoding="utf-8")
+
+    text = _text(await mcp.call_tool("read_output_file",
+                                     {"path": str(path), "max_lines": 3}))
+
+    assert "строк 10" in text
+    assert "показаны первые 3" in text
+    assert "\n9" not in text
+
+
+@pytest.mark.anyio
+async def test_add_block_reports_ignored_props(monkeypatch):
+    """Части props без '=' не исчезают молча."""
+    _install_fake_project(monkeypatch, {})
+
+    text = _text(await mcp.call_tool(
+        "add_block", {"class_name": "Константа", "props": "a=2,мусор"}))
+
+    assert "мусор" in text
+    assert "пропущены" in text
 
 
 # ─── Изоляция stdout ──────────────────────────────────────────────

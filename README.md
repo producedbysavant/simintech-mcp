@@ -50,13 +50,22 @@ claude mcp add simintech -- simintech-mcp
 | Группа | Инструменты |
 |---|---|
 | Подключение | `status`, `disconnect` |
-| Проекты | `create_project`, `open_project`, `save_project`, `close_project` |
+| Проекты | `create_project`, `open_project`, `save_project`, `close_project`, `set_calc_time` |
 | Блоки и связи | `add_block`, `connect`, `list_blocks` |
 | Параметры | `get_block_params`, `set_block_param` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal` |
+| Результаты | `read_output_file` |
 | Layout | `layout_place` |
 | Справка | `help_text` |
+
+Актуальный состав — всегда в `tools/list`; таблица выше только для ориентира.
+
+`create_project` создаёт проект **из шаблона** («Схема модели общего вида»):
+проект из `NewProject` не считает — в нём нет расчётного слоя. Результат
+удобнее всего снимать блоком «В файл» и читать `read_output_file`: он читает
+только каталог результатов (`<временный каталог>/simintech-output`,
+переопределяется `SIMINTECH_OUTPUT_DIR`), точный путь печатает `help_text`.
 
 Ресурсы: `simintech://status`, `simintech://project/blocks`.
 Промпты: `create_pid_model`, `create_rc_chain`.

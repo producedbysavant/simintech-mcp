@@ -16,8 +16,6 @@ from __future__ import annotations
 import functools
 import os
 import sys
-import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Optional
@@ -27,6 +25,9 @@ from fastmcp.exceptions import ToolError
 
 from simintech_api import COMClient, Project
 from simintech_api.catalog import load_default_catalog
+from simintech_api.constants import (
+    default_output_dir as simintech_default_output_dir,
+)
 
 # ─── MCP-сервер ────────────────────────────────────────────────────
 
@@ -62,21 +63,29 @@ def _ensure_project() -> Project:
     return _project
 
 
-def _replace_project(project: Project) -> None:
+def _replace_project(project: Project) -> str:
     """Сделать проект текущим, закрыв предыдущий.
 
     Без этого `create_project`/`open_project` копили бы открытые проекты внутри
     `mmain.exe`: старые оставались бы жить со своими слоями, настройками
     расчёта и базой сигналов, а инструменты молча работали бы с последним.
+
+    Returns:
+        Пустая строка, если закрывать было нечего или всё закрылось, иначе —
+        предупреждение для ответа инструмента: самоцель функции не достигнута,
+        и об этом нельзя молчать (проект остался жить в `mmain.exe`).
     """
     global _project
     previous, _project = _project, project
-    if previous is not None and previous is not project:
-        try:
-            previous.close()
-        except Exception:
-            # Предыдущий мог быть уже закрыт средой — это не отказ операции.
-            pass
+    if previous is None or previous is project:
+        return ""
+    try:
+        previous.close()
+    except Exception as exc:                                  # noqa: BLE001
+        return (f" ВНИМАНИЕ: предыдущий проект закрыть не удалось "
+                f"({type(exc).__name__}: {exc}) — он мог остаться открытым "
+                f"в SimInTech.")
+    return ""
 
 
 # ─── Поток для COM ────────────────────────────────────────────────
@@ -173,17 +182,22 @@ def disconnect() -> str:
     global _client, _project
     if _client is None and _project is None:
         return "Без изменений: соединения не было — сбрасывать нечего"
+    failed = ""
     if _project is not None:
         try:
             _project.close()
-        except Exception:
-            # Проект мог быть уже закрыт средой — состояние всё равно сбрасываем.
-            pass
+        except Exception as exc:                              # noqa: BLE001
+            # Состояние сбрасываем в любом случае, но не выдаём отказ за успех:
+            # `COMClient.disconnect()` проекты не закрывает, поэтому при сбое
+            # `CloseProject` проект останется жить в mmain.exe.
+            failed = (f" ВНИМАНИЕ: проект закрыть не удалось "
+                      f"({type(exc).__name__}: {exc}) — он мог остаться "
+                      f"открытым в SimInTech.")
         _project = None
     if _client is not None:
         _client.disconnect()
         _client = None
-    return "Сессия завершена: проект закрыт, соединение разорвано"
+    return "Сессия завершена: проект закрыт, соединение разорвано" + failed
 
 
 # ─── Проекты ──────────────────────────────────────────────────────
@@ -204,18 +218,25 @@ def create_project(project_hint: str = "model",
     `mmain.exe`.
 
     Args:
-        project_hint: подсказка для сообщения. Имя проекта задаёт среда
-            (в файле `Noname.prt`); переименование через COM недоступно.
-        end_time: конечное время расчёта в секундах; по умолчанию — из шаблона
-            (10 с). Меняется инструментом `set_calc_time`.
+        project_hint: подсказка для сообщения. Имя проекта задаёт среда,
+            переименование через COM недоступно.
+        end_time: конечное время расчёта в секундах (> 0); по умолчанию — из
+            шаблона (10 с). Меняется инструментом `set_calc_time`.
     """
+    # Проверяем до открытия шаблона: иначе неверное значение оставило бы
+    # созданный проект висеть в mmain.exe — он не попал бы ни в _project,
+    # ни в закрытие.
+    if end_time is not None and end_time <= 0:
+        raise ToolError("end_time должен быть положительным числом секунд")
+
     prj = Project.from_template(_ensure_client())
+    replaced = _replace_project(prj)
     if end_time is not None:
         prj.set_calc_end_time(end_time)
-    _replace_project(prj)
     tail = (f", время расчёта {end_time} с" if end_time is not None
             else ", время расчёта — из шаблона (10 с)")
-    return (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}.")
+    return (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}."
+            + replaced)
 
 
 @mcp.tool()
@@ -240,8 +261,8 @@ def open_project(path: str) -> str:
     Предыдущий открытый проект закрывается (см. `create_project`).
     """
     prj = Project.open(_ensure_client(), path)
-    _replace_project(prj)
-    return f"Проект открыт (id={prj.id})"
+    replaced = _replace_project(prj)
+    return f"Проект открыт (id={prj.id})" + replaced
 
 
 @mcp.tool()
@@ -297,23 +318,31 @@ def add_block(class_name: str, name_hint: str = "",
         block.set_name(name_hint)
     if in_ports:
         block.set_in_port_count(in_ports)
+    ignored = []
     if props:
         for pair in _split_props(props):
             if "=" in pair:
                 k, _, v = pair.partition("=")
                 block.set_property(k.strip(), _parse_val(v.strip()))
+            else:
+                # Молча выбросить нельзя: «a=2 мусор» применил бы `a` и не
+                # сказал, что вторая часть потеряна.
+                ignored.append(pair)
 
     actual = block.get_name()
+    notes = []
     if name_hint and actual != name_hint:
         # Проверено на SimInTech64: SetBlockProp("Name") НЕ переименовывает
         # блок — имя остаётся автоматическим (k_0, kx_0, ...), ни в
         # get_name(), ни в .xprt. Молчаливое расхождение опаснее отказа:
         # последующий connect по имени не найдёт блок.
-        return (f"Блок '{class_name}' создан (id={block.id}); имя "
-                f"'{name_hint}' НЕ применилось — блок называется '{actual}'. "
-                f"Переименование через COM не поддерживается. Используйте "
-                f"'{actual}' в connect/get_block_params/layout_place.")
-    return f"Блок '{class_name}' создан (id={block.id}, name={actual})"
+        notes.append(f"имя '{name_hint}' НЕ применилось — блок называется "
+                     f"'{actual}'; переименование через COM недоступно")
+    if ignored:
+        notes.append(f"параметры без '=' пропущены: {', '.join(ignored)}")
+    tail = (" " + "; ".join(notes) + ".") if notes else ""
+    return (f"Блок '{class_name}' создан (id={block.id}, name={actual})."
+            f"{tail}")
 
 
 @mcp.tool()
@@ -428,37 +457,12 @@ def set_block_param(block: str, param: str, value: str) -> str:
 
 # ─── Расчёт ───────────────────────────────────────────────────────
 
-#: Период опроса модельного времени при ожидании и значения по умолчанию для
-#: `run`. Вынесены в параметры инструмента: раньше были зашиты, из-за чего
-#: поведение зависело от машины и не описывалось в контракте.
-CALC_POLL_SECONDS = 0.05
+#: Значения по умолчанию для ожидания расчёта. Само ожидание живёт в
+#: библиотеке (`Simulation.run_to`): `RunTo` не блокирующий, и подтверждать
+#: достижение отметки надо опросом `GetProjectTime` — это общий контракт, а не
+#: деталь MCP.
 CALC_WAIT_SECONDS = 30.0
 CALC_STALL_SECONDS = 1.0
-
-
-def _await_calc_time(sim, target: float, *, wait_timeout: float,
-                     stall_seconds: float) -> float:
-    """Дождаться модельного времени `target`, опрашивая `GetProjectTime`.
-
-    Читать время один раз сразу после `RunTo` нельзя: `RunTo` возвращается
-    раньше, чем расчёт дойдёт до отметки (проверено на реальном SimInTech —
-    сразу после вызова 0.240 с, через мгновение уже 0.5 с).
-
-    Ожидание ограничено двумя способом: общим `wait_timeout` и простоем —
-    если время не растёт `stall_seconds`, расчёт не идёт и ждать бессмысленно.
-    """
-    deadline = time.monotonic() + wait_timeout
-    stall_limit = max(1, int(stall_seconds / CALC_POLL_SECONDS))
-    actual = sim.get_time()
-    stalled = 0
-    while actual + 1e-9 < target and time.monotonic() < deadline:
-        time.sleep(CALC_POLL_SECONDS)
-        new = sim.get_time()
-        stalled = stalled + 1 if new <= actual else 0
-        actual = new
-        if stalled >= stall_limit:
-            break
-    return actual
 
 
 @mcp.tool()
@@ -473,46 +477,72 @@ def run(to_time: Optional[float] = None,
     `ProjectStep` возвращают успех, а модельное время не растёт. Раньше
     инструмент в этом случае сообщал «Расчёт завершён» — ложное подтверждение.
 
+    Расчёт идёт до `endtime` проекта, поэтому `to_time` больше него недостижим
+    — поднимите время расчёта через `set_calc_time`.
+
     Args:
-        to_time: время окончания расчёта в секундах (если указано). Больше
-            `endtime` проекта расчёт не пройдёт — см. `set_calc_time`.
+        to_time: время окончания расчёта в секундах (если указано).
         wait_timeout: сколько секунд ждать выхода времени на `to_time`.
         stall_seconds: сколько секунд неизменного времени считать признаком
             остановившегося расчёта (после этого ждать не имеет смысла).
     """
     sim = _ensure_project().simulation()
     sim.start()
-    if to_time is not None:
-        sim.run_to(to_time)
-        actual = _await_calc_time(sim, to_time, wait_timeout=wait_timeout,
-                                  stall_seconds=stall_seconds)
-        if actual + 1e-9 < to_time:
-            return (f"Расчёт не дошёл до {to_time} с: модельное время "
-                    f"{actual:.3f} (ждали {wait_timeout:.0f} с). Две частые "
-                    f"причины: у какого-то блока не соединён вход — это молча "
-                    f"останавливает расчёт всей модели; либо у проекта нет "
-                    f"расчётного слоя и время не растёт вовсе. Проверьте "
-                    f"соединения, затем `list_blocks`.")
-        return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
-    sim.run()
-    return "Расчёт запущен"
+    if to_time is None:
+        sim.run()
+        return ("Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
+                "через `get_time`)")
+    reached = sim.run_to(to_time, timeout=wait_timeout, stall=stall_seconds)
+    actual = sim.get_time()
+    if not reached:
+        return (f"Расчёт не дошёл до {to_time} с: модельное время "
+                f"{actual:.3f} (ждали {wait_timeout:.0f} с). Три частые "
+                f"причины: у какого-то блока не соединён вход — это молча "
+                f"останавливает расчёт всей модели; у проекта нет расчётного "
+                f"слоя и время не растёт вовсе; либо `to_time` больше `endtime`"
+                f" — поднимите его через `set_calc_time`. Проверьте соединения "
+                f"и `list_blocks`.")
+    return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
 
 
 @mcp.tool()
 @_com_threaded
 def step(count: int = 1) -> str:
-    """Выполнить указанное число шагов расчёта."""
+    """Выполнить указанное число шагов расчёта.
+
+    Проверяется **фактический** рост модельного времени, а не только код
+    возврата: `ProjectStep` сообщает об успехе и на проекте без расчётного
+    слоя, и при неподключённом входе блока — время при этом стоит. Раньше
+    инструмент безусловно отвечал «Выполнено шагов: N».
+
+    Args:
+        count: сколько шагов выполнить (> 0).
+    """
+    if count <= 0:
+        raise ToolError("count должен быть положительным")
     sim = _ensure_project().simulation()
     sim.start()
+    before = sim.get_time()
     for _ in range(count):
         sim.step()
-    return f"Выполнено шагов: {count}"
+    after = sim.get_time()
+    if after <= before:
+        return (f"Время не сдвинулось после {count} шагов (осталось "
+                f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
+                f"у какого-то блока не соединён вход либо у проекта нет "
+                f"расчётного слоя (создайте его через `create_project`).")
+    return f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
 
 
 @mcp.tool()
 @_com_threaded
 def stop() -> str:
-    """Остановить расчёт."""
+    """Остановить расчёт.
+
+    Вызов неблокирующий и не подтверждает, что расчёт шёл: `ProjectStop`
+    сообщает об успехе и на стоящем проекте. Состояние проверяйте по
+    `get_time`.
+    """
     _ensure_project().simulation().stop()
     return "Расчёт остановлен"
 
@@ -600,20 +630,17 @@ def set_signal(block: str, value: float) -> str:
 # ─── Результаты расчёта ───────────────────────────────────────────
 
 #: Переменная окружения: каталог, за пределы которого не выходит
-#: `read_output_file`. Не задана — путь не ограничивается.
+#: `read_output_file`.
 OUTPUT_DIR_ENV = "SIMINTECH_OUTPUT_DIR"
-
-#: Подкаталог стандартного каталога результатов внутри временного каталога.
-DEFAULT_OUTPUT_SUBDIR = "simintech-output"
 
 #: Предел объёма, отдаваемого в контекст: защита от чтения большого
 #: двоичного файла вместо текстового результата.
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
-
-def default_output_dir() -> str:
-    """Стандартный каталог результатов: ``<временный каталог>/simintech-output``."""
-    return os.path.join(tempfile.gettempdir(), DEFAULT_OUTPUT_SUBDIR)
+#: Стандартный каталог результатов и его подкаталог берутся из библиотеки:
+#: это общее соглашение, а не деталь MCP. Пример `examples/run_to_file.py`
+#: пишет туда же, поэтому файл удаётся прочитать через `read_output_file`.
+default_output_dir = simintech_default_output_dir
 
 
 def _ensure_default_output_dir() -> str:
@@ -632,15 +659,15 @@ def _ensure_default_output_dir() -> str:
         pass
     except OSError as exc:
         raise ToolError(
-            f"Не удалось создать каталог результатов {path!r}: {exc}"
+            f"Не удалось создать каталог результатов «{path}»: {exc}"
         ) from exc
     if os.path.islink(path):
         raise ToolError(
-            f"{path!r} — символическая ссылка (возможна подмена каталога "
+            f"«{path}» — символическая ссылка (возможна подмена каталога "
             f"результатов) — чтение запрещено"
         )
     if not os.path.isdir(path):
-        raise ToolError(f"{path!r} не является каталогом — чтение запрещено")
+        raise ToolError(f"«{path}» не является каталогом — чтение запрещено")
     return os.path.realpath(path)
 
 
@@ -659,7 +686,7 @@ def output_root() -> str:
         root = os.path.realpath(raw)
         if not os.path.isdir(root):
             raise ToolError(
-                f"{OUTPUT_DIR_ENV}={raw!r} не является каталогом — чтение "
+                f"{OUTPUT_DIR_ENV}=«{raw}» не является каталогом — чтение "
                 f"результатов запрещено"
             )
         return root
@@ -716,7 +743,7 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     resolved = os.path.realpath(candidate)
     if not _is_inside(root, resolved):
         raise ToolError(
-            f"Чтение результатов разрешено только из каталога {root!r} "
+            f"Чтение результатов разрешено только из каталога «{root}» "
             f"(переопределяется переменной {OUTPUT_DIR_ENV}). Блок «В файл» "
             f"должен писать внутрь него — задайте filename с этим каталогом."
         )
@@ -731,7 +758,9 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
         with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 total += 1
-                read_bytes += len(raw)
+                # Именно байты, а не символы: кириллица в UTF-8 весит вдвое
+                # больше, и по символам предел объёма занижался бы.
+                read_bytes += len(raw.encode("utf-8"))
                 if len(lines) < max_lines:
                     lines.append(raw.rstrip("\r\n"))
                 if read_bytes >= MAX_OUTPUT_BYTES:
@@ -740,12 +769,15 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     except OSError as exc:
         return f"ERROR: {exc}"
     if total == 0:
-        return (f"Файл {path} пуст — блок «В файл» ничего не записал. Обычно это "
-                f"значит, что расчёт не шёл (проверьте `get_time()` после `run`).")
+        # Пустой результат — не «данных нет», а признак, что расчёт не шёл:
+        # блок «В файл» создаёт файл, но без вычислений не пишет ни строки.
+        return (f"ERROR: файл {path} пуст — блок «В файл» ничего не записал. "
+                f"Обычно это значит, что расчёт не шёл (проверьте `get_time()` "
+                f"после `run` и соединения блоков).")
     if truncated:
-        return (f"{path}: прочитано строк {total}, файл больше "
-                f"{MAX_OUTPUT_BYTES} байт — чтение остановлено\n"
-                + "\n".join(lines))
+        return (f"{path}: прочитано строк {total} из {read_bytes} прочитанных "
+                f"байт — файл больше {MAX_OUTPUT_BYTES} байт, чтение "
+                f"остановлено\n" + "\n".join(lines))
     head = f"{path}: строк {total}"
     if total > max_lines:
         head += f", показаны первые {max_lines}"
