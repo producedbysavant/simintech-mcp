@@ -54,8 +54,9 @@ async def test_all_tools_registered():
 
 
 @pytest.mark.anyio
-async def test_read_output_file_without_com(tmp_path):
+async def test_read_output_file_reads_inside_sandbox(tmp_path, monkeypatch):
     """read_output_file читает результат блока «В файл» (COM не нужен)."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     path = tmp_path / "result.txt"
     path.write_text("0\t6\n0.1\t6\n0.2\t6\n", encoding="utf-8")
 
@@ -67,8 +68,24 @@ async def test_read_output_file_without_com(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_read_output_file_missing(tmp_path):
-    """Отсутствующий файл — отказ с понятной причиной."""
+async def test_read_output_file_relative_path_resolves_in_sandbox(tmp_path,
+                                                                 monkeypatch):
+    """Относительный путь ищется внутри каталога результатов."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("0\t6\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": "out.txt"})
+    text = _text(result)
+
+    assert "строк 1" in text
+    assert "0\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_missing(tmp_path, monkeypatch):
+    """Отсутствующий файл внутри песочницы — отказ с понятной причиной."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+
     text = await _error("read_output_file", {"path": str(tmp_path / "нет.txt")})
 
     assert "файла нет" in text
@@ -85,8 +102,27 @@ async def test_read_output_file_sandbox_blocks_outside(tmp_path, monkeypatch):
 
     text = await _error("read_output_file", {"path": str(outside)})
 
-    assert "вне разрешённого каталога" in text
+    assert "разрешено только из каталога" in text
     assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_defaults_to_standard_dir(tmp_path, monkeypatch):
+    """Без переменной песочница тоже действует — по стандартному каталогу.
+
+    Ограничение не опция: иначе инструмент читал бы любой файл по пути от
+    клиента, а клиент может быть без доступа к файловой системе.
+    """
+    from simintech_mcp.server import default_output_dir
+
+    monkeypatch.delenv("SIMINTECH_OUTPUT_DIR", raising=False)
+    outside = tmp_path / "secret.txt"
+    outside.write_text("секрет\n", encoding="utf-8")
+
+    text = await _error("read_output_file", {"path": str(outside)})
+
+    assert "секрет" not in text
+    assert default_output_dir() in text, "отказ должен называть стандартный каталог"
 
 
 @pytest.mark.anyio
@@ -138,6 +174,7 @@ async def test_read_output_file_stops_on_size_limit(tmp_path, monkeypatch):
     """Объём чтения ограничен — большой файл не уходит в контекст целиком."""
     from simintech_mcp import server as server_module
 
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(server_module, "MAX_OUTPUT_BYTES", 30)
     big = tmp_path / "big.txt"
     big.write_text("\n".join(["строка"] * 100) + "\n", encoding="utf-8")

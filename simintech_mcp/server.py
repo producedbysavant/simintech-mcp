@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -602,28 +603,49 @@ def set_signal(block: str, value: float) -> str:
 #: `read_output_file`. Не задана — путь не ограничивается.
 OUTPUT_DIR_ENV = "SIMINTECH_OUTPUT_DIR"
 
+#: Подкаталог стандартного каталога результатов внутри временного каталога.
+DEFAULT_OUTPUT_SUBDIR = "simintech-output"
+
 #: Предел объёма, отдаваемого в контекст: защита от чтения большого
 #: двоичного файла вместо текстового результата.
 MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 
-def _output_sandbox_root():
-    """Разрешённый каталог результатов или None, если ограничение снято.
+def default_output_dir() -> str:
+    """Стандартный каталог результатов: ``<временный каталог>/simintech-output``."""
+    return os.path.join(tempfile.gettempdir(), DEFAULT_OUTPUT_SUBDIR)
 
-    Если переменная задана, но указывает не на существующий каталог — это
-    ошибка конфигурации, и читать запрещено (fail closed): иначе инструмент
-    молча отказывал бы с невнятным «путь вне разрешённого каталога».
+
+def output_root() -> str:
+    """Каталог, из которого разрешено читать результаты. Ограничение всегда есть.
+
+    Порядок: ``SIMINTECH_OUTPUT_DIR``, иначе стандартный каталог
+    (`default_output_dir()`, создаётся при необходимости).
+
+    Если переменная задана, но каталога нет — это ошибка конфигурации и чтение
+    запрещено (fail closed): иначе инструмент отказывал бы с невнятной причиной
+    «путь вне разрешённого каталога», хотя проблема в настройке.
     """
     raw = os.environ.get(OUTPUT_DIR_ENV)
-    if not raw:
-        return None
-    root = os.path.realpath(raw)
-    if not os.path.isdir(root):
-        raise ToolError(
-            f"{OUTPUT_DIR_ENV}={raw!r} не является каталогом — чтение "
-            f"результатов запрещено"
-        )
+    if raw:
+        root = os.path.realpath(raw)
+        if not os.path.isdir(root):
+            raise ToolError(
+                f"{OUTPUT_DIR_ENV}={raw!r} не является каталогом — чтение "
+                f"результатов запрещено"
+            )
+        return root
+    root = os.path.realpath(default_output_dir())
+    os.makedirs(root, exist_ok=True)
     return root
+
+
+def _safe_output_root() -> str:
+    """Каталог результатов для справки: не падает на ошибке конфигурации."""
+    try:
+        return output_root()
+    except ToolError as exc:
+        return f"<ошибка конфигурации {OUTPUT_DIR_ENV}: {exc}>"
 
 
 def _is_inside(root: str, path: str) -> bool:
@@ -647,23 +669,31 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     Порядок работы: `add_block("В файл", props="filename=<путь>,count=1,step=[0.1]")`
     → соединить с выходом модели → `run(to_time=…)` → `read_output_file(<путь>)`.
 
-    **Ограничение доступа.** Инструмент читает файл по пути, который пришёл от
-    клиента. Если задана переменная окружения `SIMINTECH_OUTPUT_DIR`, читать
-    можно только внутри этого каталога — тогда инструмент нельзя использовать
-    как «прочитать произвольный файл». Без переменной путь не ограничивается:
-    обычно вызывающий агент и сам имеет доступ к файловой системе. Задавайте
-    переменную, если сервер подключён к клиенту без такого доступа. Символические
-    ссылки раскрываются до проверки, поэтому `..` и ссылки обойти не помогают.
+    **Читается только каталог результатов.** По умолчанию это
+    ``<временный каталог>/simintech-output`` (переопределяется переменной
+    `SIMINTECH_OUTPUT_DIR`), и блок «В файл» должен писать **внутрь** него —
+    иначе инструмент откажет. Это стандартное ограничение, а не опция: иначе
+    инструмент превращается в «прочитать произвольный файл по пути от клиента».
+    Относительный путь ищется внутри каталога результатов, символические ссылки
+    раскрываются до проверки — поэтому `..` и ссылки выйти наружу не помогают.
+    Текущий каталог печатает `help_text`.
 
     Args:
-        path: путь к файлу, куда писал блок «В файл».
+        path: путь к файлу внутри каталога результатов (абсолютный или
+            относительный — тогда он ищется в этом каталоге).
         max_lines: сколько первых строк вернуть (по умолчанию 200).
     """
-    resolved = os.path.realpath(path)
-    root = _output_sandbox_root()
-    if root is not None and not _is_inside(root, resolved):
-        return (f"ERROR: путь вне разрешённого каталога результатов "
-                f"({OUTPUT_DIR_ENV}={root})")
+    root = output_root()
+    # Относительный путь ищется внутри каталога результатов — так запись и
+    # чтение не расходятся.
+    candidate = path if os.path.isabs(path) else os.path.join(root, path)
+    resolved = os.path.realpath(candidate)
+    if not _is_inside(root, resolved):
+        raise ToolError(
+            f"Чтение результатов разрешено только из каталога {root!r} "
+            f"(переопределяется переменной {OUTPUT_DIR_ENV}). Блок «В файл» "
+            f"должен писать внутрь него — задайте filename с этим каталогом."
+        )
     if not os.path.isfile(resolved):
         return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
                 f"«В файл» и что расчёт действительно прошёл.")
@@ -775,12 +805,18 @@ def help_text() -> str:
         "\n"
         "Порядок работы:\n"
         "  1. create_project(end_time=N) — проект из шаблона пустой модели\n"
-        "  2. add_block(class_name, props=\"a=2\") — блоки\n"
+        "  2. add_block(class_name, props=\"a=2\") — блоки; имена не задаются,\n"
+        "     фактическое имя возвращает сам вызов\n"
         "  3. connect(src, dst) — связи; соединяйте ВСЕ входы: блок с висящим\n"
         "     входом молча останавливает расчёт всей модели\n"
         "  4. layout_place(block_ids, connections) — расставить блоки\n"
         "  5. run(to_time=N) — расчёт; проверьте get_time() в ответе\n"
-        "  6. read_output_file(путь) — результат от блока «В файл»\n"
+        f"  6. read_output_file(путь) — результат блока «В файл»\n"
+        "\n"
+        f"Результаты читаются только из каталога:\n"
+        f"  {_safe_output_root()}\n"
+        f"Блок «В файл» должен писать внутрь него (свойство filename); каталог\n"
+        f"переопределяется переменной SIMINTECH_OUTPUT_DIR.\n"
         "\n"
         "Аргументы инструментов и их ограничения описаны в их docstring.\n"
         "Ресурсы (read-only): simintech://status, simintech://project/blocks\n"
@@ -823,21 +859,23 @@ def create_pid_model(kp: float = 1.0, ki: float = 0.5,
     """
     return (
         f"Создай ПИД-регулятор в SimInTech:\n"
-        f"1. create_project \"pid\"\n"
-        f"2. add_block \"Ступенька\" name=\"Step\" props=\"yk={setpoint}\"\n"
-        f"3. add_block \"Сумматор\" name=\"Err\" props=\"a=[1.0,-1.0]\"\n"
-        f"4. add_block \"Усилитель\" name=\"Kp\" props=\"a={kp}\"\n"
-        f"5. add_block \"Усилитель\" name=\"Ki\" props=\"a={ki}\"\n"
-        f"6. add_block \"Усилитель\" name=\"Kd\" props=\"a={kd}\"\n"
-        f"7. add_block \"Сумматор\" name=\"PID\" in_ports=3 "
-        f"props=\"a=[1.0,1.0,1.0]\"\n"
-        f"8. add_block \"Интегратор\" name=\"Plant\" props=\"k=1.0,x0=0.0\"\n"
-        f"9. connect \"Step\" to \"Err\"\n"
-        f"10. connect \"Err\" to \"Kp\", \"Err\" to \"Ki\", \"Err\" to \"Kd\"\n"
-        f"11. connect \"Kp\" to \"PID\", \"Ki\" to \"PID\", \"Kd\" to \"PID\"\n"
-        f"12. connect \"PID\" to \"Plant\"\n"
-        f"13. connect \"Plant\" to \"Err\" (обратная связь)\n"
-        f"14. run to_time=20\n"
+        f"1. create_project(project_hint=\"pid\", end_time=20)\n"
+        f"2. add_block(class_name=\"Ступенька\", props=\"yk={setpoint}\")\n"
+        f"3. add_block(class_name=\"Сумматор\", props=\"a=[1.0,-1.0]\")\n"
+        f"4. add_block(class_name=\"Усилитель\", props=\"a={kp}\")\n"
+        f"5. add_block(class_name=\"Усилитель\", props=\"a={ki}\")\n"
+        f"6. add_block(class_name=\"Усилитель\", props=\"a={kd}\")\n"
+        f"7. add_block(class_name=\"Сумматор\", in_ports=3, "
+        f"props=\"a=[1.0,1.0,1.0]\")\n"
+        f"8. add_block(class_name=\"Интегратор\", props=\"k=1.0,x0=0.0\")\n"
+        f"9. connect вход→сумматор, сумматор→усилители, усиливающие→PID\n"
+        f"10. connect PID → Интегратор, Интегратор → сумматор (обратная связь)\n"
+        f"11. layout_place по фактическим именам блоков\n"
+        f"12. run(to_time=20) и проверь get_time() в ответе\n"
+        f"\n"
+        f"Блоки НЕ переименовываются: `name_hint` не применяется, а фактические\n"
+        f"имена (`k_0`, `kx_0`, …) возвращает add_block — по ним и соединяй.\n"
+        f"Соедини ВСЕ входы: блок с висящим входом молча останавливает расчёт.\n"
     )
 
 
@@ -846,13 +884,15 @@ def create_rc_chain(rc: float = 1.0, amplitude: float = 5.0) -> str:
     """Шаблон создания RC-цепи (ступенька → усилитель → интегратор)."""
     return (
         f"Создай RC-цепь в SimInTech:\n"
-        f"1. create_project \"rc\"\n"
-        f"2. add_block \"Ступенька\" name=\"Step\" props=\"yk={amplitude}\"\n"
-        f"3. add_block \"Усилитель\" name=\"Gain\" props=\"a={_gain_for_rc(rc)}\"\n"
-        f"4. add_block \"Интегратор\" name=\"Integrator\" props=\"k=1.0,x0=0.0\"\n"
-        f"5. connect \"Step\" to \"Gain\"\n"
-        f"6. connect \"Gain\" to \"Integrator\"\n"
-        f"7. run to_time={5.0 * rc}\n"
+        f"1. create_project(project_hint=\"rc\", end_time={5.0 * rc})\n"
+        f"2. add_block(class_name=\"Ступенька\", props=\"yk={amplitude}\")\n"
+        f"3. add_block(class_name=\"Усилитель\", props=\"a={_gain_for_rc(rc)}\")\n"
+        f"4. add_block(class_name=\"Интегратор\", props=\"k=1.0,x0=0.0\")\n"
+        f"5. соедини блоки по фактическим именам из ответов add_block\n"
+        f"   (Ступенька → Усилитель → Интегратор; все входы заняты)\n"
+        f"6. run(to_time={5.0 * rc}) и проверь get_time() в ответе\n"
+        f"\n"
+        f"Переименование через COM недоступно — используй автоимена.\n"
     )
 
 
