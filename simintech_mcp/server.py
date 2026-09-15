@@ -18,12 +18,12 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from simintech_api import COMClient, Project
+from simintech_api import COMClient, Project, Wire
 from simintech_api.catalog import load_default_catalog
 from simintech_api.constants import (
     default_output_dir as simintech_default_output_dir,
@@ -47,6 +47,13 @@ mcp = FastMCP(
 
 _client: Optional[COMClient] = None
 _project: Optional[Project] = None
+
+#: Линии, созданные в текущей сессии. COM API не умеет перечислять линии
+#: страницы (нет ни `GetWireCount`, ни `GetWire`), поэтому запоминаем их при
+#: создании — иначе `layout_place` нечего трассировать, и провода остались бы
+#: диагональными. Живут ровно столько же, сколько проект: сбрасываются вместе
+#: с ним.
+_WIRES: List[Wire] = []
 
 
 def _ensure_client() -> COMClient:
@@ -77,6 +84,9 @@ def _replace_project(project: Project) -> str:
     """
     global _project
     previous, _project = _project, project
+    # Линии принадлежат предыдущему проекту: их COM-идентификаторы после смены
+    # проекта указывают в никуда.
+    _WIRES.clear()
     if previous is None or previous is project:
         return ""
     try:
@@ -182,6 +192,7 @@ def disconnect() -> str:
     global _client, _project
     if _client is None and _project is None:
         return "Без изменений: соединения не было — сбрасывать нечего"
+    _WIRES.clear()
     failed = ""
     if _project is not None:
         try:
@@ -316,6 +327,7 @@ def close_project() -> str:
         return "Без изменений: проект не был открыт"
     _project.close()
     _project = None
+    _WIRES.clear()
     return "Проект закрыт"
 
 
@@ -385,6 +397,14 @@ def connect(src: str, dst: str,
             out_index: int = 0, in_index: int = 0) -> str:
     """Соединить выход блока src с входом блока dst линией связи.
 
+    Созданная линия запоминается, но **не трассируется здесь**: трассировка
+    (`layout_place`) делается, когда блоки займут свои места. Нормализовать
+    сразу нельзя — блоки в этот момент стоят в (0,0) друг на друге, и
+    `NormalizeWire` прокладывает маршрут в обход наложенных блоков, оставляя в
+    геометрии точки вида (-160,-1056). Проверено на SimInTech64 2026-09-15:
+    такие точки потом не пересчитываются, и линия остаётся кривой даже после
+    расстановки.
+
     Args:
         src: имя/алиас блока-источника.
         dst: имя/алиас блока-приёмника.
@@ -399,6 +419,7 @@ def connect(src: str, dst: str,
     if b2 is None:
         return f"ERROR: блок '{dst}' не найден на странице"
     wire = b1.connect(b2, out_index=out_index, in_index=in_index)
+    _WIRES.append(wire)
     return f"Соединено {src} -> {dst} (wire={wire.id})"
 
 
@@ -830,6 +851,17 @@ def layout_place(block_ids: str, connections: str) -> str:
     блоки не двигал: агент получал подтверждение расстановки, которой не было.
     Позиция задаётся до расчёта — она влияет только на вид схемы.
 
+    Размеры блоков не задаются: `set_center` сохраняет родной размер каждого
+    блока (он задан правилами разработки SimInTech, и подменять его нельзя), а
+    расстановка считается по фактическим габаритам из `get_size`.
+
+    Здесь же трассируются линии, созданные `connect` в этой сессии: после
+    сдвига блоков геометрия пересчитывается `NormalizeWire`, иначе провода
+    остаются диагональными (по прямой между портами). Это единственное место,
+    где трассировка возможна: до расстановки блоки лежат в (0,0) друг на
+    друге, и маршрут получается в обход наложенных блоков. Линии, созданные
+    не в этой сессии, недоступны: COM не умеет перечислять линии страницы.
+
     Args:
         block_ids: блоки через запятую — имена (`k_0`, `kx_0`, `ToFile_0`; их
             даёт `list_blocks`) или числовые id.
@@ -838,7 +870,8 @@ def layout_place(block_ids: str, connections: str) -> str:
     """
     from simintech_api.layout import LayeredPlacer
 
-    page = _ensure_project().get_main_page()
+    project = _ensure_project()
+    page = project.get_main_page()
     available = {}
     for block in page.get_blocks():
         available[str(block.id)] = block
@@ -872,7 +905,9 @@ def layout_place(block_ids: str, connections: str) -> str:
             )
         links.append((src, dst))
 
-    sizes = {token: (60.0, 40.0) for token in tokens}
+    # Размеры берём у самих блоков, а не подставляем свои: размер задан
+    # правилами разработки SimInTech, и `set_center` не должен его менять.
+    sizes = {token: available[token].get_size() for token in tokens}
     positions = LayeredPlacer().place(tokens, links, sizes=sizes)
 
     applied = []
@@ -880,7 +915,19 @@ def layout_place(block_ids: str, connections: str) -> str:
         cx, cy = positions[token]
         available[token].set_center(cx, cy)
         applied.append(f"  {token}: ({cx:.1f}, {cy:.1f})")
-    return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied)
+
+    # Порядок обязателен и проверен на SimInTech64: перемещение блоков →
+    # перерисовка → трассировка. Без перерисовки SimInTech прокладывает
+    # провода по прежним прямоугольникам блоков (они ещё лежат в (0,0) друг на
+    # друге) и оставляет в геометрии точки вида (-160,-1056), которые потом не
+    # пересчитываются. Повторная трассировка на расставленной схеме безвредна.
+    project.repaint()
+    for wire in _WIRES:
+        wire.normalize()
+    routes = (f"\nЛинии связи: нормализовано {len(_WIRES)} — участки "
+              f"ортогональные" if _WIRES
+              else "\nЛиний связи в этой сессии нет — трассировать нечего")
+    return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
 
 
 @mcp.tool()
@@ -901,7 +948,8 @@ def help_text() -> str:
         "     фактическое имя возвращает сам вызов\n"
         "  3. connect(src, dst) — связи; соединяйте ВСЕ входы: блок с висящим\n"
         "     входом молча останавливает расчёт всей модели\n"
-        "  4. layout_place(block_ids, connections) — расставить блоки\n"
+        "  4. layout_place(block_ids, connections) — расставить блоки и\n"
+        "     трассировать линии (иначе провода идут по диагонали)\n"
         "  5. run(to_time=N) — расчёт; проверьте get_time() в ответе\n"
         f"  6. read_output_file(путь) — результат блока «В файл»\n"
         "\n"

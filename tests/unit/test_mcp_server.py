@@ -272,10 +272,14 @@ async def test_help_text_tool():
 class _PlacedBlock:
     """Блок с координатами — для проверки, что расстановка применяется."""
 
+    #: Размер, который «отдаёт» блок: у SimInTech он свой у каждого класса.
+    SIZE = (60.0, 40.0)
+
     def __init__(self, name, block_id):
         self._name = name
         self._id = block_id
         self.center = None
+        self.size_reads = 0
 
     @property
     def id(self):
@@ -283,6 +287,10 @@ class _PlacedBlock:
 
     def get_name(self):
         return self._name
+
+    def get_size(self):
+        self.size_reads += 1
+        return self.SIZE
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)
@@ -311,6 +319,26 @@ async def test_layout_place_applies_coordinates(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_uses_block_sizes(monkeypatch):
+    """Расстановка считается по размерам самих блоков, а не по константам.
+
+    Размер блока задан правилами разработки SimInTech: подставлять свой
+    (60x40) нельзя — блок нестандартного размера считается нарушением.
+    """
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("kx_0", 2)
+    first.SIZE = (120.0, 80.0)
+    second.SIZE = (120.0, 80.0)
+    _install_fake_project(monkeypatch, {"k_0": first, "kx_0": second})
+
+    await mcp.call_tool("layout_place",
+                        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"})
+
+    assert first.size_reads == 1, "размер блока не запрошен"
+    assert second.size_reads == 1, "размер блока не запрошен"
+
+
+@pytest.mark.anyio
 async def test_layout_place_rejects_unknown_block(monkeypatch):
     """Несуществующий блок — отказ, а не «успешная» расстановка."""
     _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
@@ -333,6 +361,181 @@ async def test_layout_place_rejects_connection_outside_block_ids(monkeypatch):
                         {"block_ids": "k_0", "connections": "k_0->kx_0"})
 
     assert "вне block_ids" in text
+
+
+# ─── Трассировка линий (ортогональные провода) ────────────────────
+
+class _FakeWire:
+    """Линия, считающая вызовы нормализации."""
+
+    def __init__(self, wire_id, events=None):
+        self.id = wire_id
+        self.normalized = 0
+        self._events = events
+
+    def normalize(self):
+        self.normalized += 1
+        if self._events is not None:
+            self._events.append(("normalize", self.id))
+        return self
+
+
+class _ConnectingBlock:
+    """Блок, который соединяется и двигается — как настоящий."""
+
+    def __init__(self, name, block_id, events=None):
+        self._name = name
+        self._id = block_id
+        self.center = None
+        self.wires = []
+        self.events = events
+
+    @property
+    def id(self):
+        return self._id
+
+    def get_name(self):
+        return self._name
+
+    def get_size(self):
+        return (60.0, 40.0)
+
+    def set_center(self, cx, cy):
+        self.center = (cx, cy)
+        return self
+
+    def connect(self, other, out_index=0, in_index=0):
+        wire = _FakeWire(len(self.wires) + 1, events=self.events)
+        self.wires.append((wire, other, out_index, in_index))
+        return wire
+
+
+class _WireProject:
+    """Проект с одной страницей — минимум для connect/layout_place."""
+
+    def __init__(self, blocks, events=None):
+        self.page = _FakePage(blocks)
+        self.closed = False
+        self._events = events
+        self.repaints = 0
+
+    def get_main_page(self):
+        return self.page
+
+    def repaint(self):
+        self.repaints += 1
+        if self._events is not None:
+            self._events.append(("repaint", None))
+        return self
+
+    def close(self):
+        self.closed = True
+
+
+def _install_wire_project(monkeypatch, blocks):
+    """Подменить проект и очистить реестр линий (он общий для сессии).
+
+    Возвращает журнал вызовов: по нему проверяется, что перерисовка идёт
+    до трассировки, а не наоборот.
+    """
+    from simintech_mcp import server as server_module
+    server_module._WIRES.clear()
+    events = []
+    for block in blocks.values():
+        block.events = events
+    monkeypatch.setattr(server_module, "_project", _WireProject(blocks, events))
+    return events
+
+
+@pytest.mark.anyio
+async def test_connect_only_remembers_wire(monkeypatch):
+    """connect запоминает линию, но НЕ трассирует её.
+
+    Трассировать в этот момент нельзя: блоки стоят в (0,0) друг на друге, и
+    NormalizeWire оставляет в геометрии точки вроде (-160,-1056), которые
+    потом не пересчитываются. Проверено на SimInTech64 2026-09-15.
+    """
+    from simintech_mcp import server as server_module
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+    _install_wire_project(monkeypatch, {"k_0": src, "Integrator_0": dst})
+
+    text = _text(await mcp.call_tool("connect",
+                                     {"src": "k_0", "dst": "Integrator_0"}))
+
+    assert "Соединено" in text
+    wire = src.wires[0][0]
+    assert wire.normalized == 0, "линия трассирована до расстановки блоков"
+    assert server_module._WIRES == [wire], "линия не запомнена для layout_place"
+
+
+@pytest.mark.anyio
+async def test_layout_place_repaints_before_routing(monkeypatch):
+    """Порядок: перемещение → перерисовка → трассировка.
+
+    Без перерисовки SimInTech прокладывает провода по прежним прямоугольникам
+    блоков (они ещё лежат в (0,0) друг на друге) и оставляет в геометрии точки
+    вроде (-160,-1056), которые потом не пересчитываются. Проверено на
+    SimInTech64 2026-09-15.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    events = _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+    wire = src.wires[0][0]
+
+    text = _text(await mcp.call_tool(
+        "layout_place",
+        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
+
+    assert events == [("repaint", None), ("normalize", 1)], \
+        "перерисовка должна идти до трассировки"
+    assert wire.normalized == 1, "после расстановки линия не трассирована"
+    assert "нормализовано 1" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_reports_no_wires(monkeypatch):
+    """Если линий не создавали, инструмент об этом говорит, а не молчит."""
+    _install_wire_project(monkeypatch, {
+        "k_0": _ConnectingBlock("k_0", 1),
+        "kx_0": _ConnectingBlock("kx_0", 2),
+    })
+
+    text = _text(await mcp.call_tool(
+        "layout_place",
+        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
+
+    assert "Линий связи в этой сессии нет" in text
+
+
+def test_replace_project_clears_wire_registry(monkeypatch):
+    """Смена проекта обнуляет реестр: чужие WireId указывают в никуда."""
+    from simintech_mcp import server as server_module
+
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    server_module._WIRES.append(_FakeWire(99))
+
+    server_module._replace_project(_WireProject({}))
+
+    assert server_module._WIRES == []
+
+
+@pytest.mark.anyio
+async def test_close_project_clears_wire_registry(monkeypatch):
+    """close_project обнуляет реестр линий вместе с проектом."""
+    from simintech_mcp import server as server_module
+    project = _WireProject({})
+    _install_wire_project(monkeypatch, {})
+    monkeypatch.setattr(server_module, "_project", project)
+    server_module._WIRES.append(_FakeWire(1))
+
+    text = _text(await mcp.call_tool("close_project", {}))
+
+    assert server_module._WIRES == []
+    assert "закрыт" in text
 
 
 @pytest.mark.anyio
@@ -457,9 +660,15 @@ class _RenamingBlock:
 class _FakeProject:
     def __init__(self, blocks):
         self._page = _FakePage(blocks)
+        self.repaints = 0
 
     def get_main_page(self):
         return self._page
+
+    def repaint(self):
+        """Перерисовка редактора: layout_place зовёт её перед трассировкой."""
+        self.repaints += 1
+        return self
 
 
 def _install_fake_project(monkeypatch, blocks):
@@ -884,7 +1093,7 @@ async def test_run_reports_failure_when_time_did_not_move(monkeypatch):
 @pytest.mark.anyio
 async def test_run_reports_success_with_actual_time(monkeypatch):
     """Успешный расчёт подтверждается фактическим временем."""
-    sim = _install_fake_simulation(monkeypatch, [1.0])
+    _install_fake_simulation(monkeypatch, [1.0])
 
     text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
 
