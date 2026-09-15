@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
@@ -300,10 +301,46 @@ def set_block_param(name: str, param: str, value: str) -> str:
 
 # ─── Расчёт ───────────────────────────────────────────────────────
 
+# Сколько ждать выхода модельного времени на заданную отметку и через сколько
+# опросов без движения считать, что расчёт не идёт.
+_CALC_WAIT_SECONDS = 30.0
+_CALC_POLL_SECONDS = 0.05
+_CALC_STALL_POLLS = 20          # ~1 секунда без движения времени
+
+
+def _await_calc_time(sim, target: float) -> float:
+    """Дождаться модельного времени `target`, опрашивая `GetProjectTime`.
+
+    Читать время один раз сразу после `RunTo` нельзя: `RunTo` возвращается
+    раньше, чем расчёт дойдёт до отметки (проверено на реальном SimInTech —
+    сразу после вызова 0.240 с, через мгновение уже 0.5 с). Если время не
+    растёт вовсе (у проекта не настроено время расчёта), выходим после
+    ~секунды простоя, а не ждём весь таймаут.
+    """
+    deadline = time.monotonic() + _CALC_WAIT_SECONDS
+    actual = sim.get_time()
+    stalled = 0
+    while actual + 1e-9 < target and time.monotonic() < deadline:
+        time.sleep(_CALC_POLL_SECONDS)
+        new = sim.get_time()
+        stalled = stalled + 1 if new <= actual else 0
+        actual = new
+        if stalled >= _CALC_STALL_POLLS:
+            break
+    return actual
+
+
 @mcp.tool()
 @_com_threaded
 def run(to_time: Optional[float] = None) -> str:
     """Запустить расчёт проекта (опционально до момента времени).
+
+    Проверяется **фактическое** модельное время, а не код возврата: на проекте
+    без настроенного времени расчёта `ProjectRun`/`RunTo`/`ProjectStep`
+    возвращают успех, но модельное время не растёт (проверено на реальном
+    SimInTech: проект из `Project.new()` не считает, `fsm_demo.prt` считается).
+    Раньше инструмент в этом случае сообщал «Расчёт завершён» — ложное
+    подтверждение.
 
     Args:
         to_time: время окончания расчёта в секундах (если указано).
@@ -312,7 +349,13 @@ def run(to_time: Optional[float] = None) -> str:
     sim.start()
     if to_time is not None:
         sim.run_to(to_time)
-        return f"Расчёт до {to_time} с завершён (время={sim.get_time():.3f})"
+        actual = _await_calc_time(sim, to_time)
+        if actual + 1e-9 < to_time:
+            return (f"Расчёт не дошёл до {to_time} с: модельное время "
+                    f"{actual:.3f}. Проверьте, что у проекта настроено время "
+                    f"расчёта — на проекте без этих настроек модельное время "
+                    f"не растёт вовсе, хотя вызовы и возвращают успех.")
+        return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
     sim.run()
     return "Расчёт запущен"
 

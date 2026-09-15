@@ -7,6 +7,17 @@
 Источник-эталон: `matlab/matlab-mcp-server`, `sohumsuthar/simulink-mcp`,
 `matlab/simulink-agentic-toolkit`.
 
+> **Обновление 2026-09-14: проект разделён на три репозитория.**
+> Библиотека `simintech-api` и весь контент (`blocks/`, `language/`,
+> `patterns/`, `tutorials/`, `automation/`) переехали в
+> [`simintech-code`](https://github.com/producedbysavant/simintech-code),
+> скиллы — в [`simintech-skill`](https://github.com/producedbysavant/simintech-skill).
+> Этот репозиторий содержит только MCP-слой. Пути в таблицах ниже, где
+> упомянуты `simintech_api/`, `scripts/`, `skills-catalog/` и
+> `docs/simintech-language/`, читайте как относящиеся к состоянию **до**
+> разделения; каталог `docs/simintech-language/` удалён как дубликат
+> корневых каталогов `simintech-code`.
+
 ---
 
 ## 1. Что уже сделано (вопреки исходной таблице)
@@ -21,7 +32,7 @@
 | Типизированные инструменты | 18 шт., без `eval()` | ✅ Есть |
 | Agentic Toolkit / скиллы | `.claude/` и `SKILL.md` отсутствуют | ❌ Нет |
 | Скиллы в ClawHub | вне этого репо | ⚠️ Частично |
-| Библиотека кода | `docs/simintech-language/` | ✅ Есть |
+| Библиотека кода | корневые `language/`, `blocks/`, `patterns/`, `tutorials/` в `simintech-code` (в этом репозитории контента нет) | ✅ Есть |
 | API/CLI | COM API + `simintech-cli` | ✅ Есть |
 
 **Три ключевых архитектурных решения из плана уже реализованы буквально:**
@@ -120,17 +131,19 @@ lazy startup (`_ensure_client()`), persistent session (модульные гло
 ### 3.2. Как каталог генерируется (реализовано)
 
 ```bash
-python scripts/generate_block_catalog.py     # Windows + mmain.exe /regserver
+simintech-generate-catalog     # Windows + mmain.exe /regserver; живёт в simintech-code
 ```
 
-Скрипт создаёт по блоку каждого класса из `SUPPORTED_COM_BLOCK_CLASSES`,
-экспортирует проект в `.xprt` и разбирает секцию **`<custom_props>`** каждого
-объекта: имя, значение по умолчанию и `mode` (1 — задаваемый, 0 — вычисляемый).
-Результат — `simintech_api/data/block_catalog.json`.
+Генератор — entry point пакета `simintech-code` (раньше
+`scripts/generate_block_catalog.py`). Он создаёт по блоку каждого класса из
+`SUPPORTED_COM_BLOCK_CLASSES`, экспортирует проект в `.xprt` и разбирает секцию
+**`<custom_props>`** каждого объекта: имя, значение по умолчанию и `mode`
+(1 — задаваемый, 0 — вычисляемый). Результат —
+`simintech_api/data/block_catalog.json` в `simintech-code`.
 
-`docs/simintech-language/blocks/` как источник имён **непригодна**: там
-используются читаемые имена (`signs`, `numInputs`, `num`, `den`, `reset`),
-которых в SimInTech нет.
+Справочник блоков (`blocks/` в `simintech-code`) как источник имён
+**непригоден**: там используются читаемые имена (`signs`, `numInputs`, `num`,
+`den`, `reset`), которых в SimInTech нет.
 
 ## 4. Дефекты текущего кода (не новые функции)
 
@@ -189,7 +202,7 @@ python scripts/generate_block_catalog.py     # Windows + mmain.exe /regserver
 | Изоляция stdout + тесты | `simintech_mcp/server.py`, `tests/unit/test_mcp_server.py` |
 | Зависимости | `pyproject.toml` (+`fastmcp`, +`anyio`, package-data) |
 | Каталог свойств | `simintech_api/catalog.py`, `simintech_api/data/block_catalog.json` |
-| Генератор каталога | `scripts/generate_block_catalog.py` |
+| Генератор каталога | `scripts/generate_block_catalog.py` (теперь entry point `simintech-generate-catalog` в `simintech-code`) |
 | Чтение/запись параметров | `Block.get_properties()` / `Block.init()`, MCP `get_block_params` / `set_block_param` |
 | Каталог скиллов | `skills-catalog/` (4 скилла) |
 | Тесты | 108 unit-тестов, flake8 чист |
@@ -300,6 +313,49 @@ MCP-сервер: было 18 инструментов, стало **20**.
 не уровня чтения. Перенос `sdb_adapter.py` (§10 спецификации разделения)
 выполнен — `simintech_api/sdb.py` даёт разбор XML-выгрузки базы; на выгрузку
 результатов он не влиял и не влияет.
+
+### 6.4. Сквозной прогон MCP: сборка → расчёт → результат (2026-09-15)
+
+Проверено через настоящий stdio-транспорт (`initialize` → `tools/call`) на
+реальном SimInTech64; `tools/list` отдаёт 20 инструментов.
+
+| Шаг | Результат |
+|---|---|
+| `create_project` → `add_block` ×3 → `connect` ×2 | ✅ блоки `k_0`, `kx_0`, `TimeGraphic_0`, две связи |
+| `get_block_params` / `set_block_param` | ✅ каталог читается: `a = 2`, после записи — `a = 5` |
+| `save_project` | ✅ `.xprt` 447 КБ, блоки и связи на месте |
+| `list_signals` + `get_signal` (проект с базой) | ✅ 2 читаемых сигнала, значения `1.0` и `0.0` |
+| `run` на `fsm_demo.prt` | ✅ модельное время доходит до 35.0; `ProjectStep` — +0.001 за шаг |
+
+Чего не хватает:
+
+1. **Проект, собранный с нуля, не считает.** `Project.new()` → блоки → `run`:
+   время остаётся `0.0` при любом способе — `ProjectStart` + `ProjectRun`
+   (опрос 6 с реального времени), `RunTo(1.0)` → `1`, `WaitForTime` → `0`,
+   `ProjectStep` ×5, `GetProjectStateFlag` → `0`. `save_binary` с повторным
+   открытием, `WaitForAllLoading` и `SetSilentMode(0)` (с GUI) не помогают.
+   При этом `fsm_demo.prt` считается — значит дело в настройках расчёта
+   проекта, а не в механизме COM. MCP-инструмента для этих настроек нет
+   (§5, `get/set_project_config` — не начато), в карте COM API метода для
+   времени расчёта тоже нет. **Итог: собрать модель и запустить её через MCP
+   сейчас нельзя — запускается только проект с уже настроенным расчётом.**
+2. **`run` сообщал об успехе безусловно.** Раньше `server.py` печатал
+   «Расчёт до N с завершён», не глядя на результат `run_to()` — на проекте без
+   настроенного расчёта это ложное подтверждение. Туда же `Simulation.run_to`:
+   комментарий гласит «Result != 0 означает, что нужно ждать», а код при
+   `result != 0` сразу возвращает `True`, то есть не ждёт.
+
+   **Попутно уточнено: `RunTo` в этой сборке не блокирующий, хотя в карте
+   COM API он помечен блокирующим.** Проверено на `fsm_demo.prt`: сразу после
+   `RunTo(0.5)` время 0.240 с, через мгновение — уже 0.5 с. Поэтому `run`
+   теперь опрашивает `GetProjectTime` до выхода на отметку (и выходит по
+   простою ~1 с, а не по общему таймауту), после чего честно сообщает либо
+   «завершён», либо «не дошёл до N, время такое-то».
+3. **`layout_place` не расставляет блоки.** Он считает координаты через
+   `LayeredPlacer` и возвращает их текстом, к блокам не применяет. Проверено:
+   на идентификаторах `A,B,C`, которых на схеме нет, инструмент вернул
+   координаты. Позиция сейчас задаётся только при создании
+   (`add_block(x=, y=)`); инструмента перемещения нет.
 
 ## 6. Что осталось непроверенным
 
