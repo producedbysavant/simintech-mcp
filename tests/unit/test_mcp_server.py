@@ -1021,6 +1021,68 @@ async def test_set_calc_time_delegates_to_project(monkeypatch):
     assert "7.0 с" in text
 
 
+# ─── Формат сохранения проекта ────────────────────────────────────
+
+class _SavableProject:
+    """Проект, запоминающий, каким методом его сохранили."""
+
+    def __init__(self, raises: bool = False):
+        self.calls = []
+        self._raises = raises
+
+    def _record(self, kind: str, path: str) -> None:
+        self.calls.append((kind, path))
+        if self._raises:
+            raise RuntimeError("диск переполнен")
+
+    def save_xml(self, path: str) -> None:
+        self._record("xml", path)
+
+    def save_binary(self, path: str) -> None:
+        self._record("binary", path)
+
+
+def _install_savable(monkeypatch, raises: bool = False) -> "_SavableProject":
+    from simintech_mcp import server as server_module
+
+    project = _SavableProject(raises=raises)
+    monkeypatch.setattr(server_module, "_project", project)
+    return project
+
+
+@pytest.mark.anyio
+async def test_save_project_defaults_to_xml(monkeypatch):
+    """По умолчанию сохраняется XML: поведение прежних версий не меняется."""
+    project = _install_savable(monkeypatch)
+
+    text = _text(await mcp.call_tool("save_project", {"path": r"C:\m.xprt"}))
+
+    assert project.calls == [("xml", r"C:\m.xprt")]
+    assert "XML" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_binary_flag_writes_prt(monkeypatch):
+    """binary=True пишет нативный .prt — его открывает GUI SimInTech."""
+    project = _install_savable(monkeypatch)
+
+    text = _text(await mcp.call_tool(
+        "save_project", {"path": r"C:\m.prt", "binary": True}))
+
+    assert project.calls == [("binary", r"C:\m.prt")]
+    assert ".prt" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_failure_is_error(monkeypatch):
+    """Неудачная запись — отказ, а не ответ «проект сохранён»."""
+    _install_savable(monkeypatch, raises=True)
+
+    text = await _error("save_project", {"path": r"C:\m.prt", "binary": True})
+
+    assert "диск переполнен" in text
+
+
 # ─── Отчёт об отказах закрытия ────────────────────────────────────
 
 def test_replace_project_reports_failed_close(monkeypatch):

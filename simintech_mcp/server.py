@@ -267,10 +267,27 @@ def open_project(path: str) -> str:
 
 @mcp.tool()
 @_com_threaded
-def save_project(path: str) -> str:
-    """Сохранить текущий проект в XML (.xprt)."""
-    _ensure_project().save_xml(path)
-    return f"Проект сохранён: {path}"
+def save_project(path: str, binary: bool = False) -> str:
+    """Сохранить текущий проект в файл.
+
+    Два формата, и назначение у них разное:
+
+    * XML (`.xprt`, по умолчанию) — обычный текст: читается глазами, диффится,
+      переживает перенос между версиями;
+    * бинарный (`.prt`, `binary=True`) — **нативный формат проекта**, тот самый,
+      который открывает GUI SimInTech. XML в GUI тоже открывается, но двойным
+      щелчком по файлу проекта запускается именно `.prt`.
+
+    Args:
+        path: путь к файлу (абсолютный).
+        binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
+    """
+    project = _ensure_project()
+    if binary:
+        project.save_binary(path)
+        return f"Проект сохранён в бинарный файл (.prt): {path}"
+    project.save_xml(path)
+    return f"Проект сохранён в XML (.xprt): {path}"
 
 
 @mcp.tool()
