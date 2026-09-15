@@ -319,6 +319,25 @@ async def test_layout_place_applies_coordinates(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_add_block_sets_standard_size_for_extra_inputs(monkeypatch):
+    """Число входов меняет штатный размер: «Сумматор» 3 входа — 32x48.
+
+    Замерено по эталонным моделям SimInTech (2026-09-15): 32x32 при двух
+    входах, 32x48 при трёх. Блок нестандартного размера — нарушение правил
+    разработки.
+    """
+    from simintech_mcp import server
+    project = _FakeProjectWithCreate()
+    monkeypatch.setattr(server, "_project", project)
+
+    await mcp.call_tool("add_block", {"class_name": "Сумматор", "in_ports": 3})
+
+    created = project.page._created[-1]
+    assert created.in_ports == 3
+    assert created.position == (0.0, 0.0, 32.0, 48.0)
+
+
+@pytest.mark.anyio
 async def test_layout_place_uses_block_sizes(monkeypatch):
     """Расстановка считается по размерам самих блоков, а не по константам.
 
@@ -635,6 +654,8 @@ class _RenamingBlock:
     def __init__(self, class_name):
         self._class_name = class_name
         self._props = {"Name": self.AUTO_NAME}
+        self.in_ports = 0
+        self.position = None
 
     @property
     def id(self):
@@ -651,6 +672,14 @@ class _RenamingBlock:
 
     def set_property(self, name, value):
         self._props[name] = value
+        return self
+
+    def set_in_port_count(self, count):
+        self.in_ports = count
+        return self
+
+    def set_position(self, x, y, *, width=None, height=None):
+        self.position = (x, y, width, height)
         return self
 
     def get_name(self):

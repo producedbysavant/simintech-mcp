@@ -27,6 +27,7 @@ from simintech_api import COMClient, Project, Wire
 from simintech_api.catalog import load_default_catalog
 from simintech_api.constants import (
     default_output_dir as simintech_default_output_dir,
+    standard_block_size,
 )
 
 # ─── MCP-сервер ────────────────────────────────────────────────────
@@ -364,6 +365,11 @@ def add_block(class_name: str, name_hint: str = "",
         block.set_name(name_hint)
     if in_ports:
         block.set_in_port_count(in_ports)
+        # Число входов меняет штатный размер блока: у «Сумматора» 32x32 при
+        # двух входах и 32x48 при трёх (замерено по эталонным моделям).
+        size = standard_block_size(class_name, in_ports)
+        if size:
+            block.set_position(x, y, width=size[0], height=size[1])
     ignored = []
     if props:
         for pair in _split_props(props):
