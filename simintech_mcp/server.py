@@ -616,6 +616,34 @@ def default_output_dir() -> str:
     return os.path.join(tempfile.gettempdir(), DEFAULT_OUTPUT_SUBDIR)
 
 
+def _ensure_default_output_dir() -> str:
+    """Создать стандартный каталог результатов, не следуя по чужой ссылке.
+
+    Каталог лежит в предсказуемом месте, поэтому его мог заранее создать другой
+    процесс — **символической ссылкой** на выбранный им каталог. `realpath` тогда
+    увёл бы песочницу туда, и ограничение стало бы фиктивным. Поэтому каталог
+    создаётся только когда его нет (`os.mkdir` без `exist_ok`), с правами 0o700,
+    и подмена ссылкой отвергается явно.
+    """
+    path = default_output_dir()
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise ToolError(
+            f"Не удалось создать каталог результатов {path!r}: {exc}"
+        ) from exc
+    if os.path.islink(path):
+        raise ToolError(
+            f"{path!r} — символическая ссылка (возможна подмена каталога "
+            f"результатов) — чтение запрещено"
+        )
+    if not os.path.isdir(path):
+        raise ToolError(f"{path!r} не является каталогом — чтение запрещено")
+    return os.path.realpath(path)
+
+
 def output_root() -> str:
     """Каталог, из которого разрешено читать результаты. Ограничение всегда есть.
 
@@ -635,9 +663,7 @@ def output_root() -> str:
                 f"результатов запрещено"
             )
         return root
-    root = os.path.realpath(default_output_dir())
-    os.makedirs(root, exist_ok=True)
-    return root
+    return _ensure_default_output_dir()
 
 
 def _safe_output_root() -> str:

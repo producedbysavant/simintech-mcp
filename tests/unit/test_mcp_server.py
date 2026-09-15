@@ -68,8 +68,8 @@ async def test_read_output_file_reads_inside_sandbox(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_read_output_file_relative_path_resolves_in_sandbox(tmp_path,
-                                                                 monkeypatch):
+async def test_read_output_file_relative_path_resolves_in_sandbox(
+        tmp_path, monkeypatch):
     """Относительный путь ищется внутри каталога результатов."""
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     (tmp_path / "out.txt").write_text("0\t6\n", encoding="utf-8")
@@ -123,6 +123,42 @@ async def test_read_output_file_defaults_to_standard_dir(tmp_path, monkeypatch):
 
     assert "секрет" not in text
     assert default_output_dir() in text, "отказ должен называть стандартный каталог"
+
+
+def test_default_output_dir_is_created_private(tmp_path, monkeypatch):
+    """Каталога нет — он создаётся, и права не раздают его всем."""
+    if sys.platform == "win32":
+        pytest.skip("права POSIX на Windows не проверяются")
+    from simintech_mcp import server as server_module
+
+    target = tmp_path / "новый"
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+
+    root = server_module.output_root()
+
+    assert os.path.isdir(root)
+    assert (os.stat(root).st_mode & 0o777) == 0o700
+
+
+def test_default_output_dir_rejects_symlink(tmp_path, monkeypatch):
+    """Подменённый ссылкой стандартный каталог не принимается.
+
+    Каталог результатов лежит в предсказуемом месте: если его заранее создать
+    символической ссылкой, `realpath` увёл бы песочницу в выбранное атакующим
+    место, и ограничение стало бы фиктивным.
+    """
+    if sys.platform == "win32":
+        pytest.skip("символические ссылки требуют привилегий на Windows")
+    from simintech_mcp import server as server_module
+
+    real_dir = tmp_path / "настоящий"
+    real_dir.mkdir()
+    link = tmp_path / "simintech-output"
+    link.symlink_to(real_dir, target_is_directory=True)
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(link))
+
+    with pytest.raises(ToolError, match="символическая ссылка"):
+        server_module.output_root()
 
 
 @pytest.mark.anyio
