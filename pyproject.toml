@@ -13,6 +13,12 @@ authors = [{ name = "EVS360" }]
 dependencies = [
     # Библиотека-ядро. Для локальной разработки заменить на path-зависимость:
     # simintech-api = { path = "../simintech-code", editable = true }
+    #
+    # ВНИМАНИЕ: тег v0.2.0 не содержит `Project.from_template`,
+    # `set_calc_end_time` и класса «В файл» — на нём `create_project` падает с
+    # AttributeError, а собрать считающуюся модель нельзя. До выпуска
+    # следующего тега ставьте библиотеку из локального checkout (path-строка
+    # выше) или напрямую из main.
     "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.2.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",

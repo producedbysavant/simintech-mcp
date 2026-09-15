@@ -6,9 +6,32 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-import pytest
+import pytest  # noqa: E402
+from fastmcp.exceptions import ToolError  # noqa: E402
 
-from simintech_mcp.server import mcp
+from simintech_mcp.server import mcp  # noqa: E402
+
+
+def _text(result) -> str:
+    """Достать текст из результата call_tool (форма зависит от версии MCP)."""
+    if isinstance(result, (list, tuple)):
+        return result[0].text
+    content = getattr(result, "content", None)
+    if content:
+        return content[0].text
+    return str(result)
+
+
+async def _error(tool: str, arguments: dict) -> str:
+    """Вызвать инструмент, ожидая отказ; вернуть текст отказа.
+
+    Отказ доставляется исключением `ToolError` — именно по нему MCP выставляет
+    `isError` в ответе. Раньше инструменты возвращали строку «ERROR: …», и
+    клиент, доверяющий флагу, видел успех.
+    """
+    with pytest.raises(ToolError) as excinfo:
+        await mcp.call_tool(tool, arguments)
+    return str(excinfo.value)
 
 
 @pytest.mark.anyio
@@ -19,13 +42,211 @@ async def test_all_tools_registered():
     expected = {
         "status", "disconnect",
         "create_project", "open_project", "save_project", "close_project",
+        "set_calc_time",
         "add_block", "connect", "list_blocks",
         "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",
         "list_signals", "get_signal", "set_signal",
+        "read_output_file",
         "layout_place", "help_text",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
+
+
+@pytest.mark.anyio
+async def test_read_output_file_reads_inside_sandbox(tmp_path, monkeypatch):
+    """read_output_file читает результат блока «В файл» (COM не нужен)."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    path = tmp_path / "result.txt"
+    path.write_text("0\t6\n0.1\t6\n0.2\t6\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": str(path)})
+    text = _text(result)
+
+    assert "строк 3" in text
+    assert "0.2\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_relative_path_resolves_in_sandbox(
+        tmp_path, monkeypatch):
+    """Относительный путь ищется внутри каталога результатов."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("0\t6\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": "out.txt"})
+    text = _text(result)
+
+    assert "строк 1" in text
+    assert "0\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_missing(tmp_path, monkeypatch):
+    """Отсутствующий файл внутри песочницы — отказ с понятной причиной."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+
+    text = await _error("read_output_file", {"path": str(tmp_path / "нет.txt")})
+
+    assert "файла нет" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_blocks_outside(tmp_path, monkeypatch):
+    """С SIMINTECH_OUTPUT_DIR читается только этот каталог и его подкаталоги."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("секрет\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    text = await _error("read_output_file", {"path": str(outside)})
+
+    assert "разрешено только из каталога" in text
+    assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_defaults_to_standard_dir(tmp_path, monkeypatch):
+    """Без переменной песочница тоже действует — по стандартному каталогу.
+
+    Ограничение не опция: иначе инструмент читал бы любой файл по пути от
+    клиента, а клиент может быть без доступа к файловой системе.
+    """
+    from simintech_mcp.server import default_output_dir
+
+    monkeypatch.delenv("SIMINTECH_OUTPUT_DIR", raising=False)
+    outside = tmp_path / "secret.txt"
+    outside.write_text("секрет\n", encoding="utf-8")
+
+    text = await _error("read_output_file", {"path": str(outside)})
+
+    assert "секрет" not in text
+    # Сравниваем канонизированный путь: Windows отдаёт gettempdir() в коротком
+    # виде (C:\Users\A-SAVC~1\...), а сервер печатает long-форму после realpath.
+    assert os.path.realpath(default_output_dir()) in text, \
+        "отказ должен называть стандартный каталог"
+
+
+def test_default_output_dir_is_created_private(tmp_path, monkeypatch):
+    """Каталога нет — он создаётся, и права не раздают его всем."""
+    if sys.platform == "win32":
+        pytest.skip("права POSIX на Windows не проверяются")
+    from simintech_mcp import server as server_module
+
+    target = tmp_path / "новый"
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+
+    root = server_module.output_root()
+
+    assert os.path.isdir(root)
+    assert (os.stat(root).st_mode & 0o777) == 0o700
+
+
+def test_default_output_dir_rejects_symlink(tmp_path, monkeypatch):
+    """Подменённый ссылкой стандартный каталог не принимается.
+
+    Каталог результатов лежит в предсказуемом месте: если его заранее создать
+    символической ссылкой, `realpath` увёл бы песочницу в выбранное атакующим
+    место, и ограничение стало бы фиктивным.
+
+    Проверяется подменой `os.path.islink`, а не настоящей ссылкой: создание
+    ссылок на Windows требует привилегий, а сервер работает именно там — тест
+    с `skip` на Windows не проверял бы ничего на целевой платформе.
+    """
+    from simintech_mcp import server as server_module
+
+    target = tmp_path / "simintech-output"
+    target.mkdir()
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+    monkeypatch.setattr(server_module.os.path, "islink", lambda p: True)
+
+    with pytest.raises(ToolError, match="символическая ссылка"):
+        server_module.output_root()
+
+
+def test_default_output_dir_rejects_non_directory(tmp_path, monkeypatch):
+    """Путь существует, но это файл — читать из него нечего."""
+    from simintech_mcp import server as server_module
+
+    target = tmp_path / "simintech-output"
+    target.write_text("не каталог", encoding="utf-8")
+    monkeypatch.setattr(server_module, "default_output_dir", lambda: str(target))
+
+    with pytest.raises(ToolError, match="не является каталогом"):
+        server_module.output_root()
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_root_must_be_dir(tmp_path, monkeypatch):
+    """Несуществующий каталог в SIMINTECH_OUTPUT_DIR — ошибка конфигурации.
+
+    Проверка «fail closed»: иначе инструмент молча отказывал бы с невнятной
+    причиной «путь вне разрешённого каталога».
+    """
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path / "нет-такого"))
+
+    text = await _error("read_output_file", {"path": str(tmp_path / "x.txt")})
+
+    assert "не является каталогом" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_allows_inside(tmp_path, monkeypatch):
+    """Файл внутри разрешённого каталога читается."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    inside = sandbox / "out.txt"
+    inside.write_text("0\t6\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    result = await mcp.call_tool("read_output_file", {"path": str(inside)})
+    text = _text(result)
+
+    assert "строк 1" in text
+    assert "0\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_blocks_parent_escape(tmp_path, monkeypatch):
+    """`..` не помогает выйти из песочницы: путь раскрывается до проверки."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    (tmp_path / "secret.txt").write_text("секрет\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    escape = str(sandbox / ".." / "secret.txt")
+    text = await _error("read_output_file", {"path": escape})
+
+    assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_stops_on_size_limit(tmp_path, monkeypatch):
+    """Объём чтения ограничен — большой файл не уходит в контекст целиком."""
+    from simintech_mcp import server as server_module
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(server_module, "MAX_OUTPUT_BYTES", 30)
+    big = tmp_path / "big.txt"
+    big.write_text("\n".join(["строка"] * 100) + "\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": str(big)})
+    text = _text(result)
+
+    assert "чтение остановлено" in text
+    assert text.count("строка") < 100
+
+
+def test_split_props_keeps_array_commas():
+    """Запятые внутри `[...]` не считаются разделителями параметров."""
+    from simintech_mcp.server import _split_props
+
+    assert _split_props("a=[1, -1], b=2") == ["a=[1, -1]", "b=2"]
+    assert _split_props("a=2") == ["a=2"]
+    assert _split_props("") == []
+    assert _split_props("filename=C:\\Temp\\out.txt,count=1,step=[0.2]") == [
+        "filename=C:\\Temp\\out.txt", "count=1", "step=[0.2]"]
 
 
 @pytest.mark.anyio
@@ -41,24 +262,77 @@ async def test_status_on_linux():
 @pytest.mark.anyio
 async def test_help_text_tool():
     """help_text возвращает справку с ключевыми командами."""
-    result = await mcp.call_tool("help_text", {})
-    text = result[0].text if isinstance(result, (list, tuple)) else str(result)
+    text = _text(await mcp.call_tool("help_text", {}))
     assert "add_block" in text
     assert "create_project" in text
-    assert "get_signal" in text
+    # Перечень инструментов живёт в tools/list, а не в справке.
+    assert "tools/list" in text
+
+
+class _PlacedBlock:
+    """Блок с координатами — для проверки, что расстановка применяется."""
+
+    def __init__(self, name, block_id):
+        self._name = name
+        self._id = block_id
+        self.center = None
+
+    @property
+    def id(self):
+        return self._id
+
+    def get_name(self):
+        return self._name
+
+    def set_center(self, cx, cy):
+        self.center = (cx, cy)
+        return self
 
 
 @pytest.mark.anyio
-async def test_layout_place_works_without_com():
-    """layout_place работает без COM (чистый алгоритм)."""
-    result = await mcp.call_tool(
+async def test_layout_place_applies_coordinates(monkeypatch):
+    """layout_place не только считает координаты, но и применяет их.
+
+    Раньше инструмент возвращал координаты текстом, а блоки не двигал: агент
+    получал подтверждение расстановки, которой не было.
+    """
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("kx_0", 2)
+    _install_fake_project(monkeypatch, {"k_0": first, "kx_0": second})
+
+    text = _text(await mcp.call_tool(
         "layout_place",
-        {"block_ids": "A,B,C", "connections": "A->B,B->C"},
-    )
-    text = result[0].text if isinstance(result, (list, tuple)) else str(result)
-    assert "A:" in text
-    assert "B:" in text
-    assert "C:" in text
+        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
+
+    assert "Расставлено блоков: 2" in text
+    assert first.center is not None, "координаты не применены к блоку"
+    assert second.center is not None, "координаты не применены к блоку"
+    assert first.center != second.center, "блоки не разнесены по слоям"
+
+
+@pytest.mark.anyio
+async def test_layout_place_rejects_unknown_block(monkeypatch):
+    """Несуществующий блок — отказ, а не «успешная» расстановка."""
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0,нет_такого", "connections": ""})
+
+    assert "не найдены" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_rejects_connection_outside_block_ids(monkeypatch):
+    """Связь ссылается на блок вне block_ids — расстановка невозможна."""
+    _install_fake_project(monkeypatch, {
+        "k_0": _PlacedBlock("k_0", 1),
+        "kx_0": _PlacedBlock("kx_0", 2),
+    })
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0", "connections": "k_0->kx_0"})
+
+    assert "вне block_ids" in text
 
 
 @pytest.mark.anyio
@@ -141,6 +415,9 @@ class _FakePage:
     def find_block(self, name):
         return self._blocks.get(name)
 
+    def get_blocks(self):
+        return list(self._blocks.values())
+
     def create_block(self, class_name, x, y):
         block = _RenamingBlock(class_name)
         self._created.append(block)
@@ -212,7 +489,7 @@ async def test_get_block_params_returns_known_props(monkeypatch):
         "Gain": _FakeBlock("Усилитель", {"Name": "Gain", "a": "2.5"}),
     })
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Gain"}))
+    text = _tool_text(await mcp.call_tool("get_block_params", {"block": "Gain"}))
 
     assert "Усилитель" in text
     assert "a = 2.5" in text
@@ -220,12 +497,11 @@ async def test_get_block_params_returns_known_props(monkeypatch):
 
 @pytest.mark.anyio
 async def test_get_block_params_missing_block(monkeypatch):
-    """Несуществующий блок — сообщение, а не исключение."""
+    """Несуществующий блок — отказ."""
     _install_fake_project(monkeypatch, {})
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Нет"}))
+    text = await _error("get_block_params", {"block": "Нет"})
 
-    assert text.startswith("ERROR")
     assert "не найден" in text
 
 
@@ -236,7 +512,7 @@ async def test_get_block_params_unknown_class(monkeypatch):
         "X": _FakeBlock("Неизвестный класс", {"a": "1"}),
     })
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "X"}))
+    text = _tool_text(await mcp.call_tool("get_block_params", {"block": "X"}))
 
     assert "неизвестны" in text
 
@@ -248,7 +524,7 @@ async def test_set_block_param_applies_and_inits(monkeypatch):
     _install_fake_project(monkeypatch, {"Gain": block})
 
     text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Gain", "param": "a", "value": "3.5"}))
+        "set_block_param", {"block": "Gain", "param": "a", "value": "3.5"}))
 
     assert block._props["a"] == "3.5"
     assert block.inited is True
@@ -262,7 +538,7 @@ async def test_set_block_param_accepts_array(monkeypatch):
     _install_fake_project(monkeypatch, {"Sum": block})
 
     await mcp.call_tool(
-        "set_block_param", {"name": "Sum", "param": "a", "value": "[1, -1]"})
+        "set_block_param", {"block": "Sum", "param": "a", "value": "[1, -1]"})
 
     assert block._props["a"] == "[1, -1]"
 
@@ -274,7 +550,7 @@ async def test_set_block_param_warns_on_unknown_param(monkeypatch):
     _install_fake_project(monkeypatch, {"Gain": block})
 
     text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Gain", "param": "неттакого", "value": "1"}))
+        "set_block_param", {"block": "Gain", "param": "неттакого", "value": "1"}))
 
     assert "неттакого" in text
     assert "отсутствует в каталоге" in text
@@ -282,12 +558,13 @@ async def test_set_block_param_warns_on_unknown_param(monkeypatch):
 
 @pytest.mark.anyio
 async def test_set_block_param_missing_block(monkeypatch):
+    """Несуществующий блок — отказ, а не тихий «успех»."""
     _install_fake_project(monkeypatch, {})
 
-    text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Нет", "param": "a", "value": "1"}))
+    text = await _error(
+        "set_block_param", {"block": "Нет", "param": "a", "value": "1"})
 
-    assert text.startswith("ERROR")
+    assert "не найден" in text
 
 
 def test_coerce_param_value_parses_scalars():
@@ -328,7 +605,7 @@ async def test_add_block_warns_when_rename_ignored(monkeypatch):
     monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
 
     text = _tool_text(await mcp.call_tool(
-        "add_block", {"class_name": "Константа", "name": "Src"}))
+        "add_block", {"class_name": "Константа", "name_hint": "Src"}))
 
     assert "НЕ применилось" in text
     assert "k_0" in text
@@ -336,7 +613,7 @@ async def test_add_block_warns_when_rename_ignored(monkeypatch):
 
 @pytest.mark.anyio
 async def test_add_block_reports_auto_name(monkeypatch):
-    """Без name= инструмент возвращает фактическое автоимя."""
+    """Без name_hint= инструмент возвращает фактическое автоимя."""
     from simintech_mcp import server
     monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
 
@@ -364,7 +641,12 @@ def test_com_threaded_uses_single_dedicated_thread():
     assert whoami() == whoami() == whoami()
 
 
-def test_com_threaded_returns_result_and_propagates_error():
+def test_com_threaded_returns_result_and_wraps_errors():
+    """Отказ доставляется как `ToolError` — по нему MCP выставляет `isError`.
+
+    Раньше инструменты сообщали об ошибке строкой «ERROR: …», и клиент,
+    доверяющий флагу `isError`, видел 100% успеха.
+    """
     from simintech_mcp.server import _com_threaded
 
     @_com_threaded
@@ -375,9 +657,37 @@ def test_com_threaded_returns_result_and_propagates_error():
     def boom():
         raise ValueError("нет проекта")
 
+    @_com_threaded
+    def prose_error():
+        return "ERROR: блока нет"
+
+    @_com_threaded
+    def ok_message():
+        return "всё хорошо"
+
     assert add(2, 3) == 5
-    with pytest.raises(ValueError, match="нет проекта"):
+    assert ok_message() == "всё хорошо", "обычный текст не должен стать ошибкой"
+    with pytest.raises(ToolError, match="нет проекта"):
         boom()
+    with pytest.raises(ToolError, match="блока нет"):
+        prose_error()
+
+
+def test_com_threaded_times_out_instead_of_hanging(monkeypatch):
+    """Зависание COM даёт отказ, а не молчаливое подвисание сервера."""
+    import time as _time
+
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "COM_CALL_TIMEOUT", 0.05)
+
+    @server._com_threaded
+    def slow():
+        _time.sleep(0.3)
+        return "поздно"
+
+    with pytest.raises(ToolError, match="не ответил"):
+        slow()
 
 
 def test_com_threaded_preserves_signature():
@@ -390,6 +700,401 @@ def test_com_threaded_preserves_signature():
 
     import inspect
     assert list(inspect.signature(sample).parameters) == ["name", "count"]
+
+
+# ─── Жизненный цикл сессии ────────────────────────────────────────
+
+class _ClosableProject:
+    def __init__(self, raises=False):
+        self.closed = False
+        self._raises = raises
+
+    def close(self):
+        if self._raises:
+            raise RuntimeError("проект уже закрыт средой")
+        self.closed = True
+        return self
+
+
+def test_replace_project_closes_previous(monkeypatch):
+    """Смена проекта закрывает предыдущий.
+
+    Иначе create_project/open_project копили бы открытые проекты внутри
+    mmain.exe, а инструменты молча работали бы с последним.
+    """
+    from simintech_mcp import server
+
+    previous, fresh = _ClosableProject(), _ClosableProject()
+    monkeypatch.setattr(server, "_project", previous)
+
+    server._replace_project(fresh)
+
+    assert previous.closed, "предыдущий проект не закрыт"
+    assert server._project is fresh
+
+
+def test_replace_project_tolerates_already_closed(monkeypatch):
+    """Уже закрытый средой проект не должен ломать смену."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", _ClosableProject(raises=True))
+    fresh = _ClosableProject()
+
+    server._replace_project(fresh)
+
+    assert server._project is fresh
+
+
+def test_replace_project_without_previous(monkeypatch):
+    """Первый проект в сессии — закрывать нечего."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+    fresh = _ClosableProject()
+
+    server._replace_project(fresh)
+
+    assert server._project is fresh
+    assert not fresh.closed
+
+
+@pytest.mark.anyio
+async def test_disconnect_resets_project_and_client(monkeypatch):
+    """disconnect() сбрасывает и проект: иначе остаётся мёртвый ProjectId."""
+    from simintech_mcp import server
+
+    project = _ClosableProject()
+
+    class _Client:
+        connected = True
+
+        def __init__(self):
+            self.disconnected = False
+
+        def disconnect(self):
+            self.disconnected = True
+
+    client = _Client()
+    monkeypatch.setattr(server, "_project", project)
+    monkeypatch.setattr(server, "_client", client)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert project.closed
+    assert client.disconnected
+    assert server._project is None
+    assert server._client is None
+    assert "Сессия завершена" in text
+
+
+@pytest.mark.anyio
+async def test_disconnect_without_session_is_noop(monkeypatch):
+    """Нечего сбрасывать — сообщение «без изменений», а не вид действия."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+    monkeypatch.setattr(server, "_client", None)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert "Без изменений" in text
+
+
+@pytest.mark.anyio
+async def test_close_project_without_project_is_noop(monkeypatch):
+    """Закрытие без проекта — тоже «без изменений»."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+
+    text = _text(await mcp.call_tool("close_project", {}))
+
+    assert "Без изменений" in text
+
+
+# ─── Расчёт (без COM) ─────────────────────────────────────────────
+
+class _FakeSimulation:
+    """Расчёт с управляемой последовательностью модельного времени."""
+
+    def __init__(self, times):
+        self._times = list(times)
+        self._last = 0.0
+        self.run_to_calls = []
+        self.stepped = 0
+        self.started = 0
+        self.run_to_result = True
+
+    def start(self):
+        self.started += 1
+        return self
+
+    def get_time(self):
+        if self._times:
+            self._last = self._times.pop(0)
+        return self._last
+
+    def step(self):
+        self.stepped += 1
+        return self
+
+    def run(self):
+        return self
+
+    def stop(self):
+        return self
+
+    def run_to(self, target, timeout=None, stall=None):
+        self.run_to_calls.append((target, timeout, stall))
+        return self.run_to_result
+
+
+class _SimProject:
+    def __init__(self, sim):
+        self._sim = sim
+
+    def simulation(self):
+        return self._sim
+
+
+def _install_fake_simulation(monkeypatch, times):
+    from simintech_mcp import server as server_module
+
+    sim = _FakeSimulation(times)
+    monkeypatch.setattr(server_module, "_project", _SimProject(sim))
+    return sim
+
+
+@pytest.mark.anyio
+async def test_run_reports_failure_when_time_did_not_move(monkeypatch):
+    """run честно сообщает, что расчёт не дошёл, а не «завершён»."""
+    from simintech_mcp import server as server_module
+
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    sim.run_to_result = False
+
+    text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
+
+    assert "не дошёл" in text
+    assert "0.000" in text
+    assert sim.run_to_calls == [(1.0, server_module.CALC_WAIT_SECONDS,
+                                 server_module.CALC_STALL_SECONDS)]
+
+
+@pytest.mark.anyio
+async def test_run_reports_success_with_actual_time(monkeypatch):
+    """Успешный расчёт подтверждается фактическим временем."""
+    sim = _install_fake_simulation(monkeypatch, [1.0])
+
+    text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
+
+    assert "завершён" in text
+    assert "1.000" in text
+
+
+@pytest.mark.anyio
+async def test_run_passes_waits_to_library(monkeypatch):
+    """Параметры ожидания уходят в библиотечный run_to, а не игнорируются."""
+    sim = _install_fake_simulation(monkeypatch, [1.0])
+
+    await mcp.call_tool("run", {"to_time": 1.0, "wait_timeout": 5.0,
+                                "stall_seconds": 0.5})
+
+    assert sim.run_to_calls == [(1.0, 5.0, 0.5)]
+
+
+@pytest.mark.anyio
+async def test_run_without_target_warns_no_confirmation(monkeypatch):
+    """Неблокирующий запуск не выдаётся за подтверждённый результат."""
+    _install_fake_simulation(monkeypatch, [0.0])
+
+    text = _text(await mcp.call_tool("run", {}))
+
+    assert "неблокирующий" in text
+
+
+@pytest.mark.anyio
+async def test_step_reports_stalled_time(monkeypatch):
+    """step — тот же класс, что run: время не сдвинулось, значит расчёт стоит."""
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+
+    text = _text(await mcp.call_tool("step", {"count": 3}))
+
+    assert "не сдвинулось" in text
+    assert sim.stepped == 3
+
+
+@pytest.mark.anyio
+async def test_step_reports_time_delta(monkeypatch):
+    """Успешные шаги подтверждаются дельтой времени."""
+    _install_fake_simulation(monkeypatch, [0.0, 0.003])
+
+    text = _text(await mcp.call_tool("step", {"count": 3}))
+
+    assert "0.000 → 0.003" in text
+
+
+@pytest.mark.anyio
+async def test_step_rejects_non_positive_count(monkeypatch):
+    _install_fake_simulation(monkeypatch, [0.0])
+
+    text = await _error("step", {"count": 0})
+
+    assert "положительным" in text
+
+
+# ─── Создание проекта и время расчёта (без COM) ───────────────────
+
+class _TemplateProject:
+    id = 5
+
+    def __init__(self):
+        self.end_time = None
+        self.closed = False
+
+    def set_calc_end_time(self, seconds):
+        self.end_time = seconds
+        return self
+
+    def close(self):
+        self.closed = True
+
+
+def _install_fake_template(monkeypatch):
+    from simintech_mcp import server as server_module
+
+    opened = []
+    project = _TemplateProject()
+
+    def fake_from_template(client):
+        opened.append(project)
+        return project
+
+    monkeypatch.setattr(server_module.Project, "from_template",
+                        staticmethod(fake_from_template))
+    monkeypatch.setattr(server_module, "_ensure_client", lambda: object())
+    monkeypatch.setattr(server_module, "_project", None)
+    return project, opened
+
+
+@pytest.mark.anyio
+async def test_create_project_uses_template_and_sets_end_time(monkeypatch):
+    """create_project идёт через шаблон и применяет end_time."""
+    from simintech_mcp import server as server_module
+
+    project, opened = _install_fake_template(monkeypatch)
+
+    text = _text(await mcp.call_tool("create_project", {"end_time": 2.5}))
+
+    assert opened == [project], "проект должен создаваться из шаблона"
+    assert project.end_time == 2.5
+    assert "2.5 с" in text
+    assert server_module._project is project
+
+
+@pytest.mark.anyio
+async def test_create_project_rejects_non_positive_end_time(monkeypatch):
+    """Неверное время отвергается ДО открытия шаблона.
+
+    Иначе созданный проект остался бы висеть в mmain.exe: он не попал бы ни в
+    `_project`, ни в закрытие.
+    """
+    _project_obj, opened = _install_fake_template(monkeypatch)
+
+    text = await _error("create_project", {"end_time": 0})
+
+    assert "положительным" in text
+    assert opened == [], "шаблон открывать было нельзя"
+
+
+@pytest.mark.anyio
+async def test_set_calc_time_delegates_to_project(monkeypatch):
+    """set_calc_time передаёт значение в проект."""
+    from simintech_mcp import server as server_module
+
+    project = _TemplateProject()
+    monkeypatch.setattr(server_module, "_project", project)
+
+    text = _text(await mcp.call_tool("set_calc_time", {"seconds": 7.0}))
+
+    assert project.end_time == 7.0
+    assert "7.0 с" in text
+
+
+# ─── Отчёт об отказах закрытия ────────────────────────────────────
+
+def test_replace_project_reports_failed_close(monkeypatch):
+    """Неудачное закрытие предыдущего проекта не выдаётся за успех."""
+    from simintech_mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "_project",
+                        _ClosableProject(raises=True))
+    fresh = _ClosableProject()
+
+    note = server_module._replace_project(fresh)
+
+    assert "ВНИМАНИЕ" in note
+    assert server_module._project is fresh
+
+
+@pytest.mark.anyio
+async def test_disconnect_reports_failed_close(monkeypatch):
+    """disconnect сбрасывает состояние, но сообщает о неудачном закрытии."""
+    from simintech_mcp import server as server_module
+
+    class _Client:
+        def disconnect(self):
+            pass
+
+    monkeypatch.setattr(server_module, "_project",
+                        _ClosableProject(raises=True))
+    monkeypatch.setattr(server_module, "_client", _Client())
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert server_module._project is None
+    assert "ВНИМАНИЕ" in text
+
+
+# ─── Прочие ветки read_output_file и add_block ────────────────────
+
+@pytest.mark.anyio
+async def test_read_output_file_empty_is_error(tmp_path, monkeypatch):
+    """Пустой файл — отказ: это признак, что расчёт не шёл."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    empty = tmp_path / "empty.txt"
+    empty.write_text("", encoding="utf-8")
+
+    text = await _error("read_output_file", {"path": str(empty)})
+
+    assert "пуст" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_limits_returned_lines(tmp_path, monkeypatch):
+    """max_lines ограничивает выдачу, но число строк в файле сообщается."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    path = tmp_path / "many.txt"
+    path.write_text("\n".join(str(i) for i in range(10)) + "\n", encoding="utf-8")
+
+    text = _text(await mcp.call_tool("read_output_file",
+                                     {"path": str(path), "max_lines": 3}))
+
+    assert "строк 10" in text
+    assert "показаны первые 3" in text
+    assert "\n9" not in text
+
+
+@pytest.mark.anyio
+async def test_add_block_reports_ignored_props(monkeypatch):
+    """Части props без '=' не исчезают молча."""
+    _install_fake_project(monkeypatch, {})
+
+    text = _text(await mcp.call_tool(
+        "add_block", {"class_name": "Константа", "props": "a=2,мусор"}))
+
+    assert "мусор" in text
+    assert "пропущены" in text
 
 
 # ─── Изоляция stdout ──────────────────────────────────────────────
@@ -431,6 +1136,24 @@ def test_stdout_guard_routes_text_to_stderr(monkeypatch):
     assert "диагностика" not in real.buffer.getvalue()
     assert "диагностика" in err.getvalue()
     assert real.getvalue() == ""  # в текстовый stdout не попало ничего
+
+
+def test_stdout_guard_misses_descriptor_writes(monkeypatch, capfd):
+    """Запись прямо в дескриптор 1 гард не перехватывает — это его граница.
+
+    `_StdoutGuard` подменяет `sys.stdout.write`, а нативный код (или библиотека,
+    пишущая в fd 1) идёт мимо. Тест фиксирует границу явно, чтобы страховку не
+    читали как «протокол защищён от любой записи»: такое попадание в stdout
+    порвёт JSON-RPC молча.
+    """
+    from simintech_mcp.server import isolate_stdout
+
+    _install_fake_streams(monkeypatch)
+    isolate_stdout()
+
+    os.write(1, b"mimo-guarda\n")
+
+    assert "mimo-guarda" in capfd.readouterr().out
 
 
 def test_stdout_guard_keeps_buffer_identity(monkeypatch):

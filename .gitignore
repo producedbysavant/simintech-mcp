@@ -1,3 +1,4 @@
+# Байт-код Python и артефакты сборки
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -25,8 +26,13 @@ docs/build/
 # Артефакты ОС
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Временные файлы примеров и отладки
+# Временные файлы
+*.tmp
+*.bak
+*~
+
+# Артефакты примеров и отладки
 examples/*.xprt
 examples/*.csv
-

@@ -7,21 +7,33 @@
 Источник-эталон: `matlab/matlab-mcp-server`, `sohumsuthar/simulink-mcp`,
 `matlab/simulink-agentic-toolkit`.
 
+> **Обновление 2026-09-14: проект разделён на три репозитория.**
+> Библиотека `simintech-api` и весь контент (`blocks/`, `language/`,
+> `patterns/`, `tutorials/`, `automation/`) переехали в
+> [`simintech-code`](https://github.com/producedbysavant/simintech-code),
+> скиллы — в [`simintech-skill`](https://github.com/producedbysavant/simintech-skill).
+> Этот репозиторий содержит только MCP-слой. Пути в таблицах ниже, где
+> упомянуты `simintech_api/`, `scripts/`, `skills-catalog/` и
+> `docs/simintech-language/`, читайте как относящиеся к состоянию **до**
+> разделения; каталог `docs/simintech-language/` удалён как дубликат
+> корневых каталогов `simintech-code`.
+
 ---
 
 ## 1. Что уже сделано (вопреки исходной таблице)
 
 Исходный документ помечал MCP-сервер как «❌ Отсутствует». Фактически он
 реализован в `simintech_mcp/server.py` (коммиты `b4cc491`, `813f33b`):
-**18 инструментов, 2 ресурса, 2 промпта**, типизированные вызовы вместо `eval()`.
+**18 инструментов, 2 ресурса, 2 промпта** на тот момент; сейчас инструментов
+**22** (см. `tools/list`), типизированные вызовы вместо `eval()`.
 
 | Компонент (план) | Факт | Статус |
 |---|---|---|
 | MCP-сервер | `simintech_mcp/server.py` | ✅ Есть |
 | Типизированные инструменты | 18 шт., без `eval()` | ✅ Есть |
-| Agentic Toolkit / скиллы | `.claude/` и `SKILL.md` отсутствуют | ❌ Нет |
+| Agentic Toolkit / скиллы | 4 скилла в отдельном репозитории `simintech-skill` | ✅ Есть |
 | Скиллы в ClawHub | вне этого репо | ⚠️ Частично |
-| Библиотека кода | `docs/simintech-language/` | ✅ Есть |
+| Библиотека кода | корневые `language/`, `blocks/`, `patterns/`, `tutorials/` в `simintech-code` (в этом репозитории контента нет) | ✅ Есть |
 | API/CLI | COM API + `simintech-cli` | ✅ Есть |
 
 **Три ключевых архитектурных решения из плана уже реализованы буквально:**
@@ -46,8 +58,8 @@ lazy startup (`_ensure_client()`), persistent session (модульные гло
 | Инструмент | Статус | Комментарий |
 |---|---|---|
 | `delete_block` | ❌ | Отсутствует и в MCP, и в `core/` |
-| `get_block_params` | ❌ | См. §3 — упирается в отсутствие каталога |
-| `set_block_param` | ❌ | `add_block` ставит `props` только при создании |
+| `get_block_params` | ✅ | Сделан после генерации каталога, см. §3 |
+| `set_block_param` | ✅ | Сделан, переинициализирует блок (`InitBlock`) |
 | `get_project_config` / `set_project_config` | ❌ | Шаг/время/метод расчёта не выведены |
 | `get_simulation_data` + графики PNG | ❌ | `Simulation.run()` — только флаг `ProjectRun` |
 | `run_macro` | ❌ | CLI-путь `mmain.exe /macros` не задействован |
@@ -120,17 +132,19 @@ lazy startup (`_ensure_client()`), persistent session (модульные гло
 ### 3.2. Как каталог генерируется (реализовано)
 
 ```bash
-python scripts/generate_block_catalog.py     # Windows + mmain.exe /regserver
+simintech-generate-catalog     # Windows + mmain.exe /regserver; живёт в simintech-code
 ```
 
-Скрипт создаёт по блоку каждого класса из `SUPPORTED_COM_BLOCK_CLASSES`,
-экспортирует проект в `.xprt` и разбирает секцию **`<custom_props>`** каждого
-объекта: имя, значение по умолчанию и `mode` (1 — задаваемый, 0 — вычисляемый).
-Результат — `simintech_api/data/block_catalog.json`.
+Генератор — entry point пакета `simintech-code` (раньше
+`scripts/generate_block_catalog.py`). Он создаёт по блоку каждого класса из
+`SUPPORTED_COM_BLOCK_CLASSES`, экспортирует проект в `.xprt` и разбирает секцию
+**`<custom_props>`** каждого объекта: имя, значение по умолчанию и `mode`
+(1 — задаваемый, 0 — вычисляемый). Результат —
+`simintech_api/data/block_catalog.json` в `simintech-code`.
 
-`docs/simintech-language/blocks/` как источник имён **непригодна**: там
-используются читаемые имена (`signs`, `numInputs`, `num`, `den`, `reset`),
-которых в SimInTech нет.
+Справочник блоков (`blocks/` в `simintech-code`) как источник имён
+**непригоден**: там используются читаемые имена (`signs`, `numInputs`, `num`,
+`den`, `reset`), которых в SimInTech нет.
 
 ## 4. Дефекты текущего кода (не новые функции)
 
@@ -189,12 +203,13 @@ python scripts/generate_block_catalog.py     # Windows + mmain.exe /regserver
 | Изоляция stdout + тесты | `simintech_mcp/server.py`, `tests/unit/test_mcp_server.py` |
 | Зависимости | `pyproject.toml` (+`fastmcp`, +`anyio`, package-data) |
 | Каталог свойств | `simintech_api/catalog.py`, `simintech_api/data/block_catalog.json` |
-| Генератор каталога | `scripts/generate_block_catalog.py` |
+| Генератор каталога | `scripts/generate_block_catalog.py` (теперь entry point `simintech-generate-catalog` в `simintech-code`) |
 | Чтение/запись параметров | `Block.get_properties()` / `Block.init()`, MCP `get_block_params` / `set_block_param` |
 | Каталог скиллов | `skills-catalog/` (4 скилла) |
 | Тесты | 108 unit-тестов, flake8 чист |
 
-MCP-сервер: было 18 инструментов, стало **20**.
+MCP-сервер: было 18 инструментов, стало **20** (позже — **22**: добавлены
+`set_calc_time` и `read_output_file`).
 
 **Реальная проверка на Windows (2026-09-10):**
 
@@ -206,7 +221,7 @@ MCP-сервер: было 18 инструментов, стало **20**.
 
 **Что ещё не сделано из §3.0:** «Выход данных состояния» и «Состояние автомата»
 числятся в `SUPPORTED_COM_BLOCK_CLASSES`, но `CreateBlock` их не создаёт.
-Их следует перенести в `UNSUPPORTED_COM_BLOCK_CLASSES` (обход — через
+Перенесены в `UNSUPPORTED_COM_BLOCK_CLASSES`. Обход — через
 встроенный язык SimInTech) либо выяснить корректные имена классов.
 
 ### 6.1. Дефекты, найденные при проверке MCP-сервера на реальном COM
@@ -300,6 +315,88 @@ MCP-сервер: было 18 инструментов, стало **20**.
 не уровня чтения. Перенос `sdb_adapter.py` (§10 спецификации разделения)
 выполнен — `simintech_api/sdb.py` даёт разбор XML-выгрузки базы; на выгрузку
 результатов он не влиял и не влияет.
+
+### 6.4. Сквозной прогон MCP: сборка → расчёт → результат (2026-09-15)
+
+Проверено через настоящий stdio-транспорт (`initialize` → `tools/call`) на
+реальном SimInTech64; `tools/list` отдаёт 22 инструмента.
+
+| Шаг | Результат |
+|---|---|
+| `create_project` → `add_block` ×3 → `connect` ×2 | ✅ блоки `k_0`, `kx_0`, `TimeGraphic_0`, две связи |
+| `get_block_params` / `set_block_param` | ✅ каталог читается: `a = 2`, после записи — `a = 5` |
+| `save_project` | ✅ `.xprt` 447 КБ, блоки и связи на месте |
+| `list_signals` + `get_signal` (проект с базой) | ✅ 2 читаемых сигнала, значения `1.0` и `0.0` |
+| `run` на `fsm_demo.prt` | ✅ модельное время доходит до 35.0; `ProjectStep` — +0.001 за шаг |
+
+Чего не хватает:
+
+1. ~~**Проект, собранный с нуля, не считает.**~~ **Решено (§6.5).**
+   Причина: `NewProject` создаёт пустой проект — без расчётного слоя и настроек
+   расчёта. Рабочий путь — `OpenTemplate` с шаблоном «Схема модели общего
+   вида.prt» из поставки, а время расчёта задаётся `SetLayerProp(…, "endtime",
+   …)`. В MCP это `create_project(end_time=…)`, `set_calc_time`,
+   `read_output_file`.
+2. **`run` сообщал об успехе безусловно.** Раньше `server.py` печатал
+   «Расчёт до N с завершён», не глядя на результат `run_to()` — на проекте без
+   настроенного расчёта это ложное подтверждение. Туда же `Simulation.run_to`:
+   комментарий гласит «Result != 0 означает, что нужно ждать», а код при
+   `result != 0` сразу возвращает `True`, то есть не ждёт.
+
+   **Попутно уточнено: `RunTo` в этой сборке не блокирующий, хотя в карте
+   COM API он помечен блокирующим.** Проверено на `fsm_demo.prt`: сразу после
+   `RunTo(0.5)` время 0.240 с, через мгновение — уже 0.5 с. Поэтому `run`
+   теперь опрашивает `GetProjectTime` до выхода на отметку (и выходит по
+   простою ~1 с, а не по общему таймауту), после чего честно сообщает либо
+   «завершён», либо «не дошёл до N, время такое-то».
+3. ~~**`layout_place` не расставляет блоки.**~~ **Исправлено.** Раньше он
+   считал координаты и возвращал их текстом, к блокам не применяя (проверено:
+   на идентификаторах `A,B,C`, которых на схеме нет, инструмент бодро вернул
+   координаты). Теперь резолвит блоки по имени или id, применяет `set_center` и
+   отказывает, если блок не найден или связь ссылается на блок вне `block_ids`.
+
+### 6.5. Создание проекта с нуля, расчёт и вывод результата в файл (решено)
+
+Причина, по которой проект из `Project.new()` не считал, найдена 2026-09-15
+разбором экспорта `.xprt`. У пустого проекта **один слой «Нулевой слой»** с
+пустыми `<groups>`/`<pluginname>` и пустой секцией `<parameters>`. У
+работоспособного проекта слой — «Автоматика» с плагином
+`$(Root)\mbtylib.dll@layer`, а в `<parameters>` лежат настройки расчёта
+(`starttime`, `endtime`, `hmin`, `hmax`, `intmet`, …). То есть `NewProject`
+даёт проект без расчётного слоя: считать в нём нечему, но и ошибки нет.
+
+**Рабочий цикл (проверен через MCP по stdio):**
+
+```
+create_project(end_time=1.0)          # OpenTemplate + SetLayerProp endtime
+add_block("Константа", props="a=2")   # → k_0
+add_block("Усилитель", props="a=3")   # → kx_0
+add_block("В файл", props="filename=C:\\Temp\\out.txt,count=1,step=[0.2]")
+connect(k_0, kx_0) → connect(kx_0, ToFile_0)
+run(to_time=1.0)                      # время доходит до 1.0
+read_output_file("C:\\Temp\\out.txt") # 6 строк: 0 … 1, значение 6 (2×3)
+```
+
+**Что для этого добавлено:**
+
+| Слой | Что |
+|---|---|
+| `simintech-code` | `Project.from_template()`, `find_model_template()`, `COMClient.open_template()` / `set_layer_prop()`, `Project.set_calc_end_time()`, блок «В файл» в `SUPPORTED_COM_BLOCK_CLASSES`, §18 в карте COM API |
+| `simintech-mcp` | `create_project(end_time=…)` (из шаблона), `set_calc_time(seconds)`, `read_output_file(path)` |
+| `simintech-skill` | скилл `simintech-simulation`: порядок «собрать → задать время → запустить → прочитать файл» |
+
+Ограничения, которые остаются: блок «В файл» пишет **числа** (массивы и
+структуры — нет), а шаг записи `step` задаётся массивом и не привязан к шагу
+интегрирования. `get_signal` по-прежнему требует проекта с подключённой базой
+сигналов.
+
+**Побочная находка: неподключённый вход молча останавливает расчёт.** Если у
+блока вход ни с чем не соединён, `GetProjectTime` остаётся `0.0` и ошибки не
+выдаётся. Проверено на одной и той же схеме: «Константа → В файл» со связью
+считает до `1.0`; та же схема с висящим входом у «В файл» — `0.0`; одна
+«Константа» без «В файл» — снова `1.0`. Первый прогон E2E упал именно на этом
+(блок «В файл» был создан, но не соединён). Поэтому `run` в сообщении о неудаче
+перечисляет обе причины: неподключённый вход и отсутствие расчётного слоя.
 
 ## 6. Что осталось непроверенным
 
