@@ -64,6 +64,71 @@ async def test_read_output_file_missing(tmp_path):
     assert "файла нет" in text
 
 
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_blocks_outside(tmp_path, monkeypatch):
+    """С SIMINTECH_OUTPUT_DIR читается только этот каталог и его подкаталоги."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("секрет\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    result = await mcp.call_tool("read_output_file", {"path": str(outside)})
+    text = _text(result)
+
+    assert text.startswith("ERROR")
+    assert "вне разрешённого каталога" in text
+    assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_allows_inside(tmp_path, monkeypatch):
+    """Файл внутри разрешённого каталога читается."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    inside = sandbox / "out.txt"
+    inside.write_text("0\t6\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    result = await mcp.call_tool("read_output_file", {"path": str(inside)})
+    text = _text(result)
+
+    assert "строк 1" in text
+    assert "0\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_blocks_parent_escape(tmp_path, monkeypatch):
+    """`..` не помогает выйти из песочницы: путь раскрывается до проверки."""
+    sandbox = tmp_path / "results"
+    sandbox.mkdir()
+    (tmp_path / "secret.txt").write_text("секрет\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    escape = str(sandbox / ".." / "secret.txt")
+    result = await mcp.call_tool("read_output_file", {"path": escape})
+    text = _text(result)
+
+    assert text.startswith("ERROR")
+    assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_stops_on_size_limit(tmp_path, monkeypatch):
+    """Объём чтения ограничен — большой файл не уходит в контекст целиком."""
+    from simintech_mcp import server as server_module
+
+    monkeypatch.setattr(server_module, "MAX_OUTPUT_BYTES", 30)
+    big = tmp_path / "big.txt"
+    big.write_text("\n".join(["строка"] * 100) + "\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": str(big)})
+    text = _text(result)
+
+    assert "чтение остановлено" in text
+    assert text.count("строка") < 100
+
+
 def test_split_props_keeps_array_commas():
     """Запятые внутри `[...]` не считаются разделителями параметров."""
     from simintech_mcp.server import _split_props

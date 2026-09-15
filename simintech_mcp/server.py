@@ -489,6 +489,29 @@ def set_signal(name: str, value: float) -> str:
 
 # ─── Результаты расчёта ───────────────────────────────────────────
 
+#: Переменная окружения: каталог, за пределы которого не выходит
+#: `read_output_file`. Не задана — путь не ограничивается.
+OUTPUT_DIR_ENV = "SIMINTECH_OUTPUT_DIR"
+
+#: Предел объёма, отдаваемого в контекст: защита от чтения большого
+#: двоичного файла вместо текстового результата.
+MAX_OUTPUT_BYTES = 2 * 1024 * 1024
+
+
+def _output_sandbox_root():
+    """Разрешённый каталог результатов или None, если ограничение снято."""
+    root = os.environ.get(OUTPUT_DIR_ENV)
+    return os.path.realpath(root) if root else None
+
+
+def _is_inside(root: str, path: str) -> bool:
+    """Лежит ли `path` внутри `root` (оба уже realpath'нуты)."""
+    try:
+        return os.path.commonpath([root, path]) == root
+    except ValueError:                  # разные диски (Windows)
+        return False
+
+
 @mcp.tool()
 @_com_threaded
 def read_output_file(path: str, max_lines: int = 200) -> str:
@@ -502,26 +525,49 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     Порядок работы: `add_block("В файл", props="filename=<путь>,count=1,step=[0.1]")`
     → соединить с выходом модели → `run(to_time=…)` → `read_output_file(<путь>)`.
 
+    **Ограничение доступа.** Инструмент читает файл по пути, который пришёл от
+    клиента. Если задана переменная окружения `SIMINTECH_OUTPUT_DIR`, читать
+    можно только внутри этого каталога — тогда инструмент нельзя использовать
+    как «прочитать произвольный файл». Без переменной путь не ограничивается:
+    обычно вызывающий агент и сам имеет доступ к файловой системе. Задавайте
+    переменную, если сервер подключён к клиенту без такого доступа. Символические
+    ссылки раскрываются до проверки, поэтому `..` и ссылки обойти не помогают.
+
     Args:
         path: путь к файлу, куда писал блок «В файл».
         max_lines: сколько первых строк вернуть (по умолчанию 200).
     """
-    if not os.path.isfile(path):
+    resolved = os.path.realpath(path)
+    root = _output_sandbox_root()
+    if root is not None and not _is_inside(root, resolved):
+        return (f"ERROR: путь вне разрешённого каталога результатов "
+                f"({OUTPUT_DIR_ENV}={root})")
+    if not os.path.isfile(resolved):
         return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
                 f"«В файл» и что расчёт действительно прошёл.")
     lines = []
     total = 0
+    read_bytes = 0
+    truncated = False
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
                 total += 1
+                read_bytes += len(raw)
                 if len(lines) < max_lines:
                     lines.append(raw.rstrip("\r\n"))
+                if read_bytes >= MAX_OUTPUT_BYTES:
+                    truncated = True
+                    break
     except OSError as exc:
         return f"ERROR: {exc}"
     if total == 0:
         return (f"Файл {path} пуст — блок «В файл» ничего не записал. Обычно это "
                 f"значит, что расчёт не шёл (проверьте `get_time()` после `run`).")
+    if truncated:
+        return (f"{path}: прочитано строк {total}, файл больше "
+                f"{MAX_OUTPUT_BYTES} байт — чтение остановлено\n"
+                + "\n".join(lines))
     head = f"{path}: строк {total}"
     if total > max_lines:
         head += f", показаны первые {max_lines}"
