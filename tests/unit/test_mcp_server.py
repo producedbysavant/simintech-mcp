@@ -1030,10 +1030,13 @@ class _SavableProject:
         self.calls = []
         self._raises = raises
 
-    def _record(self, kind: str, path: str) -> None:
+    def _record(self, kind: str, path=None) -> None:
         self.calls.append((kind, path))
         if self._raises:
             raise RuntimeError("диск переполнен")
+
+    def show_form(self) -> None:
+        self._record("show_form")
 
     def save_xml(self, path: str) -> None:
         self._record("xml", path)
@@ -1052,13 +1055,18 @@ def _install_savable(monkeypatch, raises: bool = False) -> "_SavableProject":
 
 @pytest.mark.anyio
 async def test_save_project_defaults_to_xml(monkeypatch):
-    """По умолчанию сохраняется XML: поведение прежних версий не меняется."""
+    """По умолчанию сохраняется XML, и перед записью показывается форма.
+
+    Без показа формы в файл уходит признак «окно скрыто», и GUI открывает
+    проект, не показывая окно модели.
+    """
     project = _install_savable(monkeypatch)
 
     text = _text(await mcp.call_tool("save_project", {"path": r"C:\m.xprt"}))
 
-    assert project.calls == [("xml", r"C:\m.xprt")]
+    assert project.calls == [("show_form", None), ("xml", r"C:\m.xprt")]
     assert "XML" in text
+    assert "Форма проекта показана" in text
 
 
 @pytest.mark.anyio
@@ -1069,8 +1077,21 @@ async def test_save_project_binary_flag_writes_prt(monkeypatch):
     text = _text(await mcp.call_tool(
         "save_project", {"path": r"C:\m.prt", "binary": True}))
 
-    assert project.calls == [("binary", r"C:\m.prt")]
+    assert project.calls == [("show_form", None), ("binary", r"C:\m.prt")]
     assert ".prt" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_can_skip_showing_form(monkeypatch):
+    """show_form=False — безоконное сохранение: форму не показываем."""
+    project = _install_savable(monkeypatch)
+
+    text = _text(await mcp.call_tool(
+        "save_project", {"path": r"C:\m.prt", "binary": True,
+                         "show_form": False}))
+
+    assert project.calls == [("binary", r"C:\m.prt")]
+    assert "Форму не показывали" in text
 
 
 @pytest.mark.anyio

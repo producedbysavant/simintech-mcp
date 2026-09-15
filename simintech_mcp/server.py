@@ -267,7 +267,8 @@ def open_project(path: str) -> str:
 
 @mcp.tool()
 @_com_threaded
-def save_project(path: str, binary: bool = False) -> str:
+def save_project(path: str, binary: bool = False,
+                 show_form: bool = True) -> str:
     """Сохранить текущий проект в файл.
 
     Два формата, и назначение у них разное:
@@ -278,16 +279,32 @@ def save_project(path: str, binary: bool = False) -> str:
       который открывает GUI SimInTech. XML в GUI тоже открывается, но двойным
       щелчком по файлу проекта запускается именно `.prt`.
 
+    Перед записью показывается форма проекта (`FormShow`) — иначе файл
+    получится «закрытым» для GUI: состояние окна хранится в самом проекте, и
+    сессия, работающая через COM, записывает в него признак «окно скрыто». COM
+    такой проект потом открывает и считает, а GUI восстанавливает сохранённое
+    состояние окна и окна модели не показывает — выглядит как «проект не
+    открылся».
+
     Args:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
+        show_form: показать форму проекта перед сохранением (см. выше).
+            False — для безоконных машин: окно не появится, но и GUI потом
+            не покажет окно модели этого проекта.
     """
     project = _ensure_project()
+    if show_form:
+        project.show_form()
+        tail = (" Форма проекта показана — без этого файл открывался бы в GUI "
+                "без окна модели.")
+    else:
+        tail = (" Форму не показывали: GUI откроет файл без окна модели.")
     if binary:
         project.save_binary(path)
-        return f"Проект сохранён в бинарный файл (.prt): {path}"
+        return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
     project.save_xml(path)
-    return f"Проект сохранён в XML (.xprt): {path}"
+    return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 
 @mcp.tool()
