@@ -11,6 +11,16 @@ import pytest
 from simintech_mcp.server import mcp
 
 
+def _text(result) -> str:
+    """Достать текст из результата call_tool (форма зависит от версии MCP)."""
+    if isinstance(result, (list, tuple)):
+        return result[0].text
+    content = getattr(result, "content", None)
+    if content:
+        return content[0].text
+    return str(result)
+
+
 @pytest.mark.anyio
 async def test_all_tools_registered():
     """Зарегистрированы все ожидаемые инструменты."""
@@ -19,13 +29,50 @@ async def test_all_tools_registered():
     expected = {
         "status", "disconnect",
         "create_project", "open_project", "save_project", "close_project",
+        "set_calc_time",
         "add_block", "connect", "list_blocks",
         "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",
         "list_signals", "get_signal", "set_signal",
+        "read_output_file",
         "layout_place", "help_text",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
+
+
+@pytest.mark.anyio
+async def test_read_output_file_without_com(tmp_path):
+    """read_output_file читает результат блока «В файл» (COM не нужен)."""
+    path = tmp_path / "result.txt"
+    path.write_text("0\t6\n0.1\t6\n0.2\t6\n", encoding="utf-8")
+
+    result = await mcp.call_tool("read_output_file", {"path": str(path)})
+    text = _text(result)
+
+    assert "строк 3" in text
+    assert "0.2\t6" in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_missing(tmp_path):
+    """Отсутствующий файл — понятная ошибка, а не исключение."""
+    result = await mcp.call_tool(
+        "read_output_file", {"path": str(tmp_path / "нет.txt")})
+    text = _text(result)
+
+    assert text.startswith("ERROR")
+    assert "файла нет" in text
+
+
+def test_split_props_keeps_array_commas():
+    """Запятые внутри `[...]` не считаются разделителями параметров."""
+    from simintech_mcp.server import _split_props
+
+    assert _split_props("a=[1, -1], b=2") == ["a=[1, -1]", "b=2"]
+    assert _split_props("a=2") == ["a=2"]
+    assert _split_props("") == []
+    assert _split_props("filename=C:\\Temp\\out.txt,count=1,step=[0.2]") == [
+        "filename=C:\\Temp\\out.txt", "count=1", "step=[0.2]"]
 
 
 @pytest.mark.anyio

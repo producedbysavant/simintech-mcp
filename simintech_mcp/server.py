@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import functools
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -29,8 +30,10 @@ from simintech_api.catalog import load_default_catalog
 mcp = FastMCP(
     "simintech",
     instructions=(
-        "Управление SimInTech через COM API. Создание моделей: "
-        "create_project → add_block → connect → run → get_signal. "
+        "Управление SimInTech через COM API. Сборка и расчёт модели: "
+        "create_project(end_time) → add_block → connect → "
+        "run(to_time) → read_output_file (результат пишет блок «В файл»). "
+        "get_signal работает только у проекта с подключённой базой сигналов. "
         "Требуется Windows и mmain.exe /regserver."
     ),
 )
@@ -107,12 +110,44 @@ def disconnect() -> str:
 
 @mcp.tool()
 @_com_threaded
-def create_project(name: str = "model") -> str:
-    """Создать новый проект SimInTech."""
+def create_project(name: str = "model",
+                   end_time: Optional[float] = None) -> str:
+    """Создать новый проект SimInTech из шаблона «пустой модели».
+
+    Проект создаётся из шаблона поставки (`Схема модели общего вида.prt`), а не
+    через `NewProject`: пустой проект не считает — в нём нет расчётного слоя и
+    настроек расчёта, поэтому модельное время не растёт ни через `run`, ни
+    через `step`, хотя вызовы и возвращают успех.
+
+    Args:
+        name: подсказка для сообщения; COM не переименовывает проект — имя
+            остаётся автоматическим (в файле `Noname.prt`).
+        end_time: конечное время расчёта в секундах; по умолчанию — из шаблона
+            (10 с). Меняется инструментом `set_calc_time`.
+    """
     global _project
-    prj = Project.new(_ensure_client())
+    prj = Project.from_template(_ensure_client())
+    if end_time is not None:
+        prj.set_calc_end_time(end_time)
     _project = prj
-    return f"Проект '{name}' создан (id={prj.id})"
+    tail = (f", время расчёта {end_time} с" if end_time is not None
+            else ", время расчёта — из шаблона (10 с)")
+    return (f"Проект '{name}' создан из шаблона (id={prj.id}){tail}. "
+            f"Имя проекта задаёт среда, переименование через COM недоступно.")
+
+
+@mcp.tool()
+@_com_threaded
+def set_calc_time(seconds: float) -> str:
+    """Задать конечное время расчёта проекта (`endtime` расчётного слоя).
+
+    Расчёт идёт до этого момента; `run(to_time=…)` не может уйти за него.
+
+    Args:
+        seconds: конечное время расчёта в секундах (> 0).
+    """
+    _ensure_project().set_calc_end_time(seconds)
+    return f"Время расчёта: {seconds} с"
 
 
 @mcp.tool()
@@ -175,8 +210,7 @@ def add_block(class_name: str, name: str = "",
     if in_ports:
         block.set_in_port_count(in_ports)
     if props:
-        for pair in props.split(","):
-            pair = pair.strip()
+        for pair in _split_props(props):
             if "=" in pair:
                 k, _, v = pair.partition("=")
                 block.set_property(k.strip(), _parse_val(v.strip()))
@@ -352,9 +386,11 @@ def run(to_time: Optional[float] = None) -> str:
         actual = _await_calc_time(sim, to_time)
         if actual + 1e-9 < to_time:
             return (f"Расчёт не дошёл до {to_time} с: модельное время "
-                    f"{actual:.3f}. Проверьте, что у проекта настроено время "
-                    f"расчёта — на проекте без этих настроек модельное время "
-                    f"не растёт вовсе, хотя вызовы и возвращают успех.")
+                    f"{actual:.3f}. Две частые причины: у какого-то блока не "
+                    f"соединён вход (это молча останавливает расчёт всей "
+                    f"модели) или у проекта нет расчётного слоя — тогда "
+                    f"модельное время не растёт вовсе. Проверьте соединения, "
+                    f"затем `list_blocks`.")
         return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
     sim.run()
     return "Расчёт запущен"
@@ -451,6 +487,47 @@ def set_signal(name: str, value: float) -> str:
         return f"ERROR: {exc}"
 
 
+# ─── Результаты расчёта ───────────────────────────────────────────
+
+@mcp.tool()
+@_com_threaded
+def read_output_file(path: str, max_lines: int = 200) -> str:
+    """Прочитать текстовый файл с результатами расчёта.
+
+    Основной способ получить результаты: `get_signal` работает только у проекта
+    с подключённой базой сигналов, а блок «В файл» пишет результат в текстовый
+    файл независимо от базы. Каждая строка — один момент времени:
+    «<время> <значение 1> … <значение n>».
+
+    Порядок работы: `add_block("В файл", props="filename=<путь>,count=1,step=[0.1]")`
+    → соединить с выходом модели → `run(to_time=…)` → `read_output_file(<путь>)`.
+
+    Args:
+        path: путь к файлу, куда писал блок «В файл».
+        max_lines: сколько первых строк вернуть (по умолчанию 200).
+    """
+    if not os.path.isfile(path):
+        return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
+                f"«В файл» и что расчёт действительно прошёл.")
+    lines = []
+    total = 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                total += 1
+                if len(lines) < max_lines:
+                    lines.append(raw.rstrip("\r\n"))
+    except OSError as exc:
+        return f"ERROR: {exc}"
+    if total == 0:
+        return (f"Файл {path} пуст — блок «В файл» ничего не записал. Обычно это "
+                f"значит, что расчёт не шёл (проверьте `get_time()` после `run`).")
+    head = f"{path}: строк {total}"
+    if total > max_lines:
+        head += f", показаны первые {max_lines}"
+    return head + "\n" + "\n".join(lines)
+
+
 # ─── Утилиты ──────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -483,15 +560,17 @@ def help_text() -> str:
     return (
         "Команды:\n"
         "  status — проверить COM\n"
-        "  create_project / open_project / save_project / close_project\n"
+        "  create_project(end_time) / open_project / save_project / close_project\n"
+        "  set_calc_time(секунды) — конечное время расчёта\n"
         "  add_block(класс, имя, x, y, props) — добавить блок\n"
         "  connect(src, dst) — соединить блоки\n"
         "  list_blocks / list_signals\n"
         "  get_block_params(имя) — прочитать параметры блока\n"
         "  set_block_param(имя, параметр, значение) — изменить параметр\n"
         "  run(to_time) / step(n) / stop / get_time\n"
-        "  get_signal(имя) / set_signal(имя, значение)\n"
-        "  layout_place(блоки, связи) — авто-расстановка\n"
+        "  get_signal(имя) / set_signal(имя, значение) — только проект с базой\n"
+        "  read_output_file(путь) — прочитать результат от блока «В файл»\n"
+        "  layout_place(блоки, связи) — авто-расстановка (только расчёт координат)\n"
         "\n"
         "Ресурсы (read-only):\n"
         "  simintech://status, simintech://project/blocks\n"
@@ -633,6 +712,30 @@ def isolate_stdout() -> None:
 def _gain_for_rc(rc: float) -> float:
     """Коэффициент усилителя для RC-цепи: 1/RC (защита от деления на 0)."""
     return 1.0 / rc if rc else 1.0
+
+
+def _split_props(text: str):
+    """Разделить `props` по запятым, не трогая запятые внутри `[...]`.
+
+    Без этого документированный пример `a=[1, -1]` разваливался на `a=[1`
+    и `-1]`: первая часть уходила в свойство как обрезанный массив, вторая
+    молча отбрасывалась (в ней нет `=`).
+    """
+    parts = []
+    depth = 0
+    current = []
+    for char in text:
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current).strip())
+    return [p for p in parts if p]
 
 
 def _parse_val(text: str):
