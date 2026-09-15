@@ -6,9 +6,10 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-import pytest
+import pytest  # noqa: E402
+from fastmcp.exceptions import ToolError  # noqa: E402
 
-from simintech_mcp.server import mcp
+from simintech_mcp.server import mcp  # noqa: E402
 
 
 def _text(result) -> str:
@@ -19,6 +20,18 @@ def _text(result) -> str:
     if content:
         return content[0].text
     return str(result)
+
+
+async def _error(tool: str, arguments: dict) -> str:
+    """Вызвать инструмент, ожидая отказ; вернуть текст отказа.
+
+    Отказ доставляется исключением `ToolError` — именно по нему MCP выставляет
+    `isError` в ответе. Раньше инструменты возвращали строку «ERROR: …», и
+    клиент, доверяющий флагу, видел успех.
+    """
+    with pytest.raises(ToolError) as excinfo:
+        await mcp.call_tool(tool, arguments)
+    return str(excinfo.value)
 
 
 @pytest.mark.anyio
@@ -55,12 +68,9 @@ async def test_read_output_file_without_com(tmp_path):
 
 @pytest.mark.anyio
 async def test_read_output_file_missing(tmp_path):
-    """Отсутствующий файл — понятная ошибка, а не исключение."""
-    result = await mcp.call_tool(
-        "read_output_file", {"path": str(tmp_path / "нет.txt")})
-    text = _text(result)
+    """Отсутствующий файл — отказ с понятной причиной."""
+    text = await _error("read_output_file", {"path": str(tmp_path / "нет.txt")})
 
-    assert text.startswith("ERROR")
     assert "файла нет" in text
 
 
@@ -73,12 +83,24 @@ async def test_read_output_file_sandbox_blocks_outside(tmp_path, monkeypatch):
     outside.write_text("секрет\n", encoding="utf-8")
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
 
-    result = await mcp.call_tool("read_output_file", {"path": str(outside)})
-    text = _text(result)
+    text = await _error("read_output_file", {"path": str(outside)})
 
-    assert text.startswith("ERROR")
     assert "вне разрешённого каталога" in text
     assert "секрет" not in text
+
+
+@pytest.mark.anyio
+async def test_read_output_file_sandbox_root_must_be_dir(tmp_path, monkeypatch):
+    """Несуществующий каталог в SIMINTECH_OUTPUT_DIR — ошибка конфигурации.
+
+    Проверка «fail closed»: иначе инструмент молча отказывал бы с невнятной
+    причиной «путь вне разрешённого каталога».
+    """
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path / "нет-такого"))
+
+    text = await _error("read_output_file", {"path": str(tmp_path / "x.txt")})
+
+    assert "не является каталогом" in text
 
 
 @pytest.mark.anyio
@@ -106,10 +128,8 @@ async def test_read_output_file_sandbox_blocks_parent_escape(tmp_path, monkeypat
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
 
     escape = str(sandbox / ".." / "secret.txt")
-    result = await mcp.call_tool("read_output_file", {"path": escape})
-    text = _text(result)
+    text = await _error("read_output_file", {"path": escape})
 
-    assert text.startswith("ERROR")
     assert "секрет" not in text
 
 
@@ -153,24 +173,77 @@ async def test_status_on_linux():
 @pytest.mark.anyio
 async def test_help_text_tool():
     """help_text возвращает справку с ключевыми командами."""
-    result = await mcp.call_tool("help_text", {})
-    text = result[0].text if isinstance(result, (list, tuple)) else str(result)
+    text = _text(await mcp.call_tool("help_text", {}))
     assert "add_block" in text
     assert "create_project" in text
-    assert "get_signal" in text
+    # Перечень инструментов живёт в tools/list, а не в справке.
+    assert "tools/list" in text
+
+
+class _PlacedBlock:
+    """Блок с координатами — для проверки, что расстановка применяется."""
+
+    def __init__(self, name, block_id):
+        self._name = name
+        self._id = block_id
+        self.center = None
+
+    @property
+    def id(self):
+        return self._id
+
+    def get_name(self):
+        return self._name
+
+    def set_center(self, cx, cy):
+        self.center = (cx, cy)
+        return self
 
 
 @pytest.mark.anyio
-async def test_layout_place_works_without_com():
-    """layout_place работает без COM (чистый алгоритм)."""
-    result = await mcp.call_tool(
+async def test_layout_place_applies_coordinates(monkeypatch):
+    """layout_place не только считает координаты, но и применяет их.
+
+    Раньше инструмент возвращал координаты текстом, а блоки не двигал: агент
+    получал подтверждение расстановки, которой не было.
+    """
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("kx_0", 2)
+    _install_fake_project(monkeypatch, {"k_0": first, "kx_0": second})
+
+    text = _text(await mcp.call_tool(
         "layout_place",
-        {"block_ids": "A,B,C", "connections": "A->B,B->C"},
-    )
-    text = result[0].text if isinstance(result, (list, tuple)) else str(result)
-    assert "A:" in text
-    assert "B:" in text
-    assert "C:" in text
+        {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
+
+    assert "Расставлено блоков: 2" in text
+    assert first.center is not None, "координаты не применены к блоку"
+    assert second.center is not None, "координаты не применены к блоку"
+    assert first.center != second.center, "блоки не разнесены по слоям"
+
+
+@pytest.mark.anyio
+async def test_layout_place_rejects_unknown_block(monkeypatch):
+    """Несуществующий блок — отказ, а не «успешная» расстановка."""
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0,нет_такого", "connections": ""})
+
+    assert "не найдены" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_rejects_connection_outside_block_ids(monkeypatch):
+    """Связь ссылается на блок вне block_ids — расстановка невозможна."""
+    _install_fake_project(monkeypatch, {
+        "k_0": _PlacedBlock("k_0", 1),
+        "kx_0": _PlacedBlock("kx_0", 2),
+    })
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0", "connections": "k_0->kx_0"})
+
+    assert "вне block_ids" in text
 
 
 @pytest.mark.anyio
@@ -253,6 +326,9 @@ class _FakePage:
     def find_block(self, name):
         return self._blocks.get(name)
 
+    def get_blocks(self):
+        return list(self._blocks.values())
+
     def create_block(self, class_name, x, y):
         block = _RenamingBlock(class_name)
         self._created.append(block)
@@ -324,7 +400,7 @@ async def test_get_block_params_returns_known_props(monkeypatch):
         "Gain": _FakeBlock("Усилитель", {"Name": "Gain", "a": "2.5"}),
     })
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Gain"}))
+    text = _tool_text(await mcp.call_tool("get_block_params", {"block": "Gain"}))
 
     assert "Усилитель" in text
     assert "a = 2.5" in text
@@ -332,12 +408,11 @@ async def test_get_block_params_returns_known_props(monkeypatch):
 
 @pytest.mark.anyio
 async def test_get_block_params_missing_block(monkeypatch):
-    """Несуществующий блок — сообщение, а не исключение."""
+    """Несуществующий блок — отказ."""
     _install_fake_project(monkeypatch, {})
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "Нет"}))
+    text = await _error("get_block_params", {"block": "Нет"})
 
-    assert text.startswith("ERROR")
     assert "не найден" in text
 
 
@@ -348,7 +423,7 @@ async def test_get_block_params_unknown_class(monkeypatch):
         "X": _FakeBlock("Неизвестный класс", {"a": "1"}),
     })
 
-    text = _tool_text(await mcp.call_tool("get_block_params", {"name": "X"}))
+    text = _tool_text(await mcp.call_tool("get_block_params", {"block": "X"}))
 
     assert "неизвестны" in text
 
@@ -360,7 +435,7 @@ async def test_set_block_param_applies_and_inits(monkeypatch):
     _install_fake_project(monkeypatch, {"Gain": block})
 
     text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Gain", "param": "a", "value": "3.5"}))
+        "set_block_param", {"block": "Gain", "param": "a", "value": "3.5"}))
 
     assert block._props["a"] == "3.5"
     assert block.inited is True
@@ -374,7 +449,7 @@ async def test_set_block_param_accepts_array(monkeypatch):
     _install_fake_project(monkeypatch, {"Sum": block})
 
     await mcp.call_tool(
-        "set_block_param", {"name": "Sum", "param": "a", "value": "[1, -1]"})
+        "set_block_param", {"block": "Sum", "param": "a", "value": "[1, -1]"})
 
     assert block._props["a"] == "[1, -1]"
 
@@ -386,7 +461,7 @@ async def test_set_block_param_warns_on_unknown_param(monkeypatch):
     _install_fake_project(monkeypatch, {"Gain": block})
 
     text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Gain", "param": "неттакого", "value": "1"}))
+        "set_block_param", {"block": "Gain", "param": "неттакого", "value": "1"}))
 
     assert "неттакого" in text
     assert "отсутствует в каталоге" in text
@@ -394,12 +469,13 @@ async def test_set_block_param_warns_on_unknown_param(monkeypatch):
 
 @pytest.mark.anyio
 async def test_set_block_param_missing_block(monkeypatch):
+    """Несуществующий блок — отказ, а не тихий «успех»."""
     _install_fake_project(monkeypatch, {})
 
-    text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"name": "Нет", "param": "a", "value": "1"}))
+    text = await _error(
+        "set_block_param", {"block": "Нет", "param": "a", "value": "1"})
 
-    assert text.startswith("ERROR")
+    assert "не найден" in text
 
 
 def test_coerce_param_value_parses_scalars():
@@ -440,7 +516,7 @@ async def test_add_block_warns_when_rename_ignored(monkeypatch):
     monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
 
     text = _tool_text(await mcp.call_tool(
-        "add_block", {"class_name": "Константа", "name": "Src"}))
+        "add_block", {"class_name": "Константа", "name_hint": "Src"}))
 
     assert "НЕ применилось" in text
     assert "k_0" in text
@@ -448,7 +524,7 @@ async def test_add_block_warns_when_rename_ignored(monkeypatch):
 
 @pytest.mark.anyio
 async def test_add_block_reports_auto_name(monkeypatch):
-    """Без name= инструмент возвращает фактическое автоимя."""
+    """Без name_hint= инструмент возвращает фактическое автоимя."""
     from simintech_mcp import server
     monkeypatch.setattr(server, "_project", _FakeProjectWithCreate())
 
@@ -476,7 +552,12 @@ def test_com_threaded_uses_single_dedicated_thread():
     assert whoami() == whoami() == whoami()
 
 
-def test_com_threaded_returns_result_and_propagates_error():
+def test_com_threaded_returns_result_and_wraps_errors():
+    """Отказ доставляется как `ToolError` — по нему MCP выставляет `isError`.
+
+    Раньше инструменты сообщали об ошибке строкой «ERROR: …», и клиент,
+    доверяющий флагу `isError`, видел 100% успеха.
+    """
     from simintech_mcp.server import _com_threaded
 
     @_com_threaded
@@ -487,9 +568,37 @@ def test_com_threaded_returns_result_and_propagates_error():
     def boom():
         raise ValueError("нет проекта")
 
+    @_com_threaded
+    def prose_error():
+        return "ERROR: блока нет"
+
+    @_com_threaded
+    def ok_message():
+        return "всё хорошо"
+
     assert add(2, 3) == 5
-    with pytest.raises(ValueError, match="нет проекта"):
+    assert ok_message() == "всё хорошо", "обычный текст не должен стать ошибкой"
+    with pytest.raises(ToolError, match="нет проекта"):
         boom()
+    with pytest.raises(ToolError, match="блока нет"):
+        prose_error()
+
+
+def test_com_threaded_times_out_instead_of_hanging(monkeypatch):
+    """Зависание COM даёт отказ, а не молчаливое подвисание сервера."""
+    import time as _time
+
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "COM_CALL_TIMEOUT", 0.05)
+
+    @server._com_threaded
+    def slow():
+        _time.sleep(0.3)
+        return "поздно"
+
+    with pytest.raises(ToolError, match="не ответил"):
+        slow()
 
 
 def test_com_threaded_preserves_signature():
@@ -502,6 +611,116 @@ def test_com_threaded_preserves_signature():
 
     import inspect
     assert list(inspect.signature(sample).parameters) == ["name", "count"]
+
+
+# ─── Жизненный цикл сессии ────────────────────────────────────────
+
+class _ClosableProject:
+    def __init__(self, raises=False):
+        self.closed = False
+        self._raises = raises
+
+    def close(self):
+        if self._raises:
+            raise RuntimeError("проект уже закрыт средой")
+        self.closed = True
+        return self
+
+
+def test_replace_project_closes_previous(monkeypatch):
+    """Смена проекта закрывает предыдущий.
+
+    Иначе create_project/open_project копили бы открытые проекты внутри
+    mmain.exe, а инструменты молча работали бы с последним.
+    """
+    from simintech_mcp import server
+
+    previous, fresh = _ClosableProject(), _ClosableProject()
+    monkeypatch.setattr(server, "_project", previous)
+
+    server._replace_project(fresh)
+
+    assert previous.closed, "предыдущий проект не закрыт"
+    assert server._project is fresh
+
+
+def test_replace_project_tolerates_already_closed(monkeypatch):
+    """Уже закрытый средой проект не должен ломать смену."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", _ClosableProject(raises=True))
+    fresh = _ClosableProject()
+
+    server._replace_project(fresh)
+
+    assert server._project is fresh
+
+
+def test_replace_project_without_previous(monkeypatch):
+    """Первый проект в сессии — закрывать нечего."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+    fresh = _ClosableProject()
+
+    server._replace_project(fresh)
+
+    assert server._project is fresh
+    assert not fresh.closed
+
+
+@pytest.mark.anyio
+async def test_disconnect_resets_project_and_client(monkeypatch):
+    """disconnect() сбрасывает и проект: иначе остаётся мёртвый ProjectId."""
+    from simintech_mcp import server
+
+    project = _ClosableProject()
+
+    class _Client:
+        connected = True
+
+        def __init__(self):
+            self.disconnected = False
+
+        def disconnect(self):
+            self.disconnected = True
+
+    client = _Client()
+    monkeypatch.setattr(server, "_project", project)
+    monkeypatch.setattr(server, "_client", client)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert project.closed
+    assert client.disconnected
+    assert server._project is None
+    assert server._client is None
+    assert "Сессия завершена" in text
+
+
+@pytest.mark.anyio
+async def test_disconnect_without_session_is_noop(monkeypatch):
+    """Нечего сбрасывать — сообщение «без изменений», а не вид действия."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+    monkeypatch.setattr(server, "_client", None)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert "Без изменений" in text
+
+
+@pytest.mark.anyio
+async def test_close_project_without_project_is_noop(monkeypatch):
+    """Закрытие без проекта — тоже «без изменений»."""
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "_project", None)
+
+    text = _text(await mcp.call_tool("close_project", {}))
+
+    assert "Без изменений" in text
 
 
 # ─── Изоляция stdout ──────────────────────────────────────────────
