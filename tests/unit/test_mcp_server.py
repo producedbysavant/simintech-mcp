@@ -764,6 +764,24 @@ def test_stdout_guard_routes_text_to_stderr(monkeypatch):
     assert real.getvalue() == ""  # в текстовый stdout не попало ничего
 
 
+def test_stdout_guard_misses_descriptor_writes(monkeypatch, capfd):
+    """Запись прямо в дескриптор 1 гард не перехватывает — это его граница.
+
+    `_StdoutGuard` подменяет `sys.stdout.write`, а нативный код (или библиотека,
+    пишущая в fd 1) идёт мимо. Тест фиксирует границу явно, чтобы страховку не
+    читали как «протокол защищён от любой записи»: такое попадание в stdout
+    порвёт JSON-RPC молча.
+    """
+    from simintech_mcp.server import isolate_stdout
+
+    _install_fake_streams(monkeypatch)
+    isolate_stdout()
+
+    os.write(1, b"mimo-guarda\n")
+
+    assert "mimo-guarda" in capfd.readouterr().out
+
+
 def test_stdout_guard_keeps_buffer_identity(monkeypatch):
     """`.buffer` прокси — тот же объект, что и до изоляции."""
     from simintech_mcp.server import isolate_stdout
