@@ -22,7 +22,7 @@ async def test_all_tools_registered():
         "add_block", "connect", "list_blocks",
         "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",
-        "list_signals", "get_signal", "set_signal",
+        "list_signals", "get_signal", "set_signal", "export_signal_db",
         "read_output_file", "summarize_output_file", "inspect_project_file",
         "layout_place", "help_text",
     }

@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastmcp.exceptions import ToolError
 
-from .. import runtime, session
+from .. import runtime, sandbox, session
 from ..app import mcp
 
 
@@ -231,3 +231,44 @@ def set_signal(block: str, value: float) -> str:
         return f"{block} = {value}"
     except Exception as exc:
         return f"ERROR: {exc}"
+
+
+# ─── База сигналов ────────────────────────────────────────────────
+
+
+@mcp.tool()
+@runtime._com_threaded
+def export_signal_db(path: str = "signals.xml") -> str:
+    """Выгрузить базу сигналов проекта в XML и показать сводку.
+
+    База отдаётся COM-методом `ExportDBToXML` — без командной строки и без
+    макроса `dbexporttoxml`, которым её выгружали раньше. Файл пишет сам
+    SimInTech; место — каталог результатов (та же песочница, что у
+    `read_output_file`), поэтому относительный путь ищется внутри неё.
+
+    Нужен проект с подключённой базой: у модели из `create_project` базы нет,
+    и сводка скажет об этом прямо, а не покажет пустой файл за успех.
+
+    Args:
+        path: куда положить XML, относительно каталога результатов.
+    """
+    from simintech_api.sdb import SignalDatabase
+
+    destination = sandbox._resolve_output_path(path)
+    session._ensure_project().export_db_to_xml(destination)
+    try:
+        database = SignalDatabase.from_xml(destination)
+    except Exception as exc:
+        raise ToolError(
+            f"база выгружена в «{destination}», но не разобрана: {exc}")
+
+    groups = sum(len(cat.groups) for cat in database.categories)
+    signals = sum(len(group.signals)
+                  for cat in database.categories for group in cat.groups)
+    if not signals:
+        return (f"База пуста: файл «{destination}» записан, но сигналов в нём "
+                f"нет. Нужен проект с подключённой базой сигналов.")
+    categories = ", ".join(cat.name for cat in database.categories[:5])
+    return (f"База сигналов выгружена в «{destination}»: категорий "
+            f"{len(database.categories)}, групп {groups}, сигналов {signals}. "
+            f"Категории: {categories}")

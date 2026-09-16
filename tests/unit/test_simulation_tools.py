@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from simintech_mcp import runtime
+from simintech_mcp import runtime, session
 from simintech_mcp.server import mcp
 from simintech_mcp.tools import simulation as simulation_tools
 
@@ -141,3 +141,75 @@ async def test_step_rejects_absurd_count(monkeypatch):
     assert "больше предела" in text
     assert str(simulation_tools.MAX_STEP_COUNT) in text
     assert sim.stepped == 0, "до COM-вызовов дело доходить не должно"
+
+
+# ─── База сигналов ────────────────────────────────────────────────
+
+SIGNAL_DB_XML = """<?xml version="1.0" encoding="utf-8"?>
+<root><database><category>
+  <name>`Управление`</name>
+  <group><name>`Регулятор`</name><signals>
+    <data><name>`Kp`</name><caption>`Коэффициент`</caption>
+      <type>`0`</type><mode>`1`</mode><value>`1.5`</value></data>
+    <data><name>`Ki`</name><caption>`Интеграл`</caption>
+      <type>`0`</type><mode>`1`</mode><value>`0.1`</value></data>
+  </signals></group>
+</category></database></root>
+"""
+
+EMPTY_SIGNAL_DB_XML = """<?xml version="1.0" encoding="utf-8"?>
+<root><database><category><name>`Пусто`</name></category></database></root>
+"""
+
+
+class _DbProject:
+    """Проект, который «выгружает» базу заранее известным файлом."""
+
+    def __init__(self, text: str):
+        self._text = text
+        self.written = None
+
+    def export_db_to_xml(self, path: str) -> None:
+        import pathlib as _pathlib
+
+        _pathlib.Path(path).write_text(self._text, encoding="utf-8")
+        self.written = path
+
+
+@pytest.mark.anyio
+async def test_export_signal_db_summarizes_categories(tmp_path, monkeypatch):
+    """Инструмент отдаёт сводку базы, а не только путь к файлу."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_project", _DbProject(SIGNAL_DB_XML))
+
+    text = _text(await mcp.call_tool("export_signal_db", {"path": "db.xml"}))
+
+    assert "категорий 1" in text
+    assert "сигналов 2" in text
+    assert (tmp_path / "db.xml").is_file()
+
+
+@pytest.mark.anyio
+async def test_export_signal_db_empty_states_it_plainly(tmp_path, monkeypatch):
+    """Пустая база называется пустой, а не подаётся как успех.
+
+    У модели из `create_project` базы нет: файл запишется, но сигналов в нём
+    не будет. Молчаливый «успех» здесь читался бы как «база есть».
+    """
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_project", _DbProject(EMPTY_SIGNAL_DB_XML))
+
+    text = _text(await mcp.call_tool("export_signal_db", {"path": "db.xml"}))
+
+    assert "База пуста" in text
+
+
+@pytest.mark.anyio
+async def test_export_signal_db_refuses_path_outside_sandbox(tmp_path, monkeypatch):
+    """Путь наружу песочницы отвергается — как и у чтения результатов."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_project", _DbProject(SIGNAL_DB_XML))
+
+    text = await _error("export_signal_db", {"path": "../outside.xml"})
+
+    assert "каталога" in text
