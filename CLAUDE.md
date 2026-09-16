@@ -6,8 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MCP-сервер (FastMCP) для управления SimInTech из ИИ-агента. Тонкая обёртка над
 библиотекой `simintech-api`, которая делает всю работу через COM API
-(`IMVTU_Server`, сервер `mmain.exe`). Здесь — только MCP-слой: один модуль
-`simintech_mcp/server.py`.
+(`IMVTU_Server`, сервер `mmain.exe`). Здесь — только MCP-слой, разложенный по
+модулям:
+
+| Модуль | Что в нём |
+|---|---|
+| `app.py` | единственный экземпляр `FastMCP` |
+| `runtime.py` | COM-поток, контракт отказа, журнал, декораторы инструментов |
+| `session.py` | состояние сессии: клиент, проект, линии |
+| `sandbox.py` | песочница результатов и ограниченное чтение |
+| `tables.py` | разбор числовых таблиц (чистый) |
+| `catalog.py` | каталог блоков и проверка имён параметров |
+| `skills.py` | скиллы из `simintech-skill` |
+| `tools/` | инструменты по предметным областям |
+| `resources.py`, `prompts.py` | ресурсы и промпты |
+| `stdio.py` | защита stdout, в который пишет транспорт |
+| `server.py` | сборка, реэкспорт `mcp`, `main()` |
+
+**Обращение к чужому модулю — через модуль, не через импорт имени.**
+`session._ensure_project()`, а не `from .session import _ensure_project`:
+импорт связывает имя в момент импорта, и тогда `monkeypatch.setattr(session,
+"_ensure_client", …)` в тесте перестал бы влиять на инструмент — тест
+позеленел бы, проверяя не то. То же для `sandbox._read_bounded` и констант.
 
 Точка входа: `simintech-mcp` → `simintech_mcp.server:main` (stdio).
 
@@ -24,7 +44,7 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
     (это в библиотеке). Без него вызов из рабочего потока падает с
     `CO_E_NOTINITIALIZED`.
   - COM-объект из чужого потока даёт `CO_E_OBJNOTCONNECTED`. Поэтому
-    `server.py` выполняет **все** COM-вызовы через один выделенный поток
+    `runtime.py` выполняет **все** COM-вызовы через один выделенный поток
     (`_COM_EXECUTOR`, `max_workers=1`, декоратор `_com_threaded`): FastMCP
     запускает синхронные инструменты в пуле и чередует потоки, что без этого
     ломает сервер. Любой новый инструмент, трогающий COM, обязан быть под
@@ -127,7 +147,15 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
   отдают список и текст `SKILL.md`. Имя скилла приходит от клиента и
   подставляется в путь, поэтому проверяется шаблоном (строчные буквы, цифры,
   дефис) — `..` не проходит.
-- Линт: `flake8 --max-line-length=88 --extend-ignore=E203,W503` (0 ошибок).
+- Линт: `flake8 --max-line-length=88 --extend-ignore=E203,W503` (0 ошибок;
+  в CI проверяются и `simintech_mcp/`, и `tests/`).
+- **Типы проверяются mypy** (`[tool.mypy]` в `pyproject.toml`,
+  `check_untyped_defs = true`) — 0 находок. Аннотации обязательны у новых
+  функций: `check_untyped_defs` проверяет тела, но без аннотации возврата
+  тип значения не выводится, и проверка на этом месте слабеет.
+- **Тесты разложены по областям**: `tests/unit/test_<область>.py`, общие
+  фейки и помощники — в `tests/unit/_support.py`, путь к пакету добавляет
+  `tests/unit/conftest.py`. Файла `test_mcp_server.py` больше нет.
 
 ## Команды
 
@@ -135,10 +163,11 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
 pip install -e ".[test]"        # ставит simintech-api по git-ссылке (коммит) + fastmcp + pytest
 PYTHONPATH=../simintech-code python3.11 -m pytest tests/unit -q   # против локальной библиотеки
 python3.11 -m pytest tests/unit -q                # без COM, работает и на Linux
-python3.11 -m pytest tests/unit/test_mcp_server.py::test_all_tools_registered -q
+python3.11 -m pytest tests/unit/test_surface.py::test_all_tools_registered -q
 
 simintech-mcp                   # запуск сервера (stdio)
-flake8 simintech_mcp/ --max-line-length=88 --extend-ignore=E203,W503
+flake8 simintech_mcp tests --max-line-length=88 --extend-ignore=E203,W503
+mypy                                            # конфиг в pyproject.toml
 ```
 
 ## Зависимость на библиотеку
