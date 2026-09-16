@@ -24,7 +24,8 @@ pip install -e ".[test]"
 ```
 
 Зависимость `simintech-api` берётся из
-[`simintech-code`](https://github.com/producedbysavant/simintech-code) по тегу.
+[`simintech-code`](https://github.com/producedbysavant/simintech-code) по
+коммиту: в теге `v0.2.0` нет API, которые сервер использует на уровне импорта.
 Для одновременной правки библиотеки и сервера замените её на path-зависимость:
 
 ```toml
@@ -55,7 +56,8 @@ claude mcp add simintech -- simintech-mcp
 | Параметры | `get_block_params`, `set_block_param` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal` |
-| Результаты | `read_output_file` |
+| Результаты | `read_output_file`, `summarize_output_file` |
+| Без COM (в т.ч. Linux) | `inspect_project_file` |
 | Layout | `layout_place` |
 | Справка | `help_text` |
 
@@ -67,7 +69,9 @@ claude mcp add simintech -- simintech-mcp
 только каталог результатов (`<временный каталог>/simintech-output`,
 переопределяется `SIMINTECH_OUTPUT_DIR`), точный путь печатает `help_text`.
 
-Ресурсы: `simintech://status`, `simintech://project/blocks`.
+Ресурсы: `simintech://status`, `simintech://project/blocks`,
+`simintech://blocks/catalog` (классы и имена параметров),
+`simintech://skills` и `simintech://skills/<имя>` (скиллы из `simintech-skill`).
 Промпты: `create_pid_model`, `create_rc_chain`.
 
 ## Важное про параметры блоков
@@ -76,9 +80,27 @@ claude mcp add simintech -- simintech-mcp
 у «Сумматора» — `a` (число входов задаётся длиной массива, параметра `xn` нет).
 
 `SetBlockProp` **не отвергает неизвестное имя**: запись в несуществующий
-параметр проходит без ошибки и ни на что не влияет. Имена берутся из каталога,
-сгенерированного из реального SimInTech, — проверяйте их через
-`get_block_params`.
+параметр проходит без ошибки и ни на что не влияет. Поэтому сервер сверяет
+имена с каталогом, сгенерированным из реального SimInTech, **до** записи:
+неизвестное имя или вычисляемый параметр — отказ со списком известных имён.
+Полный список — в ресурсе `simintech://blocks/catalog` и в `get_block_params`.
+Если параметр существует, но в каталог не попал, — `allow_unknown=True`
+(`allow_unknown_props=True` у `add_block`).
+
+## Работа без SimInTech
+
+Расчёт идёт только на Windows, но сохранённый проект (`.xprt`) разбирается
+где угодно: `inspect_project_file` показывает классы блоков, их параметры и
+имена блоков. Файл — как и результаты расчёта — должен лежать в каталоге
+результатов (`SIMINTECH_OUTPUT_DIR`).
+
+## Переменные окружения
+
+| Переменная | Назначение |
+|---|---|
+| `SIMINTECH_OUTPUT_DIR` | каталог, из которого разрешено читать результаты и проекты |
+| `SIMINTECH_SKILLS_DIR` | каталог `skills-catalog` репозитория `simintech-skill` |
+| `SIMINTECH_MCP_LOG` | журнал вызовов: `stderr` или путь к файлу (по умолчанию выключен) |
 
 ## Тестирование
 

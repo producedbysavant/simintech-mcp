@@ -14,21 +14,32 @@
 from __future__ import annotations
 
 import functools
+import json
 import os
+import re
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from simintech_api import COMClient, Project, Wire
-from simintech_api.catalog import load_default_catalog
+from simintech_api.catalog import (
+    decode_xprt,
+    load_default_catalog,
+    parse_xprt_block_props,
+    parse_xprt_readonly,
+)
 from simintech_api.constants import (
     default_output_dir as simintech_default_output_dir,
     standard_block_size,
 )
+from simintech_api.utils.xprt_signals import XprtSignalReader
 
 # ─── MCP-сервер ────────────────────────────────────────────────────
 
@@ -38,6 +49,8 @@ mcp = FastMCP(
         "Управление SimInTech через COM API (Windows, mmain.exe /regserver). "
         "Сборка и расчёт модели: create_project → add_block → connect → run → "
         "read_output_file (результат пишет блок «В файл»). "
+        "Имена параметров блоков берите из ресурса simintech://blocks/catalog: "
+        "неизвестное имя — отказ, запись в вычисляемый параметр — тоже. "
         "Полный список инструментов — в tools/list, он же источник истины. "
         "Особенности среды — в репозитории simintech-code: CLAUDE.md и "
         "docs/reference/com_api_inventory.md."
@@ -138,6 +151,87 @@ def _call_guarded(fn, args, kwargs):
     return result
 
 
+# ─── Структурированный журнал ─────────────────────────────────────
+
+#: Переменная окружения: куда писать журнал вызовов. Пусто/0 — выключено,
+#: `stderr` (или 1/true) — в stderr, иначе — путь к файлу.
+#:
+#: stdout для журнала непригоден: там JSON-RPC, и одна строка лога ломает
+#: транспорт (см. `_StdoutGuard`) — поэтому «stdout» здесь не принимается.
+LOG_ENV = "SIMINTECH_MCP_LOG"
+
+_LOG_OFF = frozenset({"", "0", "false", "off", "no", "none"})
+_LOG_STDERR = frozenset({"1", "true", "yes", "on", "stderr"})
+
+#: Журнал пишут и рабочий COM-поток, и поток транспорта — строки не должны
+#: перемешиваться между собой.
+_LOG_LOCK = threading.Lock()
+
+
+def log_event(event: str, **fields: Any) -> None:
+    """Дописать событие в журнал — одна JSON-строка на событие.
+
+    Журнал вспомогательный: его отказ не должен превращаться в отказ
+    инструмента, поэтому ошибки записи глушатся, а не поднимаются.
+    """
+    target = (os.environ.get(LOG_ENV) or "").strip()
+    if target.lower() in _LOG_OFF:
+        return
+    record: Dict[str, Any] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                              "event": event}
+    record.update(fields)
+    try:
+        line = json.dumps(record, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return
+    try:
+        with _LOG_LOCK:
+            if target.lower() in _LOG_STDERR:
+                sys.stderr.write(line + "\n")
+                sys.stderr.flush()
+            else:
+                with open(target, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _log_args(fn, args, kwargs) -> Dict[str, str]:
+    """Аргументы вызова для журнала: имена из сигнатуры, значения урезаны."""
+    try:
+        names = fn.__code__.co_varnames[:fn.__code__.co_argcount]
+        pairs = dict(zip(names, args))
+        pairs.update(kwargs)
+        return {name: str(value)[:120] for name, value in pairs.items()}
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+
+def _instrumented(fn, invoke):
+    """Общая обвязка инструмента: журнал вызова плюс контракт отказа.
+
+    Отказ превращается в `ToolError` (см. `_call_guarded`) — только по нему
+    MCP выставляет `isError`; сюда же пишется запись журнала с длительностью
+    и исходом, поэтому все инструменты логируются одинаково.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        try:
+            result = invoke(*args, **kwargs)
+        except ToolError as exc:
+            log_event("tool", tool=fn.__name__, ok=False,
+                      ms=round((time.monotonic() - started) * 1000, 1),
+                      args=_log_args(fn, args, kwargs), error=str(exc)[:300])
+            raise
+        log_event("tool", tool=fn.__name__, ok=True,
+                  ms=round((time.monotonic() - started) * 1000, 1),
+                  args=_log_args(fn, args, kwargs))
+        return result
+
+    return wrapper
+
+
 def _com_threaded(fn):
     """Выполнить инструмент в выделенном COM-потоке.
 
@@ -151,8 +245,7 @@ def _com_threaded(fn):
     срабатывания таймаута сервер, как правило, пригоден только до перезапуска —
     инструмент об этом честно сообщает.
     """
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    def invoke(*args, **kwargs):
         future = _COM_EXECUTOR.submit(_call_guarded, fn, args, kwargs)
         try:
             return future.result(timeout=COM_CALL_TIMEOUT)
@@ -162,7 +255,20 @@ def _com_threaded(fn):
                 f"занят или завис. Перезапустите mmain.exe и повторите."
             ) from exc
 
-    return wrapper
+    return _instrumented(fn, invoke)
+
+
+def _plain_tool(fn):
+    """Как `_com_threaded`, но без COM-потока — для инструментов без COM.
+
+    Разбор сохранённого проекта, каталог и справка COM не трогают, поэтому
+    выделенный поток им не нужен (и на Linux его нет). Контракт отказа при
+    этом общий: иначе MCP не выставил бы `isError`.
+    """
+    def invoke(*args, **kwargs):
+        return _call_guarded(fn, args, kwargs)
+
+    return _instrumented(fn, invoke)
 
 
 # ─── Подключение ──────────────────────────────────────────────────
@@ -332,13 +438,62 @@ def close_project() -> str:
     return "Проект закрыт"
 
 
+# ─── Проверка имён параметров ─────────────────────────────────────
+
+def _check_params(class_name: str, names: Iterable[str], *,
+                  allow_unknown: bool) -> str:
+    """Проверить имена параметров до записи; вернуть примечание для ответа.
+
+    `SetBlockProp` не отвергает неизвестное имя: запись уходит в никуда **без
+    ошибки**, и агент считает параметр заданным. Проверено на SimInTech64:
+    `Константа.y0 = 5` не меняет ничего, а отказа нет. Поэтому имена
+    сверяются с каталогом блоков (`simintech_api/data/block_catalog.json`)
+    **до** вызова COM.
+
+    Класс, которого в каталоге нет (например, «В файл»), не проверяется:
+    каталог собран не для всех классов, и отказ сломал бы рабочий сценарий.
+    Об этом сообщает возвращаемое примечание.
+
+    Args:
+        class_name: класс блока («Константа», «Усилитель», ...).
+        names: проверяемые имена параметров.
+        allow_unknown: True — не проверять (каталог может отставать).
+
+    Raises:
+        ToolError: параметра у класса нет либо он вычисляемый.
+    """
+    if allow_unknown:
+        return ""
+    catalog = load_default_catalog()
+    if not catalog.has(class_name):
+        return (f" Класс '{class_name}' отсутствует в каталоге блоков — имена "
+                f"параметров проверить нечем.")
+    known = catalog.props_for(class_name)
+    for name in names:
+        if catalog.is_readonly(class_name, name):
+            raise ToolError(
+                f"'{name}' — вычисляемый параметр блока '{class_name}': COM "
+                f"принимает запись, но значение не меняется — отказ "
+                f"молчаливый. Задаваемые параметры: {', '.join(known)}."
+            )
+        if name not in known:
+            raise ToolError(
+                f"У блока '{class_name}' нет параметра '{name}'. Известные "
+                f"параметры: {', '.join(known)}. Если параметр существует, "
+                f"но не попал в каталог — повторите вызов с "
+                f"allow_unknown=True."
+            )
+    return ""
+
+
 # ─── Блоки и связи ────────────────────────────────────────────────
 
 @mcp.tool()
 @_com_threaded
 def add_block(class_name: str, name_hint: str = "",
               x: float = 0.0, y: float = 0.0,
-              props: str = "", in_ports: int = 0) -> str:
+              props: str = "", in_ports: int = 0,
+              allow_unknown_props: bool = False) -> str:
     """Добавить блок на главную страницу проекта.
 
     Args:
@@ -353,13 +508,34 @@ def add_block(class_name: str, name_hint: str = "",
             `layout_place`).
         props: параметры через запятую, напр. 'a=2' или 'a=[1, -1]'.
             Имена короткие и различаются по классам: у «Константы» — `a`
-            (не `y0`), у «Сумматора» — `a` (веса входов). Неизвестное имя
-            принимается без ошибки и ни на что не влияет.
+            (не `y0`), у «Сумматора» — `a` (веса входов). Имена сверяются с
+            каталогом блоков **до** создания блока: неизвестное имя — отказ
+            со списком известных, а не молчаливая запись в никуда.
         in_ports: число входных портов (0 — не менять). Нужно для блоков с
             настраиваемым числом входов: у «Сумматора» их по умолчанию два,
             и более длинный `a` сам по себе портов не добавляет.
+        allow_unknown_props: True — не сверять имена с каталогом. Нужно, если
+            параметр у блока есть, а в каталог не попал (каталог собран не
+            для всех классов).
     """
-    page = _ensure_project().get_main_page()
+    project = _ensure_project()
+    # Параметры разбираются и проверяются ДО создания блока: иначе отказ
+    # оставил бы на схеме блок, которого нет в ответе инструмента.
+    pairs = []
+    ignored = []
+    if props:
+        for pair in _split_props(props):
+            if "=" in pair:
+                k, _, v = pair.partition("=")
+                pairs.append((k.strip(), _parse_val(v.strip())))
+            else:
+                # Молча выбросить нельзя: «a=2 мусор» применил бы `a` и не
+                # сказал, что вторая часть потеряна.
+                ignored.append(pair)
+    param_note = _check_params(class_name, [name for name, _ in pairs],
+                               allow_unknown=allow_unknown_props)
+
+    page = project.get_main_page()
     block = page.create_block(class_name, x, y)
     if name_hint:
         block.set_name(name_hint)
@@ -370,19 +546,13 @@ def add_block(class_name: str, name_hint: str = "",
         size = standard_block_size(class_name, in_ports)
         if size:
             block.set_position(x, y, width=size[0], height=size[1])
-    ignored = []
-    if props:
-        for pair in _split_props(props):
-            if "=" in pair:
-                k, _, v = pair.partition("=")
-                block.set_property(k.strip(), _parse_val(v.strip()))
-            else:
-                # Молча выбросить нельзя: «a=2 мусор» применил бы `a` и не
-                # сказал, что вторая часть потеряна.
-                ignored.append(pair)
+    for name, value in pairs:
+        block.set_property(name, value)
 
     actual = block.get_name()
     notes = []
+    if param_note:
+        notes.append(param_note.strip())
     if name_hint and actual != name_hint:
         # Проверено на SimInTech64: SetBlockProp("Name") НЕ переименовывает
         # блок — имя остаётся автоматическим (k_0, kx_0, ...), ни в
@@ -482,40 +652,40 @@ def get_block_params(block: str) -> str:
 
 @mcp.tool()
 @_com_threaded
-def set_block_param(block: str, param: str, value: str) -> str:
+def set_block_param(block: str, param: str, value: str,
+                    allow_unknown: bool = False) -> str:
     """Установить параметр блока и переинициализировать блок.
 
     Блок переинициализируется (`InitBlock`) — без этого изменение может не
     дойти до расчёта: карта COM API отмечает, что `SetBlockProp` не влияет
     на уже инициализированные блоки (например, «Константа»).
 
-    Имя несуществующего параметра COM принимает молча — инструмент
-    предупреждает об этом в ответе, поэтому читайте ответ, а не только факт
-    отсутствия ошибки.
+    Имя параметра сверяется с каталогом блоков **до** записи. Раньше здесь
+    было предупреждение уже после записи, а сам `SetBlockProp` неизвестные
+    имена не отвергает: значение уходило в никуда, и по ответу нельзя было
+    отличить применённый параметр от неприменённого.
 
     Args:
         block: имя блока на главной странице (автоимя из `list_blocks`).
         param: имя параметра блока (см. `get_block_params`).
         value: значение строкой; массивы — в стиле SimInTech, напр. '[1, -1]'.
+        allow_unknown: True — не сверять имя с каталогом (для параметров,
+            которых в каталоге нет).
     """
     page = _ensure_project().get_main_page()
     target = page.find_block(block)
     if target is None:
         return f"ERROR: блок '{block}' не найден на странице"
     try:
+        note = _check_params(target.class_name, [param],
+                             allow_unknown=allow_unknown)
         target.set_property(param, _coerce_param_value(value))
         target.init()
-        class_name = target.class_name
+    except ToolError:
+        raise
     except Exception as exc:
         return f"ERROR: {exc}"
-
-    # Ненайденное имя параметра — не ошибка COM: SetBlockProp не отвергает
-    # неизвестные имена, поэтому предупреждаем явно (отказ был бы молчаливым).
-    if param not in load_default_catalog().props_for(class_name):
-        return (f"{block}.{param} = {value} — применено, но параметр "
-                f"отсутствует в каталоге для класса '{class_name}'. "
-                f"Проверьте, что он реально есть у блока.")
-    return f"{block}.{param} = {value}"
+    return f"{block}.{param} = {value}" + note
 
 
 # ─── Расчёт ───────────────────────────────────────────────────────
@@ -772,6 +942,28 @@ def _is_inside(root: str, path: str) -> bool:
         return False
 
 
+def _resolve_output_path(path: str) -> str:
+    """Разрешить путь внутри каталога результатов (см. `read_output_file`).
+
+    Относительный путь ищется внутри каталога результатов — так запись и
+    чтение не расходятся. `realpath` выполняется до проверки, поэтому `..`
+    и символические ссылки наружу не выводят.
+
+    Raises:
+        ToolError: путь ведёт за пределы каталога результатов.
+    """
+    root = output_root()
+    candidate = path if os.path.isabs(path) else os.path.join(root, path)
+    resolved = os.path.realpath(candidate)
+    if not _is_inside(root, resolved):
+        raise ToolError(
+            f"Чтение разрешено только из каталога «{root}» (переопределяется "
+            f"переменной {OUTPUT_DIR_ENV}). Блок «В файл» должен писать "
+            f"внутрь него — задайте filename с этим каталогом."
+        )
+    return resolved
+
+
 @mcp.tool()
 @_com_threaded
 def read_output_file(path: str, max_lines: int = 200) -> str:
@@ -799,17 +991,7 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
             относительный — тогда он ищется в этом каталоге).
         max_lines: сколько первых строк вернуть (по умолчанию 200).
     """
-    root = output_root()
-    # Относительный путь ищется внутри каталога результатов — так запись и
-    # чтение не расходятся.
-    candidate = path if os.path.isabs(path) else os.path.join(root, path)
-    resolved = os.path.realpath(candidate)
-    if not _is_inside(root, resolved):
-        raise ToolError(
-            f"Чтение результатов разрешено только из каталога «{root}» "
-            f"(переопределяется переменной {OUTPUT_DIR_ENV}). Блок «В файл» "
-            f"должен писать внутрь него — задайте filename с этим каталогом."
-        )
+    resolved = _resolve_output_path(path)
     if not os.path.isfile(resolved):
         return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
                 f"«В файл» и что расчёт действительно прошёл.")
@@ -845,6 +1027,187 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     if total > max_lines:
         head += f", показаны первые {max_lines}"
     return head + "\n" + "\n".join(lines)
+
+
+#: Пределы сводки: строк и объёма. Файл результата — не более нескольких
+#: мегабайт, но сводка читает его целиком, поэтому границы нужны явные.
+MAX_SUMMARY_ROWS = 500_000
+MAX_SUMMARY_BYTES = 32 * 1024 * 1024
+
+
+def _read_numeric_table(resolved: str):
+    """Числовые строки файла результата: (строки, пропущено, обрезано).
+
+    Разделитель — любой пробельный (SimInTech пишет табуляцию, но таблица
+    может прийти и с пробелами). Нечисловые строки (заголовок, мусор)
+    считаются, а не роняют разбор.
+    """
+    rows: List[List[float]] = []
+    skipped = 0
+    read_bytes = 0
+    truncated = False
+    with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
+        for raw in fh:
+            read_bytes += len(raw.encode("utf-8"))
+            if read_bytes > MAX_SUMMARY_BYTES or len(rows) >= MAX_SUMMARY_ROWS:
+                truncated = True
+                break
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rows.append([float(part) for part in line.split()])
+            except ValueError:
+                skipped += 1
+    return rows, skipped, truncated
+
+
+@mcp.tool()
+@_plain_tool
+def summarize_output_file(path: str, column: int = -1) -> str:
+    """Свести результат расчёта к числам: диапазон, min/max, среднее, наклон.
+
+    Дополняет `read_output_file`, который отдаёт строки как есть: проверять
+    модель по двумстам строкам текста неудобно, а по сводке видно, попала ли
+    кривая в ожидание. Работает **без COM** — сохранённый файл результата
+    разбирается и на машине без SimInTech.
+
+    Колонки файла блока «В файл»: `0` — время, `1..n` — значения.
+    По умолчанию берётся последняя колонка (выход модели).
+
+    Args:
+        path: путь внутри каталога результатов (как у `read_output_file`).
+        column: номер колонки значения; отрицательный — с конца строки
+            (`-1` — последняя). `0` — время.
+    """
+    resolved = _resolve_output_path(path)
+    if not os.path.isfile(resolved):
+        return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
+                f"«В файл» и что расчёт действительно прошёл.")
+    try:
+        rows, skipped, truncated = _read_numeric_table(resolved)
+    except OSError as exc:
+        return f"ERROR: {exc}"
+    if not rows:
+        return (f"ERROR: в файле {path} нет ни одной числовой строки"
+                + (f" (нечисловых строк: {skipped})" if skipped else "")
+                + ". Пустой результат — признак, что расчёт не шёл.")
+
+    width = len(rows[0])
+    if not -width <= column < width:
+        raise ToolError(
+            f"В файле {width} колонок (0 — время, далее значения), "
+            f"column={column} вне диапазона."
+        )
+    usable = [row for row in rows if len(row) == width]
+    ragged = len(rows) - len(usable)
+    times = [row[0] for row in usable]
+    series = [row[column] for row in usable]
+    count = len(series)
+    vmin, vmax = min(series), max(series)
+    mean = sum(series) / count
+    span = times[-1] - times[0]
+
+    label = "время" if column == 0 else f"значение (колонка {column})"
+    lines = [
+        f"{path}: точек {count}, колонок {width}",
+        f"  {label}: первое {series[0]:g}, последнее {series[-1]:g}",
+        f"  min {vmin:g} при t={times[series.index(vmin)]:g}, "
+        f"max {vmax:g} при t={times[series.index(vmax)]:g}, среднее {mean:g}",
+        f"  время: {times[0]:g} … {times[-1]:g}",
+    ]
+    if span:
+        lines.append(f"  средний наклон: {(series[-1] - series[0]) / span:g} "
+                     f"за секунду (по концам ряда)")
+    if skipped or ragged:
+        lines.append(f"  пропущено строк: нечисловых {skipped}, "
+                     f"с другим числом колонок {ragged}")
+    if truncated:
+        lines.append(f"  ВНИМАНИЕ: файл больше предела сводки "
+                     f"({MAX_SUMMARY_ROWS} строк или "
+                     f"{MAX_SUMMARY_BYTES} байт) — посчитаны первые {count}.")
+    return "\n".join(lines)
+
+
+# ─── Разбор проекта без COM (в том числе на Linux) ────────────────
+
+#: Предел объёма разбираемого .xprt: файл проекта читается целиком.
+MAX_PROJECT_BYTES = 64 * 1024 * 1024
+
+
+def _xprt_block_names(text: str) -> List[str]:
+    """Имена блоков из XML проекта.
+
+    Имена — вспомогательная часть разбора: если список не собрался, об этом
+    честнее сказать пустым результатом, чем отказать в разборе целиком.
+    """
+    try:
+        return list(XprtSignalReader(text).parse())
+    except Exception:                                          # noqa: BLE001
+        return []
+
+
+@mcp.tool()
+@_plain_tool
+def inspect_project_file(path: str) -> str:
+    """Разобрать сохранённый проект (.xprt) **без COM** — годится и для Linux.
+
+    SimInTech работает только на Windows, но XML-экспорт проекта (его пишет
+    `save_project`) читается где угодно: видно, какие блоки в модели и с
+    какими параметрами. Это способ проверить чужую модель, не поднимая среду.
+
+    Что даёт разбор: классы блоков с именами их параметров (включая
+    вычисляемые — запись в них ничего не меняет) и имена блоков, по которым
+    адресуются `connect`/`get_signal`.
+
+    Чего не даёт: связей и координат — по XML они не восстанавливаются
+    надёжно, — и расчёта: без Windows он не идёт. Значения параметров
+    показаны не будут: в файле они у каждого экземпляра свои.
+
+    Args:
+        path: путь к `.xprt` внутри каталога результатов (как у
+            `read_output_file`): файл должен лежать в нём.
+    """
+    resolved = _resolve_output_path(path)
+    if not os.path.isfile(resolved):
+        return (f"ERROR: файла нет: {path}. Сохраните проект через "
+                f"`save_project` в каталог результатов.")
+    try:
+        raw = Path(resolved).read_bytes()
+    except OSError as exc:
+        return f"ERROR: {exc}"
+    if len(raw) > MAX_PROJECT_BYTES:
+        raise ToolError(
+            f"Файл {path} больше {MAX_PROJECT_BYTES} байт — разбор проекта "
+            f"такого объёма не выполняется"
+        )
+
+    text = decode_xprt(raw)
+    classes = parse_xprt_block_props(text)
+    readonly = parse_xprt_readonly(text)
+    names = _xprt_block_names(text)
+
+    parts = [f"{path}: классов {len(classes)}, блоков {len(names)}"]
+    if names:
+        shown = names[:50]
+        parts.append("Блоки:\n" + "\n".join(f"  {name}" for name in shown)
+                     + (f"\n  ... и ещё {len(names) - 50}"
+                        if len(names) > 50 else ""))
+    else:
+        parts.append("Имена блоков в файле не найдены (возможно, это не "
+                     "экспорт схемы).")
+    if classes:
+        lines = []
+        for cls in sorted(classes):
+            computed = readonly.get(cls) or []
+            tail = (f" [вычисляемые, задавать нельзя: {', '.join(computed)}]"
+                    if computed else "")
+            lines.append(f"  {cls}: {', '.join(sorted(classes[cls]))}{tail}")
+        parts.append("Параметры по классам:\n" + "\n".join(lines))
+    else:
+        parts.append("Параметры блоков не найдены: в файле нет секций "
+                     "<custom_props>.")
+    return "\n".join(parts)
 
 
 # ─── Утилиты ──────────────────────────────────────────────────────
@@ -1014,7 +1377,8 @@ def help_text() -> str:
         "  4. layout_place(block_ids, connections) — расставить блоки и\n"
         "     трассировать линии (иначе провода идут по диагонали)\n"
         "  5. run(to_time=N) — расчёт; проверьте get_time() в ответе\n"
-        f"  6. read_output_file(путь) — результат блока «В файл»\n"
+        f"  6. read_output_file(путь) или summarize_output_file(путь) —\n"
+        f"     результат блока «В файл» (сводка: min/max/среднее/наклон)\n"
         "\n"
         f"Результаты читаются только из каталога:\n"
         f"  {_safe_output_root()}\n"
@@ -1026,8 +1390,15 @@ def help_text() -> str:
         "блок). Автомат собирается из доступных блоков — например, переходы\n"
         "по времени задаёт «Ступенька», а состояние складывает «Сумматор».\n"
         "\n"
+        "Разобрать сохранённый проект (.xprt) можно и без SimInTech:\n"
+        "inspect_project_file(путь) — классы, параметры и имена блоков\n"
+        "(файл должен лежать в каталоге результатов).\n"
+        "\n"
         "Аргументы инструментов и их ограничения описаны в их docstring.\n"
-        "Ресурсы (read-only): simintech://status, simintech://project/blocks\n"
+        "Ресурсы (read-only): simintech://status, simintech://project/blocks,\n"
+        "  simintech://blocks/catalog — классы и имена параметров блоков;\n"
+        "  simintech://skills и simintech://skills/<имя> — инструкции из\n"
+        "  репозитория simintech-skill (каталог задаёт SIMINTECH_SKILLS_DIR)\n"
         "Промпты (шаблоны): create_pid_model, create_rc_chain\n"
         "Среда и ограничения COM: репозиторий simintech-code — CLAUDE.md и\n"
         "docs/reference/com_api_inventory.md\n"
@@ -1049,6 +1420,156 @@ def resource_project_blocks() -> str:
         return list_blocks()
     except Exception as exc:
         return f"ERROR: {exc}"
+
+
+@mcp.resource("simintech://blocks/catalog")
+def resource_blocks_catalog() -> str:
+    """Каталог блоков: классы, их параметры и вычисляемые имена.
+
+    Источник — `simintech_api/data/block_catalog.json` из `simintech-code`.
+    Агенту он нужен, чтобы не угадывать имена параметров: имена короткие и
+    различаются по классам (у «Константы» — `a`, а не `y0`), а запись в
+    неизвестное имя COM принимает молча.
+    """
+    catalog = load_default_catalog()
+    classes = catalog.classes()
+    if not classes:
+        return ("Каталог блоков пуст: `simintech_api/data/block_catalog.json` "
+                "не найден. Генерируется командой `simintech-generate-catalog` "
+                "(Windows, mmain.exe /regserver).")
+    lines = []
+    for cls in classes:
+        props = ", ".join(catalog.props_for(cls))
+        readonly = catalog.readonly_for(cls)
+        tail = f" [вычисляемые, задавать нельзя: {', '.join(readonly)}]" \
+            if readonly else ""
+        lines.append(f"  {cls}: {props}{tail}")
+    return f"Каталог блоков ({len(classes)} классов):\n" + "\n".join(lines)
+
+
+# ─── Скиллы (инструкции агента) ───────────────────────────────────
+
+#: Переменная окружения: каталог скиллов — репозиторий `simintech-skill`,
+#: подкаталог `skills-catalog`. При разработке подхватывается и соседний
+#: checkout, но в установленном виде сервер видит только её.
+SKILLS_DIR_ENV = "SIMINTECH_SKILLS_DIR"
+
+#: Файл скилла внутри его каталога.
+SKILL_FILE = "SKILL.md"
+
+#: Скилл адресуется именем каталога: строчные буквы, цифры, дефис. Имя
+#: приходит от клиента и подставляется в путь, поэтому «..» и разделители
+#: сюда не проходят by design.
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+#: Предел объёма текста скилла, отдаваемого в контекст.
+MAX_SKILL_BYTES = 64 * 1024
+
+
+def skills_root() -> Optional[str]:
+    """Каталог скиллов или None, если его нет.
+
+    Порядок: ``SIMINTECH_SKILLS_DIR``, иначе соседний checkout
+    ``simintech-skill/skills-catalog`` (удобно при разработке в одном
+    каталоге). Заданный, но несуществующий каталог — не ошибка конфигурации:
+    это просто «скиллов нет», и сообщение об этом называет переменную.
+    """
+    candidates = []
+    raw = os.environ.get(SKILLS_DIR_ENV)
+    if raw:
+        candidates.append(Path(raw))
+    here = Path(__file__).resolve()
+    for base in list(here.parents)[:4]:
+        candidates.append(base / "simintech-skill" / "skills-catalog")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
+def _skills_missing_message() -> str:
+    """Почему скиллов нет — с именем переменной, если она задана."""
+    raw = os.environ.get(SKILLS_DIR_ENV)
+    if raw:
+        return (f"Каталог скиллов из {SKILLS_DIR_ENV}=«{raw}» не найден. "
+                f"Укажите существующий каталог.")
+    return (f"Скиллы не найдены. Задайте каталог репозитория simintech-skill "
+            f"переменной {SKILLS_DIR_ENV} (например, "
+            f".../simintech-skill/skills-catalog).")
+
+
+def _skill_summary(path: Path) -> str:
+    """Краткое описание скилла — первая содержательная строка SKILL.md."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    in_frontmatter = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter:
+            continue
+        return line.lstrip("#").strip()[:200]
+    return ""
+
+
+def _list_skills(root: str) -> List[Tuple[str, str]]:
+    """Скиллы каталога: пары (имя, краткое описание)."""
+    result = []
+    for entry in sorted(Path(root).iterdir()):
+        if not entry.is_dir() or not _SKILL_NAME_RE.match(entry.name):
+            continue
+        skill_file = entry / SKILL_FILE
+        if skill_file.is_file():
+            result.append((entry.name, _skill_summary(skill_file)))
+    return result
+
+
+@mcp.resource("simintech://skills")
+def resource_skills() -> str:
+    """Список скиллов: что агент может подгрузить про SimInTech.
+
+    Скиллы живут в отдельном репозитории `simintech-skill`; сервер их только
+    читает (искать в этом репозитории нечего).
+    """
+    root = skills_root()
+    if root is None:
+        return _skills_missing_message()
+    skills = _list_skills(root)
+    if not skills:
+        return (f"В каталоге «{root}» скиллов нет: нужны подкаталоги с файлом "
+                f"{SKILL_FILE}.")
+    lines = [f"  {name} — {summary}" if summary else f"  {name}"
+             for name, summary in skills]
+    return (f"Скиллы ({root}):\n" + "\n".join(lines)
+            + "\n\nСодержимое скилла — ресурс simintech://skills/<имя>.")
+
+
+@mcp.resource("simintech://skills/{name}")
+def resource_skill(name: str) -> str:
+    """Текст скилла (`SKILL.md`) — инструкции по работе с SimInTech."""
+    root = skills_root()
+    if root is None:
+        return _skills_missing_message()
+    if not _SKILL_NAME_RE.match(name):
+        return (f"ERROR: недопустимое имя скилла «{name}»: разрешены строчные "
+                f"латинские буквы, цифры и дефис")
+    path = Path(root) / name / SKILL_FILE
+    if not path.is_file():
+        return f"ERROR: скилла «{name}» нет в «{root}»"
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        return f"ERROR: {exc}"
+    if len(raw) > MAX_SKILL_BYTES:
+        return (raw[:MAX_SKILL_BYTES].decode("utf-8", "replace")
+                + f"\n... (скилл обрезан: больше {MAX_SKILL_BYTES} байт)")
+    return raw.decode("utf-8", "replace")
 
 
 # ─── Промпты (шаблоны) ────────────────────────────────────────────

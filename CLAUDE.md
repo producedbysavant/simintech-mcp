@@ -27,10 +27,22 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
     `server.py` выполняет **все** COM-вызовы через один выделенный поток
     (`_COM_EXECUTOR`, `max_workers=1`, декоратор `_com_threaded`): FastMCP
     запускает синхронные инструменты в пуле и чередует потоки, что без этого
-    ломает сервер. Любой новый инструмент обязан быть под `@_com_threaded`.
+    ломает сервер. Любой новый инструмент, трогающий COM, обязан быть под
+    `@_com_threaded`.
+  - **Параллелить COM нельзя.** `max_workers=1` — не запас, а условие
+    работоспособности: второй поток в том же апартаменте ломает объект.
+    Инструменты без COM (разбор `.xprt`, каталог, файлы результатов) идут под
+    `@_plain_tool` — тот же контракт отказа, но без перехода в COM-поток,
+    поэтому они работают и на Linux.
 - **`SetBlockProp` не отвергает неизвестное имя параметра** — отказ молчаливый.
-  Имена короткие и неочевидные (`a` у «Константы», а не `y0`); `set_block_param`
-  предупреждает, если имени нет в каталоге.
+  Имена короткие и неочевидные (`a` у «Константы», а не `y0`). Поэтому
+  `_check_params` сверяет имена с каталогом **до** вызова COM и отвергает
+  неизвестное имя и запись в вычисляемый параметр (`mode 0` — COM принимает,
+  значение не меняется). Класс вне каталога (например, «В файл») не
+  проверяется: проверять нечем, и об этом сказано в ответе. Обход для имён,
+  не попавших в каталог, — `allow_unknown` у `set_block_param`,
+  `allow_unknown_props` у `add_block`. Каталог отдаётся агенту ресурсом
+  `simintech://blocks/catalog`.
 - **`SetBlockProp("Name", ...)` не переименовывает блок** — имя остаётся
   автоматическим (`k_0`). `add_block` сообщает об этом явно, иначе `connect`
   по заданному имени молча не найдёт блок.
@@ -77,12 +89,27 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
   отвергается** — иначе `realpath` увёл бы песочницу в выбранное атакующим
   место. Каталог, заданный `SIMINTECH_OUTPUT_DIR`, — явный выбор пользователя,
   он канонизируется через `realpath` без этой проверки.
+  Той же песочницей ограничены `summarize_output_file` (сводка по колонкам:
+  точки, диапазон, min/max/среднее, наклон) и `inspect_project_file` (разбор
+  сохранённого `.xprt` **без COM**, работает и на Linux) — путь разрешает один
+  `_resolve_output_path`, поэтому правил ровно одни.
+- **Журнал — только в stderr или файл.** `SIMINTECH_MCP_LOG` включает
+  JSON-строки о вызовах (имя инструмента, аргументы, длительность, исход);
+  без переменной журнала нет. stdout исключён намеренно: там JSON-RPC, и одна
+  строка лога рвёт транспорт. Запись журнала никогда не роняет инструмент.
+- **Скиллы читаются, а не хранятся.** `SIMINTECH_SKILLS_DIR` указывает на
+  `skills-catalog` репозитория `simintech-skill`; без переменной ищется
+  соседний checkout. Ресурсы `simintech://skills` и `simintech://skills/<имя>`
+  отдают список и текст `SKILL.md`. Имя скилла приходит от клиента и
+  подставляется в путь, поэтому проверяется шаблоном (строчные буквы, цифры,
+  дефис) — `..` не проходит.
 - Линт: `flake8 --max-line-length=88 --extend-ignore=E203,W503` (0 ошибок).
 
 ## Команды
 
 ```bash
-pip install -e ".[test]"        # ставит simintech-api по git-тегу + fastmcp + pytest
+pip install -e ".[test]"        # ставит simintech-api по git-ссылке (коммит) + fastmcp + pytest
+PYTHONPATH=../simintech-code python3.11 -m pytest tests/unit -q   # против локальной библиотеки
 python3.11 -m pytest tests/unit -q                # без COM, работает и на Linux
 python3.11 -m pytest tests/unit/test_mcp_server.py::test_all_tools_registered -q
 
@@ -92,14 +119,22 @@ flake8 simintech_mcp/ --max-line-length=88 --extend-ignore=E203,W503
 
 ## Зависимость на библиотеку
 
-Объявлена прямой git-ссылкой на тег:
+Объявлена прямой git-ссылкой **на коммит**:
 
 ```
-simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.2.0
+simintech-api @ git+https://github.com/producedbysavant/simintech-code@f810bc9
 ```
+
+Не на тег: в `v0.2.0` нет `standard_block_size`, `default_output_dir`,
+`Project.from_template`, `set_calc_end_time` и класса «В файл». Сервер
+импортирует первые два, поэтому на теге падал уже на импорте, а
+`create_project` — с `AttributeError`. Пока в `simintech-code` нет тега новее,
+рабочая ссылка — коммит; после выпуска тега заменить SHA на него.
 
 Для одновременной правки библиотеки и сервера заменить на path-зависимость
-(`simintech-api = { path = "../simintech-code", editable = true }`).
+(`simintech-api = { path = "../simintech-code", editable = true }`). Без
+установленной библиотеки тесты не соберутся: `PYTHONPATH=../simintech-code`
+подставляет локальный checkout вместо установленного пакета.
 
 Внимание: hatchling запрещает прямые ссылки по умолчанию — в `pyproject.toml`
 обязателен `[tool.hatch.metadata] allow-direct-references = true`, иначе сборка

@@ -1,6 +1,7 @@
 """Тесты MCP-сервера: регистрация инструментов и логика без COM."""
 
 import io
+import json
 import os
 import sys
 
@@ -47,7 +48,7 @@ async def test_all_tools_registered():
         "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",
         "list_signals", "get_signal", "set_signal",
-        "read_output_file",
+        "read_output_file", "summarize_output_file", "inspect_project_file",
         "layout_place", "help_text",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
@@ -830,16 +831,99 @@ async def test_set_block_param_accepts_array(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_set_block_param_warns_on_unknown_param(monkeypatch):
-    """Неизвестный параметр — предупреждение (отказ был бы молчаливым)."""
-    block = _FakeBlock("Усилитель", {})
+async def test_set_block_param_rejects_unknown_param(monkeypatch):
+    """Неизвестное имя параметра — отказ ДО записи, а не молчаливая запись.
+
+    `SetBlockProp` неизвестные имена не отвергает: значение уходило в никуда,
+    и по ответу нельзя было отличить применённый параметр от неприменённого.
+    Проверено на SimInTech64: `Константа.y0 = 5` не меняет ничего.
+    """
+    block = _FakeBlock("Усилитель", {"a": "1"})
     _install_fake_project(monkeypatch, {"Gain": block})
 
-    text = _tool_text(await mcp.call_tool(
-        "set_block_param", {"block": "Gain", "param": "неттакого", "value": "1"}))
+    text = await _error("set_block_param",
+                        {"block": "Gain", "param": "неттакого", "value": "1"})
 
     assert "неттакого" in text
+    assert "Известные параметры" in text
+    assert "allow_unknown" in text, "отказ должен подсказывать обход"
+    assert "неттакого" not in block._props, "запись не должна была пройти"
+    assert block.inited is False, "при отказе блок не переинициализируется"
+
+
+@pytest.mark.anyio
+async def test_set_block_param_rejects_computed_param(monkeypatch):
+    """Вычисляемый параметр — отказ: COM принимает запись, значение не меняется."""
+    block = _FakeBlock("Усилитель", {"a": "1"})
+    _install_fake_project(monkeypatch, {"Gain": block})
+
+    text = await _error(
+        "set_block_param",
+        {"block": "Gain", "param": "formula_visible", "value": "1"})
+
+    assert "вычисляемый" in text
+    assert block.inited is False
+
+
+@pytest.mark.anyio
+async def test_set_block_param_allow_unknown_writes(monkeypatch):
+    """`allow_unknown=True` — запись проходит: параметр может не быть в каталоге."""
+    block = _FakeBlock("Усилитель", {"a": "1"})
+    _install_fake_project(monkeypatch, {"Gain": block})
+
+    await mcp.call_tool(
+        "set_block_param", {"block": "Gain", "param": "неттакого", "value": "1",
+                            "allow_unknown": True})
+
+    assert block._props["неттакого"] == "1"
+    assert block.inited is True
+
+
+@pytest.mark.anyio
+async def test_set_block_param_class_outside_catalog_writes_with_note(
+        monkeypatch):
+    """Класс вне каталога («В файл») не отвергается — проверять нечем."""
+    block = _FakeBlock("В файл", {"filename": "старое.txt"})
+    _install_fake_project(monkeypatch, {"ToFile": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ToFile", "param": "filename", "value": "новое.txt"}))
+
+    assert block._props["filename"] == "новое.txt"
     assert "отсутствует в каталоге" in text
+
+
+@pytest.mark.anyio
+async def test_add_block_rejects_unknown_prop_without_creating_block(
+        monkeypatch):
+    """Неизвестный параметр в add_block — отказ, и блок на схеме не остаётся."""
+    from simintech_mcp import server
+
+    _install_fake_project(monkeypatch, {})
+
+    text = await _error("add_block",
+                        {"class_name": "Константа", "props": "y0=5"})
+
+    assert "y0" in text
+    assert server._project.get_main_page()._created == [], (
+        "отказ до создания блока — иначе блок остался бы на схеме"
+    )
+
+
+@pytest.mark.anyio
+async def test_add_block_allow_unknown_props_creates_block(monkeypatch):
+    """`allow_unknown_props=True` — блок создаётся с «некаталожным» параметром."""
+    from simintech_mcp import server
+
+    _install_fake_project(monkeypatch, {})
+
+    await mcp.call_tool("add_block", {"class_name": "Константа", "props": "y0=5",
+                                      "allow_unknown_props": True})
+
+    created = server._project.get_main_page()._created
+    assert len(created) == 1
+    assert created[0]._props["y0"] == 5
 
 
 @pytest.mark.anyio
@@ -1586,3 +1670,360 @@ def test_main_isolates_stdout_before_run(monkeypatch):
     server.main()
 
     assert seen["guard_installed"] is True
+
+
+# ─── Ресурсы: каталог блоков ──────────────────────────────────────
+
+async def _resource_text(uri: str) -> str:
+    """Прочитать ресурс через MCP — так же, как это делает клиент."""
+    result = await mcp.read_resource(uri)
+    return result.contents[0].content
+
+
+@pytest.mark.anyio
+async def test_static_resources_are_registered():
+    """Каталог блоков и скиллы отдаются как ресурсы, а не только инструменты."""
+    resources = await mcp.list_resources()
+    uris = {str(item.uri) for item in resources}
+
+    assert {"simintech://status", "simintech://project/blocks",
+            "simintech://blocks/catalog", "simintech://skills"} <= uris
+
+
+@pytest.mark.anyio
+async def test_resource_blocks_catalog_lists_classes_and_params():
+    """В каталоге видно классы и имена их параметров — их и ждёт COM."""
+    text = await _resource_text("simintech://blocks/catalog")
+
+    assert "Каталог блоков" in text
+    assert "Константа" in text
+    assert "a" in text
+
+
+@pytest.mark.anyio
+async def test_resource_blocks_catalog_marks_computed_params(monkeypatch):
+    """Вычисляемые параметры помечены: запись в них ничего не меняет."""
+    from simintech_api.catalog import BlockCatalog
+    from simintech_mcp import server
+
+    catalog = BlockCatalog(
+        classes={"Усилитель": {"a": "1", "formula_visible": "0"}},
+        readonly={"Усилитель": ["formula_visible"]},
+    )
+    monkeypatch.setattr(server, "load_default_catalog", lambda: catalog)
+
+    text = await _resource_text("simintech://blocks/catalog")
+
+    assert "formula_visible" in text
+    assert "вычисляемые" in text
+
+
+@pytest.mark.anyio
+async def test_resource_blocks_catalog_reports_empty(monkeypatch):
+    """Пустой каталог — это сообщение о причине, а не пустая строка."""
+    from simintech_api.catalog import BlockCatalog
+    from simintech_mcp import server
+
+    monkeypatch.setattr(server, "load_default_catalog", lambda: BlockCatalog())
+
+    text = await _resource_text("simintech://blocks/catalog")
+
+    assert "Каталог блоков пуст" in text
+
+
+# ─── Ресурсы: скиллы ──────────────────────────────────────────────
+
+def _write_skill(root, name: str, body: str) -> None:
+    """Положить скилл на диск так, как его ждёт сервер."""
+    directory = root / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+@pytest.mark.anyio
+async def test_resource_skills_lists_and_reads_skill(monkeypatch, tmp_path):
+    """Скиллы перечисляются, а их текст читается отдельным ресурсом."""
+    _write_skill(tmp_path, "simintech-model-building",
+                 "---\nname: simintech-model-building\ndescription: сборка\n"
+                 "---\n# Сборка модели\n\nПорядок работы.\n")
+    monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path))
+
+    listing = await _resource_text("simintech://skills")
+
+    assert "simintech-model-building" in listing
+    assert "Сборка модели" in listing
+
+    body = await _resource_text(
+        "simintech://skills/simintech-model-building")
+
+    assert "Порядок работы" in body
+
+
+@pytest.mark.anyio
+async def test_resource_skills_missing_dir_names_variable(
+        monkeypatch, tmp_path):
+    """Нет каталога скиллов — сказано, какой переменной его задать."""
+    monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path / "нет-такого"))
+
+    text = await _resource_text("simintech://skills")
+
+    assert "SIMINTECH_SKILLS_DIR" in text
+    assert "не найден" in text
+
+
+@pytest.mark.anyio
+async def test_resource_skills_empty_dir(monkeypatch, tmp_path):
+    """Каталог есть, но скиллов в нём нет — отдельное сообщение."""
+    monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path))
+
+    text = await _resource_text("simintech://skills")
+
+    assert "скиллов нет" in text
+
+
+def test_resource_skill_rejects_path_traversal(monkeypatch, tmp_path):
+    """Имя скилла приходит от клиента: «..» в путь не проходит."""
+    from simintech_mcp import server
+
+    monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path))
+
+    assert "ERROR" in server.resource_skill("../../etc/passwd")
+    assert "ERROR" in server.resource_skill("SimInTech")   # регистр не тот
+    assert "ERROR" in server.resource_skill("")
+
+
+def test_resource_skill_missing(monkeypatch, tmp_path):
+    """Несуществующий скилл — отказ, а не пустой текст."""
+    from simintech_mcp import server
+
+    monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path))
+
+    assert "ERROR" in server.resource_skill("нет-такого")
+
+
+# ─── Сводка по файлу результата ───────────────────────────────────
+
+@pytest.mark.anyio
+async def test_summarize_output_file_stats(monkeypatch, tmp_path):
+    """Сводка считает точки, диапазон, min/max, среднее и наклон."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("0\t2\n1\t5\n2\t8\n3\t11\n",
+                                      encoding="utf-8")
+
+    text = _tool_text(await mcp.call_tool("summarize_output_file",
+                                          {"path": "out.txt"}))
+
+    assert "точек 4" in text
+    assert "min 2" in text
+    assert "max 11" in text
+    assert "среднее 6.5" in text
+    assert "средний наклон: 3" in text
+
+
+@pytest.mark.anyio
+async def test_summarize_output_file_selects_column(monkeypatch, tmp_path):
+    """Колонка выбирается: 0 — время, 1..n — значения."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("0\t1\t10\n1\t2\t20\n", encoding="utf-8")
+
+    text = _tool_text(await mcp.call_tool(
+        "summarize_output_file", {"path": "out.txt", "column": 1}))
+
+    assert "min 1" in text
+    assert "max 2" in text
+
+
+@pytest.mark.anyio
+async def test_summarize_output_file_outside_sandbox(monkeypatch, tmp_path):
+    """Песочница та же, что у read_output_file."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    outside = tmp_path / "вне.txt"
+    outside.write_text("0 1\n", encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    text = await _error("summarize_output_file", {"path": str(outside)})
+
+    assert "разрешено только из каталога" in text
+
+
+@pytest.mark.anyio
+async def test_summarize_output_file_reports_no_numbers(monkeypatch, tmp_path):
+    """Нечисловой файл — причина, а не «ноль точек»."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("заголовок\nещё строка\n",
+                                      encoding="utf-8")
+
+    text = await _error("summarize_output_file", {"path": "out.txt"})
+
+    assert "нет ни одной числовой строки" in text
+
+
+@pytest.mark.anyio
+async def test_summarize_output_file_rejects_bad_column(monkeypatch, tmp_path):
+    """Колонки вне строки — отказ с указанием, сколько их в файле."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "out.txt").write_text("0\t1\n", encoding="utf-8")
+
+    text = await _error("summarize_output_file",
+                        {"path": "out.txt", "column": 5})
+
+    assert "вне диапазона" in text
+
+
+# ─── Разбор проекта без COM ───────────────────────────────────────
+
+_XPRT_FIXTURE = """<?xml version="1.0" encoding="utf-8"?>
+<project>
+  <object>
+    <name>`k_0`</name>
+    <class_name>`Константа`</class_name>
+    <custom_props>
+      <data><name>`a`</name><value>`[2]`</value><mode>`1`</mode></data>
+      <data><name>`formula_visible`</name><value>`0`</value><mode>`0`</mode>
+      </data>
+    </custom_props>
+  </object>
+  <object>
+    <name>`kx_0`</name>
+    <class_name>`Усилитель`</class_name>
+    <custom_props>
+      <data><name>`a`</name><value>`3`</value><mode>`1`</mode></data>
+    </custom_props>
+  </object>
+</project>
+"""
+
+
+@pytest.mark.anyio
+async def test_inspect_project_file_without_com(monkeypatch, tmp_path):
+    """Сохранённый проект разбирается без COM — работает и на Linux."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "model.xprt").write_text(_XPRT_FIXTURE, encoding="utf-8")
+
+    text = _tool_text(await mcp.call_tool("inspect_project_file",
+                                          {"path": "model.xprt"}))
+
+    assert "классов 2, блоков 2" in text
+    assert "k_0" in text
+    assert "kx_0" in text
+    assert "Константа" in text
+    assert "formula_visible" in text
+    assert "вычисляемые" in text
+
+
+@pytest.mark.anyio
+async def test_inspect_project_file_outside_sandbox(monkeypatch, tmp_path):
+    """Песочница та же, что у результатов: чужой файл не читается."""
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    outside = tmp_path / "model.xprt"
+    outside.write_text(_XPRT_FIXTURE, encoding="utf-8")
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(sandbox))
+
+    text = await _error("inspect_project_file", {"path": str(outside)})
+
+    assert "разрешено только из каталога" in text
+
+
+@pytest.mark.anyio
+async def test_inspect_project_file_missing(monkeypatch, tmp_path):
+    """Нет файла — отказ с подсказкой, куда его сохранять."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+
+    text = await _error("inspect_project_file", {"path": "нет.xprt"})
+
+    assert "файла нет" in text
+    assert "save_project" in text
+
+
+# ─── Журнал вызовов ───────────────────────────────────────────────
+
+def test_log_event_writes_json_lines(monkeypatch, tmp_path):
+    """События журнала — по одной JSON-строке на событие."""
+    from simintech_mcp import server
+
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv(server.LOG_ENV, str(log))
+
+    server.log_event("проверка", ok=True, n=1)
+
+    lines = log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["event"] == "проверка"
+    assert record["ok"] is True
+    assert record["n"] == 1
+    assert "ts" in record
+
+
+def test_log_event_is_off_without_env(monkeypatch, tmp_path):
+    """Без переменной журнал не пишется — поведение по умолчанию."""
+    from simintech_mcp import server
+
+    monkeypatch.delenv(server.LOG_ENV, raising=False)
+    log = tmp_path / "log.jsonl"
+
+    server.log_event("не должно записаться")
+
+    assert not log.exists()
+
+
+def test_log_event_never_writes_to_stdout(monkeypatch, capsys):
+    """Журнал идёт в stderr: в stdout живёт JSON-RPC, его засорять нельзя."""
+    from simintech_mcp import server
+
+    monkeypatch.setenv(server.LOG_ENV, "stderr")
+
+    server.log_event("событие", ok=True)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "событие" in captured.err
+
+
+def test_log_event_survives_unwritable_path(monkeypatch, tmp_path):
+    """Недоступный файл журнала не роняет инструмент."""
+    from simintech_mcp import server
+
+    monkeypatch.setenv(server.LOG_ENV, str(tmp_path / "нет-каталога" / "l.log"))
+
+    server.log_event("без падения", ok=True)      # не должно бросить
+
+
+@pytest.mark.anyio
+async def test_tool_call_is_logged(monkeypatch, tmp_path):
+    """Вызов инструмента попадает в журнал с длительностью и исходом."""
+    from simintech_mcp import server
+
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv(server.LOG_ENV, str(log))
+    _install_fake_project(monkeypatch, {"Gain": _FakeBlock("Усилитель")})
+
+    await mcp.call_tool("set_block_param",
+                        {"block": "Gain", "param": "a", "value": "2"})
+
+    records = [json.loads(line)
+               for line in log.read_text(encoding="utf-8").splitlines()]
+    call = [r for r in records if r.get("tool") == "set_block_param"]
+    assert call and call[0]["ok"] is True
+    assert "ms" in call[0]
+    assert call[0]["args"]["param"] == "a"
+
+
+@pytest.mark.anyio
+async def test_failed_tool_call_is_logged(monkeypatch, tmp_path):
+    """Отказ тоже попадает в журнал — иначе причина не видна."""
+    from simintech_mcp import server
+
+    log = tmp_path / "log.jsonl"
+    monkeypatch.setenv(server.LOG_ENV, str(log))
+    _install_fake_project(monkeypatch, {})
+
+    await _error("get_block_params", {"block": "Нет"})
+
+    records = [json.loads(line)
+               for line in log.read_text(encoding="utf-8").splitlines()]
+    failed = [r for r in records
+              if r.get("tool") == "get_block_params" and not r.get("ok")]
+    assert failed and "не найден" in failed[0]["error"]
