@@ -92,3 +92,20 @@ async def test_step_rejects_non_positive_count(monkeypatch):
     text = await _error("step", {"count": 0})
 
     assert "положительным" in text
+
+
+@pytest.mark.anyio
+async def test_step_rejects_absurd_count(monkeypatch):
+    """Абсурдное число шагов отвергается до первого COM-вызова.
+
+    Каждый шаг — отдельный COM-вызов, а вызов в своём потоке по таймауту не
+    прерывается: неограниченный `count` занял бы выделенный поток надолго, и
+    сервер остался бы пригоден только до перезапуска mmain.exe.
+    """
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    text = await _error("step", {"count": simulation_tools.MAX_STEP_COUNT + 1})
+
+    assert "больше предела" in text
+    assert str(simulation_tools.MAX_STEP_COUNT) in text
+    assert sim.stepped == 0, "до COM-вызовов дело доходить не должно"
