@@ -15,13 +15,22 @@ from simintech_mcp.tools import project as project_tools
 
 
 def _text(result) -> str:
-    """Достать текст из результата call_tool (форма зависит от версии MCP)."""
-    if isinstance(result, (list, tuple)):
-        return result[0].text
+    """Извлечь текст из результата `mcp.call_tool`.
+
+    Разные версии FastMCP отдают либо кортеж контента, либо объект
+    `CallToolResult` с полем `.content`, поэтому обрабатываются обе формы, а
+    отсутствие `.text` не роняет тест.
+    """
+    if isinstance(result, (list, tuple)) and result:
+        return getattr(result[0], "text", str(result[0]))
     content = getattr(result, "content", None)
     if content:
-        return content[0].text
+        return getattr(content[0], "text", str(content[0]))
     return str(result)
+
+
+#: Синоним: исторически в тестах жили две копии одного помощника.
+_tool_text = _text
 
 
 async def _error(tool: str, arguments: dict) -> str:
@@ -314,20 +323,6 @@ class _FakeProject:
 def _install_fake_project(monkeypatch, blocks):
     """Подменить открытый проект на подделку с заданными блоками."""
     monkeypatch.setattr(session, "_project", _FakeProject(blocks))
-
-
-def _tool_text(result):
-    """Извлечь текст из результата mcp.call_tool() (устойчиво к версиям).
-
-    Разные версии FastMCP возвращают либо кортеж контента, либо объект
-    CallToolResult с полем `.content`.
-    """
-    if isinstance(result, (list, tuple)) and result:
-        return getattr(result[0], "text", str(result[0]))
-    content = getattr(result, "content", None)
-    if content:
-        return getattr(content[0], "text", str(content[0]))
-    return str(result)
 
 
 class _FakeProjectWithCreate:

@@ -18,6 +18,16 @@ from ..app import mcp
 
 # ─── Блоки и связи ────────────────────────────────────────────────
 
+def _missing_block(name: str) -> str:
+    """Отказ «блока нет на странице» — в одном месте.
+
+    Строка повторялась в четырёх ветках. Расхождение формулировок между ними
+    не косметика: `_call_guarded` распознаёт отказ по префиксу `ERROR:`, и
+    ветка, потерявшая его, вернула бы отказ как успех.
+    """
+    return f"ERROR: блок '{name}' не найден на странице"
+
+
 @mcp.tool()
 @runtime._com_threaded
 def add_block(class_name: str, name_hint: str = "",
@@ -120,9 +130,9 @@ def connect(src: str, dst: str,
     b1 = page.find_block(src)
     b2 = page.find_block(dst)
     if b1 is None:
-        return f"ERROR: блок '{src}' не найден на странице"
+        return _missing_block(src)
     if b2 is None:
-        return f"ERROR: блок '{dst}' не найден на странице"
+        return _missing_block(dst)
     wire = b1.connect(b2, out_index=out_index, in_index=in_index)
     # Храним и концы связи: по ним `layout_place` выравнивает блоки так, чтобы
     # линия шла без лишнего излома.
@@ -165,7 +175,7 @@ def get_block_params(block: str) -> str:
     page = session._ensure_project().get_main_page()
     target = page.find_block(block)
     if target is None:
-        return f"ERROR: блок '{block}' не найден на странице"
+        return _missing_block(block)
     try:
         props = target.get_properties()
         class_name = target.class_name
@@ -207,7 +217,7 @@ def set_block_param(block: str, param: str, value: str,
     page = session._ensure_project().get_main_page()
     target = page.find_block(block)
     if target is None:
-        return f"ERROR: блок '{block}' не найден на странице"
+        return _missing_block(block)
     notes: List[str] = []
     try:
         catalog._check_params(target.class_name, [param],

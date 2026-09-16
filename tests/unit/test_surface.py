@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from simintech_mcp import runtime
 from simintech_mcp.server import mcp
 
 from _support import _text
@@ -36,6 +37,24 @@ async def test_help_text_tool():
     assert "create_project" in text
     # Перечень инструментов живёт в tools/list, а не в справке.
     assert "tools/list" in text
+
+
+@pytest.mark.anyio
+async def test_help_text_does_not_use_com_thread(monkeypatch):
+    """Справка не трогает COM — и не должна вставать в очередь COM-потока.
+
+    Под `_com_threaded` она занимала бы единственный выделенный поток: при
+    занятом `mmain.exe` справка упиралась бы в `COM_CALL_TIMEOUT`, хотя ей это
+    не нужно. Проверка сторожит именно выбор декоратора.
+    """
+    def boom(*args, **kwargs):
+        raise AssertionError("справка ушла в COM-поток")
+
+    monkeypatch.setattr(runtime._COM_EXECUTOR, "submit", boom)
+
+    text = _text(await mcp.call_tool("help_text", {}))
+
+    assert "create_project" in text
 
 
 @pytest.mark.anyio

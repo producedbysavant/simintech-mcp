@@ -132,7 +132,7 @@ mypy
 
 Тесты разложены по тем же границам, что и код: `tests/unit/test_<область>.py`,
 общие фейки — в `tests/unit/_support.py`. То же проверяет CI
-(`.github/workflows/ci.yml`) на каждый push и pull request.
+(`.github/workflows/ci.yml`) на push в `main` и на каждый pull request.
 
 Интеграционные тесты живут в `simintech-code` — они проверяют библиотеку и COM.
 

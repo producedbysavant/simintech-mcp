@@ -12,8 +12,8 @@ from fastmcp.exceptions import ToolError
 
 from . import catalog, sandbox, skills
 from .app import mcp
-from .tools.blocks import list_blocks
-from .tools.project import status
+from .tools import blocks as blocks_tools
+from .tools import project as project_tools
 
 
 # ─── Ресурсы (read-only) ──────────────────────────────────────────
@@ -27,7 +27,7 @@ def resource_status() -> str:
     исключение при чтении ресурса клиенту ничего не объясняет.
     """
     try:
-        return status()
+        return project_tools.status()
     except ToolError as exc:
         return f"SimInTech недоступен: {exc}"
 
@@ -36,7 +36,7 @@ def resource_status() -> str:
 def resource_project_blocks() -> str:
     """Список блоков текущего проекта (read-only представление)."""
     try:
-        return list_blocks()
+        return blocks_tools.list_blocks()
     except Exception as exc:
         return f"ERROR: {exc}"
 

@@ -29,19 +29,19 @@ class _StdoutGuard:
     out-of-proc COM-сервер со своей консолью.
     """
 
-    def __init__(self, real: Any, err: Any):
+    def __init__(self, real: Any, err: Any) -> None:
         self._buffer = getattr(real, "buffer", None)
         self._err = err
 
     @property
-    def buffer(self):
+    def buffer(self) -> Any:
         """Настоящий бинарный буфер stdout — им пользуется транспорт MCP."""
         return self._buffer
 
     def write(self, text: str) -> int:
         return self._err.write(text)
 
-    def writelines(self, lines) -> None:
+    def writelines(self, lines: Any) -> None:
         return self._err.writelines(lines)
 
     def flush(self) -> None:
@@ -53,7 +53,7 @@ class _StdoutGuard:
     def fileno(self) -> int:
         return self._err.fileno()
 
-    def __getattr__(self, name: str):
+    def __getattr__(self, name: str) -> Any:
         # Прочее (encoding, errors, ...) — как у stderr. Приватные имена не
         # делегируем, иначе возможна рекурсия при неинициализированном _err.
         if name.startswith("_"):

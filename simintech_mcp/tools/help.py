@@ -3,6 +3,10 @@
 Печатает текущий каталог результатов (`sandbox._safe_output_root`) — иначе
 клиент не знает, где искать файл блока «В файл», и не может передать путь
 `read_output_file`.
+
+COM не трогает, поэтому идёт под `_plain_tool`: под `_com_threaded` справка
+вставала бы в очередь за единственным COM-потоком и при занятом `mmain.exe`
+сама упиралась бы в `COM_CALL_TIMEOUT`, хотя ей этого не нужно.
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from ..app import mcp
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._plain_tool
 def help_text() -> str:
     """Справка: порядок работы и где взять список инструментов.
 

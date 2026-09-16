@@ -23,18 +23,24 @@ async def test_resource_blocks_catalog_lists_classes_and_params():
 
 @pytest.mark.anyio
 async def test_resource_blocks_catalog_marks_computed_params(monkeypatch):
-    """Вычисляемые параметры помечены: запись в них ничего не меняет."""
+    """Вычисляемые параметры помечены: запись в них ничего не меняет.
+
+    Класс выдуман намеренно. Раньше здесь стоял «Усилитель», а синтетический
+    каталог для него совпадал с настоящим `block_catalog.json` — подмена была
+    ненаблюдаемой, и тест прошёл бы, даже если бы ресурс читал каталог в обход
+    неё. С выдуманным классом это сразу видно.
+    """
     from simintech_api.catalog import BlockCatalog
 
     cat = BlockCatalog(
-        classes={"Усилитель": {"a": "1", "formula_visible": "0"}},
-        readonly={"Усилитель": ["formula_visible"]},
+        classes={"ВыдуманныйКласс": {"a": "1", "formula_visible": "0"}},
+        readonly={"ВыдуманныйКласс": ["formula_visible"]},
     )
     monkeypatch.setattr(catalog, "load_default_catalog", lambda: cat)
 
     text = await _resource_text("simintech://blocks/catalog")
 
-    assert "formula_visible" in text
+    assert "ВыдуманныйКласс" in text
     assert "вычисляемые" in text
 
 

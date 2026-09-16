@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from simintech_mcp import runtime
 from simintech_mcp.server import mcp
 from simintech_mcp.tools import simulation as simulation_tools
 
@@ -92,6 +93,37 @@ async def test_step_rejects_non_positive_count(monkeypatch):
     text = await _error("step", {"count": 0})
 
     assert "положительным" in text
+
+
+@pytest.mark.anyio
+async def test_run_rejects_excessive_wait(monkeypatch):
+    """Ожидание дольше таймаута COM-вызова отвергается.
+
+    Инструмент выполняется в единственном выделенном потоке, а COM-вызов по
+    таймауту не прерывается: с `wait_timeout` в миллиарды клиент получил бы
+    отказ, но поток остался бы занят опросом до `deadline`, и все последующие
+    COM-инструменты падали бы по таймауту до перезапуска mmain.exe. Это тот же
+    класс, от которого защищает `MAX_STEP_COUNT`, — без проверки предел
+    обходится параметрами `run`.
+    """
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    text = await _error("run", {"to_time": 10.0,
+                                "wait_timeout": runtime.COM_CALL_TIMEOUT * 10})
+
+    assert "больше предела" in text
+    assert sim.run_to_calls == [], "до COM-вызовов дело доходить не должно"
+
+
+@pytest.mark.anyio
+async def test_run_rejects_non_positive_waits(monkeypatch):
+    """Нулевое ожидание — отказ, а не мгновенный опрос в цикле."""
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    text = await _error("run", {"to_time": 10.0, "wait_timeout": 0})
+
+    assert "положительными" in text
+    assert sim.run_to_calls == []
 
 
 @pytest.mark.anyio
