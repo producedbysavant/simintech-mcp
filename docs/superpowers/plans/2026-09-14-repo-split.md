@@ -59,7 +59,7 @@
 **Вспомогательные команды.** `gh` не установлен, поэтому GitHub-операции идут через API. Токен:
 
 ```bash
-GH_TOKEN=$(python3.11 -c "import re;print(re.search(r'oauth_token:\s*(\S+)',open('/home/a-savchenko/.config/gh/hosts.yml').read()).group(1))")
+GH_TOKEN=$(python3.11 -c "import os,re;print(re.search(r'oauth_token:\s*(\S+)',open(os.path.expanduser('~/.config/gh/hosts.yml')).read()).group(1))")
 ```
 
 Для `git push` используется временный credential helper (токен не попадает в `.git/config`):
@@ -80,7 +80,7 @@ git -c credential.helper='' \
 - [ ] **Step 1: Переименовать репозиторий на GitHub**
 
 ```bash
-GH_TOKEN=$(python3.11 -c "import re;print(re.search(r'oauth_token:\s*(\S+)',open('/home/a-savchenko/.config/gh/hosts.yml').read()).group(1))")
+GH_TOKEN=$(python3.11 -c "import os,re;print(re.search(r'oauth_token:\s*(\S+)',open(os.path.expanduser('~/.config/gh/hosts.yml')).read()).group(1))")
 curl -s -X PATCH -H "Authorization: token $GH_TOKEN" \
   -H "Accept: application/vnd.github+json" \
   https://api.github.com/repos/producedbysavant/simintech-code-library \
@@ -381,7 +381,7 @@ git commit -m "refactor: репозиторий содержит только MC
 - [ ] **Step 1: Создать репозиторий**
 
 ```bash
-GH_TOKEN=$(python3.11 -c "import re;print(re.search(r'oauth_token:\s*(\S+)',open('/home/a-savchenko/.config/gh/hosts.yml').read()).group(1))")
+GH_TOKEN=$(python3.11 -c "import os,re;print(re.search(r'oauth_token:\s*(\S+)',open(os.path.expanduser('~/.config/gh/hosts.yml')).read()).group(1))")
 curl -s -X POST -H "Authorization: token $GH_TOKEN" \
   -H "Accept: application/vnd.github+json" \
   https://api.github.com/user/repos \
@@ -459,7 +459,7 @@ git commit -q -m "feat: каталог скиллов SimInTech
 Перенесено из simintech-mcp при разделении проекта на три репозитория.
 Скиллы не имеют установочных зависимостей: это SKILL.md и manifest.yaml,
 ссылающиеся на simintech-code по URL."
-GH_TOKEN=$(python3.11 -c "import re;print(re.search(r'oauth_token:\s*(\S+)',open('/home/a-savchenko/.config/gh/hosts.yml').read()).group(1))")
+GH_TOKEN=$(python3.11 -c "import os,re;print(re.search(r'oauth_token:\s*(\S+)',open(os.path.expanduser('~/.config/gh/hosts.yml')).read()).group(1))")
 git remote add origin https://github.com/producedbysavant/simintech-skill.git
 git -c credential.helper='' \
     -c credential.helper='!f(){ echo username=x-access-token; echo password=$GH_TOKEN; }; f' \
