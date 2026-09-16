@@ -1469,19 +1469,20 @@ MAX_SKILL_BYTES = 64 * 1024
 def skills_root() -> Optional[str]:
     """Каталог скиллов или None, если его нет.
 
-    Порядок: ``SIMINTECH_SKILLS_DIR``, иначе соседний checkout
-    ``simintech-skill/skills-catalog`` (удобно при разработке в одном
-    каталоге). Заданный, но несуществующий каталог — не ошибка конфигурации:
-    это просто «скиллов нет», и сообщение об этом называет переменную.
+    ``SIMINTECH_SKILLS_DIR`` — явный выбор пользователя, поэтому при заданной
+    переменной берётся **только** она. Подставлять вместо несуществующего
+    каталога соседний checkout нельзя: читался бы не тот каталог, который
+    назвали (проверено — так и происходило, пока переменная указывала на
+    опечатку, а рядом лежал рабочий checkout). Без переменной соседний
+    checkout ``simintech-skill/skills-catalog`` ищется — это удобно при
+    разработке, когда репозитории лежат рядом.
     """
-    candidates = []
     raw = os.environ.get(SKILLS_DIR_ENV)
     if raw:
-        candidates.append(Path(raw))
+        return raw if os.path.isdir(raw) else None
     here = Path(__file__).resolve()
     for base in list(here.parents)[:4]:
-        candidates.append(base / "simintech-skill" / "skills-catalog")
-    for candidate in candidates:
+        candidate = base / "simintech-skill" / "skills-catalog"
         if candidate.is_dir():
             return str(candidate)
     return None

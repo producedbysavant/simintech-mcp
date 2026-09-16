@@ -1762,13 +1762,18 @@ async def test_resource_skills_lists_and_reads_skill(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_resource_skills_missing_dir_names_variable(
         monkeypatch, tmp_path):
-    """Нет каталога скиллов — сказано, какой переменной его задать."""
+    """Нет каталога скиллов — сказано, какой переменной его задать.
+
+    И он **не** подменяется соседним checkout: иначе опечатка в переменной
+    молча читала бы другой каталог, и агент получал бы чужие скиллы.
+    """
     monkeypatch.setenv("SIMINTECH_SKILLS_DIR", str(tmp_path / "нет-такого"))
 
     text = await _resource_text("simintech://skills")
 
     assert "SIMINTECH_SKILLS_DIR" in text
     assert "не найден" in text
+    assert "Скиллы (" not in text, "соседний checkout не должен подставляться"
 
 
 @pytest.mark.anyio
