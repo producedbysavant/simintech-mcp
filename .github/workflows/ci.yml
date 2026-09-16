@@ -1,0 +1,32 @@
+name: CI
+
+# Проверяется всё, что не требует COM: COM доступен только на Windows с
+# зарегистрированным `mmain.exe /regserver`, поэтому инструменты, трогающие
+# SimInTech, здесь не запускаются и запускаться не могут. Тесты в `tests/unit`
+# написаны так, чтобы обходиться без COM, и на Linux проходят целиком.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Установка
+        run: pip install -e ".[test]" flake8 mypy
+
+      - name: Стиль
+        run: flake8 simintech_mcp tests --max-line-length=88 --extend-ignore=E203,W503
+
+      - name: Типы
+        run: mypy
+
+      - name: Тесты
+        run: pytest tests/unit -q

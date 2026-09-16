@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simintech-mcp"
-version = "0.2.0"
+# Версия берётся из `simintech_mcp/__init__.py`: пока она была прописана в двух
+# местах, они разошлись (в `__init__.py` осталось 0.1.0 против 0.2.0 здесь), и
+# `simintech_mcp.__version__` врал. Та же правка сделана в `simintech-code`.
+dynamic = ["version"]
 description = "MCP-сервер для управления SimInTech через COM API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -42,6 +45,9 @@ simintech-mcp = "simintech_mcp.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["simintech_mcp"]
 
+[tool.hatch.version]
+path = "simintech_mcp/__init__.py"
+
 [tool.hatch.metadata]
 # Зависимость объявлена прямой git-ссылкой (см. выше). Hatchling по умолчанию
 # такие ссылки запрещает: без этого флага сборка падает с
@@ -50,3 +56,17 @@ allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["simintech_mcp"]
+# simintech-api и fastmcp поставляются без заглушек: без этого mypy считал бы
+# ошибкой каждый их импорт, и настоящие находки утонули бы в шуме.
+ignore_missing_imports = true
+# Проверять и тела функций без аннотаций. Иначе проверка затронула бы только
+# подписанные функции — то есть почти ничего: инструменты как раз и были без
+# аннотаций возврата.
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
