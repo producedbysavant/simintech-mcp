@@ -4,7 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "simintech-mcp"
-version = "0.2.0"
+# Версия берётся из `simintech_mcp/__init__.py`: пока она была прописана в двух
+# местах, они разошлись (в `__init__.py` осталось 0.1.0 против 0.2.0 здесь), и
+# `simintech_mcp.__version__` врал. Та же правка сделана в `simintech-code`.
+dynamic = ["version"]
 description = "MCP-сервер для управления SimInTech через COM API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -41,6 +44,9 @@ simintech-mcp = "simintech_mcp.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["simintech_mcp"]
+
+[tool.hatch.version]
+path = "simintech_mcp/__init__.py"
 
 [tool.hatch.metadata]
 # Зависимость объявлена прямой git-ссылкой (см. выше). Hatchling по умолчанию

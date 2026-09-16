@@ -168,6 +168,10 @@ MCP-сервер (FastMCP) для управления SimInTech из ИИ-аг�
 - **Тесты разложены по областям**: `tests/unit/test_<область>.py`, общие
   фейки и помощники — в `tests/unit/_support.py`, путь к пакету добавляет
   `tests/unit/conftest.py`. Файла `test_mcp_server.py` больше нет.
+- **Версия объявлена один раз** — в `simintech_mcp/__init__.py`; `pyproject.toml`
+  читает её оттуда (`dynamic = ["version"]`, `[tool.hatch.version]`). Пока она
+  была прописана в двух местах, они разошлись: `__version__` показывал 0.1.0
+  при версии пакета 0.2.0.
 
 ## Команды
 
