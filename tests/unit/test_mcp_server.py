@@ -2080,6 +2080,27 @@ async def test_summarize_bounds_single_huge_line(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_summarize_skips_absurdly_wide_line(monkeypatch, tmp_path):
+    """Строка с миллионами колонок не разбирается на объекты.
+
+    Предела по байтам мало: 32 МБ текста из «1 1 1 …» — это миллионы
+    токенов, и `split()` без ограничения превратил бы их в миллионы объектов,
+    то есть память выросла бы в десятки раз против прочитанного.
+    """
+    from simintech_mcp import server
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "MAX_SUMMARY_COLUMNS", 8)
+    (tmp_path / "wide.txt").write_text("0 " * 100 + "\n0 1\n", encoding="utf-8")
+
+    text = _tool_text(await mcp.call_tool("summarize_output_file",
+                                          {"path": "wide.txt"}))
+
+    assert "точек 1" in text, "широкая строка пропущена, узкая прочитана"
+    assert "слишком широких" in text
+
+
+@pytest.mark.anyio
 async def test_failed_tool_call_is_logged(monkeypatch, tmp_path):
     """Отказ тоже попадает в журнал — иначе причина не видна."""
     from simintech_mcp import server

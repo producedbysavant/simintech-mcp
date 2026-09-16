@@ -1051,16 +1051,26 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
 MAX_SUMMARY_ROWS = 500_000
 MAX_SUMMARY_BYTES = 32 * 1024 * 1024
 
+#: Предел колонок в одной строке. Предела по байтам мало: строка из «1 1 1 …»
+#: на каждой единице текста даёт объект строки и объект float. Замерено:
+#: разбор 2 МБ такого текста занимает 39 МБ (коэффициент 20), то есть на
+#: пределе сводки это ~650 МБ из файла, который создаёт клиент. Модель с
+#: тысячами выходных сигналов до этого предела не дотягивается.
+MAX_SUMMARY_COLUMNS = 4096
+
 
 def _read_numeric_table(resolved: str):
-    """Числовые строки файла результата: (строки, пропущено, обрезано).
+    """Числовые строки файла: (строки, пропущено, широких, обрезка).
 
     Разделитель — любой пробельный (SimInTech пишет табуляцию, но таблица
     может прийти и с пробелами). Нечисловые строки (заголовок, мусор)
-    считаются, а не роняют разбор.
+    считаются, а не роняют разбор. «Широкие» строки (больше
+    `MAX_SUMMARY_COLUMNS` колонок) пропускаются со счётчиком: разбирать их
+    значило бы материализовать все токены строки.
     """
     rows: List[List[float]] = []
     skipped = 0
+    too_wide = 0
     data, truncated = _read_bounded(resolved, MAX_SUMMARY_BYTES)
     for raw in io.StringIO(data.decode("utf-8", errors="replace")):
         if len(rows) >= MAX_SUMMARY_ROWS:
@@ -1069,11 +1079,17 @@ def _read_numeric_table(resolved: str):
         line = raw.strip()
         if not line:
             continue
+        # maxsplit обязателен: `line.split()` без него материализует все
+        # токены строки, и предел объёма файла перестаёт ограничивать память.
+        parts = line.split(None, MAX_SUMMARY_COLUMNS + 1)
+        if len(parts) > MAX_SUMMARY_COLUMNS:
+            too_wide += 1
+            continue
         try:
-            rows.append([float(part) for part in line.split()])
+            rows.append([float(part) for part in parts])
         except ValueError:
             skipped += 1
-    return rows, skipped, truncated
+    return rows, skipped, too_wide, truncated
 
 
 @mcp.tool()
@@ -1099,7 +1115,7 @@ def summarize_output_file(path: str, column: int = -1) -> str:
         return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
                 f"«В файл» и что расчёт действительно прошёл.")
     try:
-        rows, skipped, truncated = _read_numeric_table(resolved)
+        rows, skipped, too_wide, truncated = _read_numeric_table(resolved)
     except OSError as exc:
         return f"ERROR: {exc}"
     if not rows:
@@ -1133,9 +1149,16 @@ def summarize_output_file(path: str, column: int = -1) -> str:
     if span:
         lines.append(f"  средний наклон: {(series[-1] - series[0]) / span:g} "
                      f"за секунду (по концам ряда)")
-    if skipped or ragged:
-        lines.append(f"  пропущено строк: нечисловых {skipped}, "
-                     f"с другим числом колонок {ragged}")
+    if skipped or ragged or too_wide:
+        notes = []
+        if skipped:
+            notes.append(f"нечисловых {skipped}")
+        if ragged:
+            notes.append(f"с другим числом колонок {ragged}")
+        if too_wide:
+            notes.append(f"слишком широких (больше {MAX_SUMMARY_COLUMNS} "
+                         f"колонок) {too_wide}")
+        lines.append("  пропущено строк: " + ", ".join(notes))
     if truncated:
         lines.append(f"  ВНИМАНИЕ: файл больше предела сводки "
                      f"({MAX_SUMMARY_ROWS} строк или "
