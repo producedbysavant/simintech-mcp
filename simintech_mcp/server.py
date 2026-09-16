@@ -24,8 +24,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 
+import defusedxml.ElementTree as DefusedET
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
@@ -68,7 +69,11 @@ _project: Optional[Project] = None
 #: создании — иначе `layout_place` нечего трассировать, и провода остались бы
 #: диагональными. Живут ровно столько же, сколько проект: сбрасываются вместе
 #: с ним.
-_WIRES: List[Wire] = []
+#:
+#: Элемент — не сама линия, а `(линия, имя источника, номер выхода, имя
+#: приёмника, номер входа)`: без концов `layout_place` не выровнял бы блоки
+#: по портам.
+_WIRES: List[Tuple[Wire, str, int, str, int]] = []
 
 
 def _ensure_client() -> COMClient:
@@ -85,6 +90,21 @@ def _ensure_project() -> Project:
     return _project
 
 
+def _set_project(project: Optional[Project]) -> None:
+    """Сделать проект текущим — единственное место, где он меняется.
+
+    Линии принадлежат проекту: их COM-идентификаторы после смены проекта
+    указывают в никуда, поэтому `_WIRES` сбрасывается здесь же. Пока проект
+    присваивался в нескольких местах, инвариант «линии живут ровно столько
+    же, сколько проект» держался на соглашении — и одного нового инструмента
+    хватило бы, чтобы `layout_place` начал двигать блоки по мёртвым линиям.
+    Переменная `_project` остаётся на месте: на неё опираются тесты.
+    """
+    global _project
+    _project = project
+    _WIRES.clear()
+
+
 def _replace_project(project: Project) -> str:
     """Сделать проект текущим, закрыв предыдущий.
 
@@ -97,11 +117,11 @@ def _replace_project(project: Project) -> str:
         предупреждение для ответа инструмента: самоцель функции не достигнута,
         и об этом нельзя молчать (проект остался жить в `mmain.exe`).
     """
-    global _project
-    previous, _project = _project, project
-    # Линии принадлежат предыдущему проекту: их COM-идентификаторы после смены
-    # проекта указывают в никуда.
-    _WIRES.clear()
+    previous = _project
+    # Смена проекта и сброс линий — одна операция (`_set_project`): линии
+    # принадлежат предыдущему проекту, их идентификаторы после смены
+    # указывают в никуда.
+    _set_project(project)
     if previous is None or previous is project:
         return ""
     try:
@@ -147,9 +167,25 @@ def _call_guarded(fn, args, kwargs):
         raise
     except Exception as exc:
         raise ToolError(f"{type(exc).__name__}: {exc}") from exc
-    if isinstance(result, str) and result.startswith(ERROR_PREFIX):
-        raise ToolError(result[len(ERROR_PREFIX):].strip())
+    if isinstance(result, str):
+        if result.startswith(ERROR_PREFIX):
+            raise ToolError(result[len(ERROR_PREFIX):].strip())
+        _report_contract_drift(result)
     return result
+
+
+def _report_contract_drift(result: str) -> None:
+    """Заметить текст, похожий на отказ, но не оформленный как `ERROR:`.
+
+    Контракт держится на точном префиксе, а клиент доверяет только `isError`:
+    текст вида «Error: …» ушёл бы ему как успех — молча и невозвратимо.
+    Поведение здесь не меняется (иначе пришлось бы угадывать, что автор имел
+    в виду), но в журнале остаётся след. Журнал выключен по умолчанию, так
+    что цена проверки — сравнение восьми символов.
+    """
+    head = result.lstrip()[:8].lower()
+    if head.startswith(("error", "ошибка", "отказ")):
+        log_event("contract-drift", text=result[:120])
 
 
 # ─── Структурированный журнал ─────────────────────────────────────
@@ -162,7 +198,10 @@ def _call_guarded(fn, args, kwargs):
 LOG_ENV = "SIMINTECH_MCP_LOG"
 
 _LOG_OFF = frozenset({"", "0", "false", "off", "no", "none"})
-_LOG_STDERR = frozenset({"1", "true", "yes", "on", "stderr"})
+#: `stdout` здесь намеренно: писать журнал в stdout нельзя (там JSON-RPC),
+#: поэтому такое значение понимается как «в stderr», а не как имя файла
+#: `stdout` в рабочем каталоге сервера.
+_LOG_STDERR = frozenset({"1", "true", "yes", "on", "stderr", "stdout"})
 
 #: Журнал пишут и рабочий COM-поток, и поток транспорта — строки не должны
 #: перемешиваться между собой.
@@ -285,7 +324,9 @@ def status() -> str:
         pid = c.get_process_id()
         return f"SimInTech подключён (PID={pid})"
     except Exception as exc:
-        return f"SimInTech недоступен: {exc}"
+        # Отказ, а не текст: клиент, доверяющий `isError`, иначе увидел бы
+        # «успех» там, где подключиться не удалось.
+        raise ToolError(f"SimInTech недоступен: {exc}") from exc
 
 
 @mcp.tool()
@@ -297,22 +338,24 @@ def disconnect() -> str:
     текущий проект оставался в глобальной переменной: следующие вызовы шли с
     мёртвым `ProjectId`.
     """
-    global _client, _project
+    global _client
     if _client is None and _project is None:
         return "Без изменений: соединения не было — сбрасывать нечего"
-    _WIRES.clear()
+    project = _project
+    # Проект и линии сбрасываются вместе (`_set_project`) — до попытки
+    # закрыть: состояние сессии не должно зависеть от того, ответил ли COM.
+    _set_project(None)
     failed = ""
-    if _project is not None:
+    if project is not None:
         try:
-            _project.close()
+            project.close()
         except Exception as exc:                              # noqa: BLE001
-            # Состояние сбрасываем в любом случае, но не выдаём отказ за успех:
-            # `COMClient.disconnect()` проекты не закрывает, поэтому при сбое
-            # `CloseProject` проект останется жить в mmain.exe.
+            # Не выдаём отказ за успех: `COMClient.disconnect()` проекты не
+            # закрывает, поэтому при сбое `CloseProject` проект останется жить
+            # в mmain.exe.
             failed = (f" ВНИМАНИЕ: проект закрыть не удалось "
                       f"({type(exc).__name__}: {exc}) — он мог остаться "
                       f"открытым в SimInTech.")
-        _project = None
     if _client is not None:
         _client.disconnect()
         _client = None
@@ -430,20 +473,22 @@ def save_project(path: str, binary: bool = False,
 @_com_threaded
 def close_project() -> str:
     """Закрыть текущий проект."""
-    global _project
     if _project is None:
         return "Без изменений: проект не был открыт"
-    _project.close()
-    _project = None
-    _WIRES.clear()
+    project = _project
+    # Порядок: сначала закрыть, потом сбросить состояние. Если `CloseProject`
+    # не ответил, проект остаётся текущим — его видно и можно закрыть повторно,
+    # а не потерять открытым внутри mmain.exe.
+    project.close()
+    _set_project(None)
     return "Проект закрыт"
 
 
 # ─── Проверка имён параметров ─────────────────────────────────────
 
 def _check_params(class_name: str, names: Iterable[str], *,
-                  allow_unknown: bool) -> str:
-    """Проверить имена параметров до записи; вернуть примечание для ответа.
+                  allow_unknown: bool, notes: List[str]) -> None:
+    """Проверить имена параметров до записи; примечание дописать в `notes`.
 
     `SetBlockProp` не отвергает неизвестное имя: запись уходит в никуда **без
     ошибки**, и агент считает параметр заданным. Проверено на SimInTech64:
@@ -453,24 +498,51 @@ def _check_params(class_name: str, names: Iterable[str], *,
 
     Класс, которого в каталоге нет (например, «В файл»), не проверяется:
     каталог собран не для всех классов, и отказ сломал бы рабочий сценарий.
-    Об этом сообщает возвращаемое примечание.
+    Об этом говорится в примечании — и оно пишется в переданный список, а не
+    возвращается строкой: возвращённую строку вызывающий может потерять, и
+    тогда предупреждение о непроверенной записи исчезнет незаметно. Список —
+    тот же, из которого затем собирается ответ инструмента.
 
     Args:
         class_name: класс блока («Константа», «Усилитель», ...).
         names: проверяемые имена параметров.
         allow_unknown: True — не проверять (каталог может отставать).
+        notes: список, куда дописывается примечание.
 
     Raises:
         ToolError: параметра у класса нет либо он вычисляемый.
     """
     if allow_unknown:
-        return ""
+        return
     catalog = load_default_catalog()
+    # Каталог может отсутствовать целиком: `BlockCatalog.load` на пропавший
+    # файл возвращает ПУСТОЙ каталог, а не ошибку. Тогда «класса нет в
+    # каталоге» — это не свойство класса, а отказ проверки вообще, и молчать
+    # об этом нельзя: защита тихо выключилась бы для всех классов, а
+    # примечание обвиняло бы конкретный класс.
+    if len(catalog) == 0:
+        notes.append("ВНИМАНИЕ: каталог блоков недоступен целиком — имена "
+                     "параметров не проверяются ни для одного класса. "
+                     "Проверьте установку simintech-api (файл "
+                     "data/block_catalog.json).")
+        return
     if not catalog.has(class_name):
-        return (f" Класс '{class_name}' отсутствует в каталоге блоков — имена "
-                f"параметров проверить нечем.")
+        notes.append(f"Класс '{class_name}' отсутствует в каталоге блоков — "
+                     f"имена параметров проверить нечем.")
+        return
     known = catalog.props_for(class_name)
     for name in names:
+        # `Name` в каталоге есть (общее свойство), но COM запись игнорирует:
+        # `SetBlockProp("Name", …)` блок НЕ переименовывает — имя остаётся
+        # автоматическим. Без этой ветки проверка пропускала бы ровно ту
+        # запись, ради которой она и делалась: успешный ответ без эффекта.
+        if name == "Name":
+            raise ToolError(
+                "Блоки не переименовываются через COM: запись в 'Name' "
+                "проходит без ошибки, но имя остаётся автоматическим (его "
+                "даёт list_blocks). Если запись всё же нужна — "
+                "allow_unknown=True."
+            )
         if catalog.is_readonly(class_name, name):
             raise ToolError(
                 f"'{name}' — вычисляемый параметр блока '{class_name}': COM "
@@ -484,7 +556,6 @@ def _check_params(class_name: str, names: Iterable[str], *,
                 f"но не попал в каталог — повторите вызов с "
                 f"allow_unknown=True."
             )
-    return ""
 
 
 # ─── Блоки и связи ────────────────────────────────────────────────
@@ -505,8 +576,9 @@ def add_block(class_name: str, name_hint: str = "",
             переименовывает блоки, имя остаётся автоматическим (`k_0`, `kx_0`).
             Ответ вернёт фактическое имя — используйте его в `connect`,
             `get_block_params`, `layout_place`.
-        x, y: координаты центра блока (можно не задавать — их расставит
-            `layout_place`).
+        x, y: координаты **левого верхнего угла** блока, не центра (так их
+            трактует SimInTech: `SetBlockPosition` — это Left/Top). Можно не
+            задавать — их расставит `layout_place`, он центрирует сам.
         props: параметры через запятую, напр. 'a=2' или 'a=[1, -1]'.
             Имена короткие и различаются по классам: у «Константы» — `a`
             (не `y0`), у «Сумматора» — `a` (веса входов). Имена сверяются с
@@ -533,8 +605,9 @@ def add_block(class_name: str, name_hint: str = "",
                 # Молча выбросить нельзя: «a=2 мусор» применил бы `a` и не
                 # сказал, что вторая часть потеряна.
                 ignored.append(pair)
-    param_note = _check_params(class_name, [name for name, _ in pairs],
-                               allow_unknown=allow_unknown_props)
+    notes: List[str] = []
+    _check_params(class_name, [name for name, _ in pairs],
+                  allow_unknown=allow_unknown_props, notes=notes)
 
     page = project.get_main_page()
     block = page.create_block(class_name, x, y)
@@ -551,9 +624,6 @@ def add_block(class_name: str, name_hint: str = "",
         block.set_property(name, value)
 
     actual = block.get_name()
-    notes = []
-    if param_note:
-        notes.append(param_note.strip())
     if name_hint and actual != name_hint:
         # Проверено на SimInTech64: SetBlockProp("Name") НЕ переименовывает
         # блок — имя остаётся автоматическим (k_0, kx_0, ...), ни в
@@ -666,6 +736,9 @@ def set_block_param(block: str, param: str, value: str,
     имена не отвергает: значение уходило в никуда, и по ответу нельзя было
     отличить применённый параметр от неприменённого.
 
+    Отдельно отвергается `Name`: он в каталоге есть (общее свойство), но
+    блок не переименовывает — COM такой записи не применяет.
+
     Args:
         block: имя блока на главной странице (автоимя из `list_blocks`).
         param: имя параметра блока (см. `get_block_params`).
@@ -677,16 +750,21 @@ def set_block_param(block: str, param: str, value: str,
     target = page.find_block(block)
     if target is None:
         return f"ERROR: блок '{block}' не найден на странице"
+    notes: List[str] = []
     try:
-        note = _check_params(target.class_name, [param],
-                             allow_unknown=allow_unknown)
+        _check_params(target.class_name, [param],
+                      allow_unknown=allow_unknown, notes=notes)
         target.set_property(param, _coerce_param_value(value))
         target.init()
     except ToolError:
+        # Отказ проверки (нет параметра, вычисляемый, `Name`) — уже готовый
+        # `ToolError`; возвращать его текстом с префиксом значило бы гонять
+        # типизированный отказ через строку и восстанавливать тип обратно.
         raise
     except Exception as exc:
         return f"ERROR: {exc}"
-    return f"{block}.{param} = {value}" + note
+    tail = f" {'; '.join(notes)}" if notes else ""
+    return f"{block}.{param} = {value}" + tail
 
 
 # ─── Расчёт ───────────────────────────────────────────────────────
@@ -710,6 +788,8 @@ def run(to_time: Optional[float] = None,
     без расчётного слоя или с неподключённым входом `ProjectRun`/`RunTo`/
     `ProjectStep` возвращают успех, а модельное время не растёт. Раньше
     инструмент в этом случае сообщал «Расчёт завершён» — ложное подтверждение.
+    Недостижение отметки — **отказ** (`isError`), а не текст в успешном ответе:
+    клиент, доверяющий флагу, иначе счёл бы расчёт дошедшим.
 
     Расчёт идёт до `endtime` проекта, поэтому `to_time` больше него недостижим
     — поднимите время расчёта через `set_calc_time`.
@@ -729,13 +809,18 @@ def run(to_time: Optional[float] = None,
     reached = sim.run_to(to_time, timeout=wait_timeout, stall=stall_seconds)
     actual = sim.get_time()
     if not reached:
-        return (f"Расчёт не дошёл до {to_time} с: модельное время "
-                f"{actual:.3f} (ждали {wait_timeout:.0f} с). Три частые "
-                f"причины: у какого-то блока не соединён вход — это молча "
-                f"останавливает расчёт всей модели; у проекта нет расчётного "
-                f"слоя и время не растёт вовсе; либо `to_time` больше `endtime`"
-                f" — поднимите его через `set_calc_time`. Проверьте соединения "
-                f"и `list_blocks`.")
+        # Отказ, а не текст: недостижение отметки — это неудача, и клиент,
+        # доверяющий `isError`, иначе увидел бы успех (ровно то, против чего
+        # весь контракт). Текст причины сохраняется целиком.
+        raise ToolError(
+            f"Расчёт не дошёл до {to_time} с: модельное время "
+            f"{actual:.3f} (ждали {wait_timeout:.0f} с). Три частые "
+            f"причины: у какого-то блока не соединён вход — это молча "
+            f"останавливает расчёт всей модели; у проекта нет расчётного "
+            f"слоя и время не растёт вовсе; либо `to_time` больше `endtime`"
+            f" — поднимите его через `set_calc_time`. Проверьте соединения "
+            f"и `list_blocks`."
+        )
     return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
 
 
@@ -747,7 +832,8 @@ def step(count: int = 1) -> str:
     Проверяется **фактический** рост модельного времени, а не только код
     возврата: `ProjectStep` сообщает об успехе и на проекте без расчётного
     слоя, и при неподключённом входе блока — время при этом стоит. Раньше
-    инструмент безусловно отвечал «Выполнено шагов: N».
+    инструмент безусловно отвечал «Выполнено шагов: N». Если время не
+    сдвинулось, инструмент отказывает: шаги, которых не было, — не успех.
 
     Args:
         count: сколько шагов выполнить (> 0).
@@ -761,10 +847,14 @@ def step(count: int = 1) -> str:
         sim.step()
     after = sim.get_time()
     if after <= before:
-        return (f"Время не сдвинулось после {count} шагов (осталось "
-                f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
-                f"у какого-то блока не соединён вход либо у проекта нет "
-                f"расчётного слоя (создайте его через `create_project`).")
+        # Отказ, а не текст: время не сдвинулось — это неудача; клиент,
+        # доверяющий `isError`, иначе счёл бы шаги выполненными.
+        raise ToolError(
+            f"Время не сдвинулось после {count} шагов (осталось "
+            f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
+            f"у какого-то блока не соединён вход либо у проекта нет "
+            f"расчётного слоя (создайте его через `create_project`)."
+        )
     return f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
 
 
@@ -952,15 +1042,57 @@ def _read_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool]:
     израсходована. По той же причине нельзя опираться на построчное чтение:
     одна строка без переводов поднялась бы в память целиком.
 
-    Обрезка может прийтись на середину многобайтового символа — для
-    вызывающих это безразлично: у текстовых читателей хвост не декодируется
-    строго, а `.xprt` декодируется с заменой.
+    Обрезка может прийтись на середину многобайтового символа: текстовые
+    читатели этого модуля декодируют с `errors="replace"`, а разбор `.xprt`
+    отвергает обрезанный файл ещё до декодирования.
     """
     with open(resolved, "rb") as fh:
         raw = fh.read(max_bytes + 1)
     if len(raw) > max_bytes:
         return raw[:max_bytes], True
     return raw, False
+
+
+#: Отказ, когда файла результата нет. Один и тот же текст у всех, кто читает
+#: файл блока «В файл»: расхождение формулировок путало бы агента.
+_MISSING_RESULT_FILE = ("ERROR: файла нет: {path}. Проверьте свойство "
+                        "`filename` блока «В файл» и что расчёт действительно "
+                        "прошёл.")
+
+#: Отказ, когда нет сохранённого проекта: подсказка здесь своя.
+_MISSING_PROJECT_FILE = ("ERROR: файла нет: {path}. Сохраните проект через "
+                         "`save_project` в каталог результатов.")
+
+
+def _load_result_file(path: str, max_bytes: int,
+                      missing: str) -> Tuple[bytes, bool, str]:
+    """Разрешить путь в песочнице и прочитать файл не больше `max_bytes`.
+
+    Читатели файлов (`read_output_file`, `summarize_output_file`,
+    `inspect_project_file`) делают одно и то же — разрешают путь, проверяют
+    наличие, читают ограниченно и переводят сбой в текст отказа. Пока это
+    было скопировано трижды, копии успели разойтись в формулировках и в том,
+    что считать отказом.
+
+    Args:
+        path: путь от клиента (абсолютный или относительный — к каталогу).
+        max_bytes: предел чтения; применяется **до** чтения (см.
+            `_read_bounded`).
+        missing: текст отказа при отсутствующем файле; в него подставляется
+            `path` (у разных инструментов подсказка разная).
+
+    Returns:
+        `(data, truncated, error)`: `error` непуст, если читать нечего; иначе
+        `data` — прочитанное (возможно, обрезанное) содержимое.
+    """
+    resolved = _resolve_output_path(path)
+    if not os.path.isfile(resolved):
+        return b"", False, missing.format(path=path)
+    try:
+        data, truncated = _read_bounded(resolved, max_bytes)
+    except OSError as exc:
+        return b"", False, f"ERROR: {exc}"
+    return data, truncated, ""
 
 
 def _resolve_output_path(path: str) -> str:
@@ -986,7 +1118,7 @@ def _resolve_output_path(path: str) -> str:
 
 
 @mcp.tool()
-@_com_threaded
+@_plain_tool
 def read_output_file(path: str, max_lines: int = 200) -> str:
     """Прочитать текстовый файл с результатами расчёта.
 
@@ -1010,19 +1142,16 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     Args:
         path: путь к файлу внутри каталога результатов (абсолютный или
             относительный — тогда он ищется в этом каталоге).
-        max_lines: сколько первых строк вернуть (по умолчанию 200).
+        max_lines: сколько первых строк вернуть; значение по умолчанию — из
+            сигнатуры.
     """
-    resolved = _resolve_output_path(path)
-    if not os.path.isfile(resolved):
-        return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
-                f"«В файл» и что расчёт действительно прошёл.")
-    try:
-        # Именно байты, а не символы: кириллица в UTF-8 весит вдвое больше, и
-        # по символам предел объёма занижался бы. Чтение ограничено заранее —
-        # иначе предел срабатывал бы уже после того, как файл занял память.
-        data, truncated = _read_bounded(resolved, MAX_OUTPUT_BYTES)
-    except OSError as exc:
-        return f"ERROR: {exc}"
+    # Именно байты, а не символы: кириллица в UTF-8 весит вдвое больше, и по
+    # символам предел объёма занижался бы. Чтение ограничено заранее — иначе
+    # предел срабатывал бы уже после того, как файл занял память.
+    data, truncated, error = _load_result_file(path, MAX_OUTPUT_BYTES,
+                                               _MISSING_RESULT_FILE)
+    if error:
+        return error
     text = data.decode("utf-8", errors="replace")
     lines = []
     total = 0
@@ -1054,27 +1183,57 @@ MAX_SUMMARY_BYTES = 32 * 1024 * 1024
 #: Предел колонок в одной строке. Предела по байтам мало: строка из «1 1 1 …»
 #: на каждой единице текста даёт объект строки и объект float. Замерено:
 #: разбор 2 МБ такого текста занимает 39 МБ (коэффициент 20), то есть на
-#: пределе сводки это ~650 МБ из файла, который создаёт клиент. Модель с
-#: тысячами выходных сигналов до этого предела не дотягивается.
+#: пределе сводки это ≈ `MAX_SUMMARY_BYTES` × 20 (~640 МБ при текущих 32 МБ)
+#: из файла, который создаёт клиент. Модель с тысячами выходных сигналов до
+#: этого предела не дотягивается.
 MAX_SUMMARY_COLUMNS = 4096
 
 
-def _read_numeric_table(resolved: str):
-    """Числовые строки файла: (строки, пропущено, широких, обрезка).
+class NumericTable(NamedTuple):
+    """Разбор файла результата: строки плюс учёт того, что в них не попало.
+
+    Именованные поля, а не кортеж: значений стало пять, и три из них —
+    счётчики одного типа, поэтому позиционная распаковка молча путала бы
+    «пропущено» с «широких», меняя смысл примечания в ответе.
+    """
+
+    rows: List[List[float]]
+    skipped: int            # нечисловые строки
+    too_wide: int           # строки шире MAX_SUMMARY_COLUMNS
+    truncated: bool         # упёрлись в предел строк или байт
+    partial_dropped: bool   # последняя строка обрезана и отброшена
+
+
+def _read_numeric_table(data: bytes, truncated: bool) -> NumericTable:
+    """Разобрать содержимое файла результата — чистый разбор, без ввода-вывода.
 
     Разделитель — любой пробельный (SimInTech пишет табуляцию, но таблица
     может прийти и с пробелами). Нечисловые строки (заголовок, мусор)
     считаются, а не роняют разбор. «Широкие» строки (больше
     `MAX_SUMMARY_COLUMNS` колонок) пропускаются со счётчиком: разбирать их
-    значило бы материализовать все токены строки.
+    значило бы материализовать все токены строки. Обрезанная на середине
+    последняя строка не разбирается — см. `partial_dropped`.
+
+    Args:
+        data: прочитанное содержимое (см. `_load_result_file`).
+        truncated: файл обрезан пределом чтения — тогда последняя строка
+            может быть неполной.
     """
     rows: List[List[float]] = []
     skipped = 0
     too_wide = 0
-    data, truncated = _read_bounded(resolved, MAX_SUMMARY_BYTES)
+    dropped = False
+    # Обрезка по пределу байт приходится на середину строки — и даже на
+    # середину числа. Разбирать её нельзя: `2.123456`, обрезанное до `2.0`,
+    # попало бы в min/max/среднее/наклон как настоящее измерение. Признак
+    # неполноты — отсутствие перевода строки в конце прочитанного.
+    partial_line = truncated and not data.endswith(b"\n")
     for raw in io.StringIO(data.decode("utf-8", errors="replace")):
         if len(rows) >= MAX_SUMMARY_ROWS:
             truncated = True
+            break
+        if partial_line and not raw.endswith("\n"):
+            dropped = True
             break
         line = raw.strip()
         if not line:
@@ -1089,7 +1248,7 @@ def _read_numeric_table(resolved: str):
             rows.append([float(part) for part in parts])
         except ValueError:
             skipped += 1
-    return rows, skipped, too_wide, truncated
+    return NumericTable(rows, skipped, too_wide, truncated, dropped)
 
 
 @mcp.tool()
@@ -1110,17 +1269,24 @@ def summarize_output_file(path: str, column: int = -1) -> str:
         column: номер колонки значения; отрицательный — с конца строки
             (`-1` — последняя). `0` — время.
     """
-    resolved = _resolve_output_path(path)
-    if not os.path.isfile(resolved):
-        return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
-                f"«В файл» и что расчёт действительно прошёл.")
-    try:
-        rows, skipped, too_wide, truncated = _read_numeric_table(resolved)
-    except OSError as exc:
-        return f"ERROR: {exc}"
+    data, truncated, error = _load_result_file(path, MAX_SUMMARY_BYTES,
+                                               _MISSING_RESULT_FILE)
+    if error:
+        return error
+    table = _read_numeric_table(data, truncated)
+    rows = table.rows
     if not rows:
+        if table.partial_dropped:
+            # Единственная «строка» файла не уместилась в предел сводки. Это
+            # не пустой результат расчёта, и говорить «нет данных» нельзя:
+            # числа в файле есть, но это не таблица (нет переводов строк).
+            return (f"ERROR: в файле {path} нет ни одной полной числовой "
+                    f"строки: строка не умещается в предел сводки "
+                    f"({MAX_SUMMARY_BYTES} байт). Похоже, это не таблица — "
+                    f"в файле нет переводов строк.")
         return (f"ERROR: в файле {path} нет ни одной числовой строки"
-                + (f" (нечисловых строк: {skipped})" if skipped else "")
+                + (f" (нечисловых строк: {table.skipped})"
+                   if table.skipped else "")
                 + ". Пустой результат — признак, что расчёт не шёл.")
 
     width = len(rows[0])
@@ -1149,17 +1315,19 @@ def summarize_output_file(path: str, column: int = -1) -> str:
     if span:
         lines.append(f"  средний наклон: {(series[-1] - series[0]) / span:g} "
                      f"за секунду (по концам ряда)")
-    if skipped or ragged or too_wide:
+    if table.skipped or ragged or table.too_wide or table.partial_dropped:
         notes = []
-        if skipped:
-            notes.append(f"нечисловых {skipped}")
+        if table.skipped:
+            notes.append(f"нечисловых {table.skipped}")
         if ragged:
             notes.append(f"с другим числом колонок {ragged}")
-        if too_wide:
+        if table.too_wide:
             notes.append(f"слишком широких (больше {MAX_SUMMARY_COLUMNS} "
-                         f"колонок) {too_wide}")
+                         f"колонок) {table.too_wide}")
+        if table.partial_dropped:
+            notes.append("последняя строка обрезана и отброшена")
         lines.append("  пропущено строк: " + ", ".join(notes))
-    if truncated:
+    if table.truncated:
         lines.append(f"  ВНИМАНИЕ: файл больше предела сводки "
                      f"({MAX_SUMMARY_ROWS} строк или "
                      f"{MAX_SUMMARY_BYTES} байт) — посчитаны первые {count}.")
@@ -1205,14 +1373,10 @@ def inspect_project_file(path: str) -> str:
         path: путь к `.xprt` внутри каталога результатов (как у
             `read_output_file`): файл должен лежать в нём.
     """
-    resolved = _resolve_output_path(path)
-    if not os.path.isfile(resolved):
-        return (f"ERROR: файла нет: {path}. Сохраните проект через "
-                f"`save_project` в каталог результатов.")
-    try:
-        raw, truncated = _read_bounded(resolved, MAX_PROJECT_BYTES)
-    except OSError as exc:
-        return f"ERROR: {exc}"
+    raw, truncated, error = _load_result_file(path, MAX_PROJECT_BYTES,
+                                              _MISSING_PROJECT_FILE)
+    if error:
+        return error
     if truncated:
         raise ToolError(
             f"Файл {path} больше {MAX_PROJECT_BYTES} байт — разбор проекта "
@@ -1220,6 +1384,21 @@ def inspect_project_file(path: str) -> str:
         )
 
     text = decode_xprt(raw)
+    # Корректность проверяется ДО разбора. Без этой проверки повреждённый,
+    # обрезанный или вовсе не-XML файл давал бы «классов 0, блоков 0» —
+    # ровно тот же ответ, что у пустой, но исправной схемы: провал разбора
+    # выглядел бы как «модель пуста». Парсер — defusedxml, как и в
+    # библиотеке: обычный `xml.etree` на чужом файле открывает XXE и
+    # «бомбы». Проверено на реальном .xprt из SimInTech (693 КБ): структура
+    # корректна, 32 объекта.
+    try:
+        DefusedET.fromstring(text)
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"Файл {path} не является корректным экспортом SimInTech "
+            f"(.xprt): {type(exc).__name__}: {exc}"
+        ) from exc
+
     classes = parse_xprt_block_props(text)
     readonly = parse_xprt_readonly(text)
     names = _xprt_block_names(text)
@@ -1231,8 +1410,14 @@ def inspect_project_file(path: str) -> str:
                      + (f"\n  ... и ещё {len(names) - 50}"
                         if len(names) > 50 else ""))
     else:
-        parts.append("Имена блоков в файле не найдены (возможно, это не "
-                     "экспорт схемы).")
+        # Отличить «нечего показывать» от «разбор имён не справился» важно:
+        # при найденных параметрах классов пустой список имён означает
+        # ограничение разбора, а не отсутствие объектов в схеме.
+        parts.append(
+            "Имена блоков не найдены — " + (
+                "разбор имён ограничен, хотя параметры блоков в файле есть."
+                if classes else "в файле нет блоков схемы.")
+        )
     if classes:
         lines = []
         for cls in sorted(classes):
@@ -1242,8 +1427,15 @@ def inspect_project_file(path: str) -> str:
             lines.append(f"  {cls}: {', '.join(sorted(classes[cls]))}{tail}")
         parts.append("Параметры по классам:\n" + "\n".join(lines))
     else:
-        parts.append("Параметры блоков не найдены: в файле нет секций "
-                     "<custom_props>.")
+        # Объекты считаются отдельно: и парсер параметров, и извлекатель имён
+        # отбрасывают графику (`Line`, `PolyLine`, ...), поэтому схема из одной
+        # графики выглядит как пустая — а это разные вещи.
+        objects = text.count("<object>")
+        parts.append(
+            "Параметры блоков не найдены: в файле нет секций <custom_props>"
+            + (f" (объектов в файле: {objects} — возможно, это только "
+               f"графика)." if objects else ".")
+        )
     return "\n".join(parts)
 
 
@@ -1446,8 +1638,16 @@ def help_text() -> str:
 
 @mcp.resource("simintech://status")
 def resource_status() -> str:
-    """Статус COM-сервера SimInTech (аналог инструмента status)."""
-    return status()
+    """Статус COM-сервера SimInTech (аналог инструмента status).
+
+    Инструмент при недоступном COM отказывает (это и есть отказ), а ресурс —
+    только читаемое представление, поэтому причину возвращает текстом:
+    исключение при чтении ресурса клиенту ничего не объясняет.
+    """
+    try:
+        return status()
+    except ToolError as exc:
+        return f"SimInTech недоступен: {exc}"
 
 
 @mcp.resource("simintech://project/blocks")
@@ -1536,12 +1736,20 @@ def _skills_missing_message() -> str:
             f".../simintech-skill/skills-catalog).")
 
 
-def _skill_summary(path: Path) -> str:
-    """Краткое описание скилла — первая содержательная строка SKILL.md."""
+def _skill_summary(path: Path) -> Optional[str]:
+    """Краткое описание скилла — первая содержательная строка SKILL.md.
+
+    `None` — файл не прочитался. Это не то же самое, что скилл без описания,
+    и вызывающий обязан показать разницу: иначе ошибка ввода-вывода
+    выглядела бы как отсутствие описания.
+    """
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        # Читается ограниченно — описание берётся из начала файла, а сам файл
+        # может быть большим; предел тот же, что у тела скилла.
+        data, _ = _read_bounded(str(path), MAX_SKILL_BYTES)
     except OSError:
-        return ""
+        return None
+    text = data.decode("utf-8", errors="replace")
     in_frontmatter = False
     for raw in text.splitlines():
         line = raw.strip()
@@ -1556,8 +1764,8 @@ def _skill_summary(path: Path) -> str:
     return ""
 
 
-def _list_skills(root: str) -> List[Tuple[str, str]]:
-    """Скиллы каталога: пары (имя, краткое описание)."""
+def _list_skills(root: str) -> List[Tuple[str, Optional[str]]]:
+    """Скиллы каталога: пары (имя, краткое описание или None при ошибке)."""
     result = []
     for entry in sorted(Path(root).iterdir()):
         if not entry.is_dir() or not _SKILL_NAME_RE.match(entry.name):
@@ -1582,8 +1790,16 @@ def resource_skills() -> str:
     if not skills:
         return (f"В каталоге «{root}» скиллов нет: нужны подкаталоги с файлом "
                 f"{SKILL_FILE}.")
-    lines = [f"  {name} — {summary}" if summary else f"  {name}"
-             for name, summary in skills]
+    lines = []
+    for name, summary in skills:
+        if summary is None:
+            # Ошибку чтения показываем явно: иначе она неотличима от скилла
+            # без описания, и агент не поймёт, почему описания нет.
+            lines.append(f"  {name} — (описание недоступно: ошибка чтения)")
+        elif summary:
+            lines.append(f"  {name} — {summary}")
+        else:
+            lines.append(f"  {name}")
     return (f"Скиллы ({root}):\n" + "\n".join(lines)
             + "\n\nСодержимое скилла — ресурс simintech://skills/<имя>.")
 
@@ -1601,13 +1817,15 @@ def resource_skill(name: str) -> str:
     if not path.is_file():
         return f"ERROR: скилла «{name}» нет в «{root}»"
     try:
-        raw = path.read_bytes()
+        # Чтение ограничено ЗАРАНЕЕ, как и у файлов результатов: проверка
+        # размера после чтения защитой не является — файл уже в памяти.
+        raw, truncated = _read_bounded(str(path), MAX_SKILL_BYTES)
     except OSError as exc:
         return f"ERROR: {exc}"
-    if len(raw) > MAX_SKILL_BYTES:
-        return (raw[:MAX_SKILL_BYTES].decode("utf-8", "replace")
-                + f"\n... (скилл обрезан: больше {MAX_SKILL_BYTES} байт)")
-    return raw.decode("utf-8", "replace")
+    text = raw.decode("utf-8", errors="replace")
+    if truncated:
+        return text + f"\n... (скилл обрезан: больше {MAX_SKILL_BYTES} байт)"
+    return text
 
 
 # ─── Промпты (шаблоны) ────────────────────────────────────────────

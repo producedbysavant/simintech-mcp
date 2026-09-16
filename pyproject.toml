@@ -23,6 +23,10 @@ dependencies = [
     "simintech-api @ git+https://github.com/producedbysavant/simintech-code@f810bc9f930bfe5684f8a492f78310dcbae028ac",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
+    # Импортируется напрямую — проверка корректности .xprt в
+    # `inspect_project_file`. Приходит и транзитивно с simintech-api, но своя
+    # зависимость честнее: обычный xml.etree на чужом файле открывает XXE.
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
