@@ -14,14 +14,19 @@ dependencies = [
     # Библиотека-ядро. Для локальной разработки заменить на path-зависимость:
     # simintech-api = { path = "../simintech-code", editable = true }
     #
-    # ВНИМАНИЕ: тег v0.2.0 не содержит `Project.from_template`,
-    # `set_calc_end_time` и класса «В файл» — на нём `create_project` падает с
-    # AttributeError, а собрать считающуюся модель нельзя. До выпуска
-    # следующего тега ставьте библиотеку из локального checkout (path-строка
-    # выше) или напрямую из main.
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.2.0",
+    # Пин на КОММИТ, а не на тег v0.2.0: в теге нет `standard_block_size`,
+    # `default_output_dir`, `Project.from_template`, `set_calc_end_time` и
+    # класса «В файл». Сервер импортирует первые два, поэтому на теге падал
+    # уже на импорте (`ImportError`), а `create_project` — с AttributeError:
+    # собрать считающуюся модель было нельзя вообще. Как только в
+    # simintech-code появится тег новее — заменить SHA на него.
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@f810bc9f930bfe5684f8a492f78310dcbae028ac",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
+    # Импортируется напрямую — проверка корректности .xprt в
+    # `inspect_project_file`. Приходит и транзитивно с simintech-api, но своя
+    # зависимость честнее: обычный xml.etree на чужом файле открывает XXE.
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]
