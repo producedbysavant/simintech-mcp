@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import functools
+import io
 import json
 import os
 import re
@@ -942,6 +943,26 @@ def _is_inside(root: str, path: str) -> bool:
         return False
 
 
+def _read_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool]:
+    """Прочитать файл не более `max_bytes` байт: `(данные, обрезано)`.
+
+    Ограничение обязательно именно **до** чтения. Проверка «прочитать целиком,
+    потом отказать по размеру» защитой не является: файл в каталоге
+    результатов мог создать кто угодно, и память к моменту проверки уже
+    израсходована. По той же причине нельзя опираться на построчное чтение:
+    одна строка без переводов поднялась бы в память целиком.
+
+    Обрезка может прийтись на середину многобайтового символа — для
+    вызывающих это безразлично: у текстовых читателей хвост не декодируется
+    строго, а `.xprt` декодируется с заменой.
+    """
+    with open(resolved, "rb") as fh:
+        raw = fh.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        return raw[:max_bytes], True
+    return raw, False
+
+
 def _resolve_output_path(path: str) -> str:
     """Разрешить путь внутри каталога результатов (см. `read_output_file`).
 
@@ -995,24 +1016,20 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     if not os.path.isfile(resolved):
         return (f"ERROR: файла нет: {path}. Проверьте свойство `filename` блока "
                 f"«В файл» и что расчёт действительно прошёл.")
-    lines = []
-    total = 0
-    read_bytes = 0
-    truncated = False
     try:
-        with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                total += 1
-                # Именно байты, а не символы: кириллица в UTF-8 весит вдвое
-                # больше, и по символам предел объёма занижался бы.
-                read_bytes += len(raw.encode("utf-8"))
-                if len(lines) < max_lines:
-                    lines.append(raw.rstrip("\r\n"))
-                if read_bytes >= MAX_OUTPUT_BYTES:
-                    truncated = True
-                    break
+        # Именно байты, а не символы: кириллица в UTF-8 весит вдвое больше, и
+        # по символам предел объёма занижался бы. Чтение ограничено заранее —
+        # иначе предел срабатывал бы уже после того, как файл занял память.
+        data, truncated = _read_bounded(resolved, MAX_OUTPUT_BYTES)
     except OSError as exc:
         return f"ERROR: {exc}"
+    text = data.decode("utf-8", errors="replace")
+    lines = []
+    total = 0
+    for raw in io.StringIO(text):
+        total += 1
+        if len(lines) < max_lines:
+            lines.append(raw.rstrip("\r\n"))
     if total == 0:
         # Пустой результат — не «данных нет», а признак, что расчёт не шёл:
         # блок «В файл» создаёт файл, но без вычислений не пишет ни строки.
@@ -1020,9 +1037,9 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
                 f"Обычно это значит, что расчёт не шёл (проверьте `get_time()` "
                 f"после `run` и соединения блоков).")
     if truncated:
-        return (f"{path}: прочитано строк {total} из {read_bytes} прочитанных "
-                f"байт — файл больше {MAX_OUTPUT_BYTES} байт, чтение "
-                f"остановлено\n" + "\n".join(lines))
+        return (f"{path}: прочитано строк {total} — файл больше "
+                f"{MAX_OUTPUT_BYTES} байт, чтение остановлено\n"
+                + "\n".join(lines))
     head = f"{path}: строк {total}"
     if total > max_lines:
         head += f", показаны первые {max_lines}"
@@ -1044,21 +1061,18 @@ def _read_numeric_table(resolved: str):
     """
     rows: List[List[float]] = []
     skipped = 0
-    read_bytes = 0
-    truncated = False
-    with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
-        for raw in fh:
-            read_bytes += len(raw.encode("utf-8"))
-            if read_bytes > MAX_SUMMARY_BYTES or len(rows) >= MAX_SUMMARY_ROWS:
-                truncated = True
-                break
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                rows.append([float(part) for part in line.split()])
-            except ValueError:
-                skipped += 1
+    data, truncated = _read_bounded(resolved, MAX_SUMMARY_BYTES)
+    for raw in io.StringIO(data.decode("utf-8", errors="replace")):
+        if len(rows) >= MAX_SUMMARY_ROWS:
+            truncated = True
+            break
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            rows.append([float(part) for part in line.split()])
+        except ValueError:
+            skipped += 1
     return rows, skipped, truncated
 
 
@@ -1173,10 +1187,10 @@ def inspect_project_file(path: str) -> str:
         return (f"ERROR: файла нет: {path}. Сохраните проект через "
                 f"`save_project` в каталог результатов.")
     try:
-        raw = Path(resolved).read_bytes()
+        raw, truncated = _read_bounded(resolved, MAX_PROJECT_BYTES)
     except OSError as exc:
         return f"ERROR: {exc}"
-    if len(raw) > MAX_PROJECT_BYTES:
+    if truncated:
         raise ToolError(
             f"Файл {path} больше {MAX_PROJECT_BYTES} байт — разбор проекта "
             f"такого объёма не выполняется"

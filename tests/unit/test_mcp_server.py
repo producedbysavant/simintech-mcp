@@ -2016,6 +2016,69 @@ async def test_tool_call_is_logged(monkeypatch, tmp_path):
     assert call[0]["args"]["param"] == "a"
 
 
+# ─── Границы чтения ───────────────────────────────────────────────
+
+def test_read_bounded_reads_no_more_than_limit(tmp_path):
+    """Из файла читается не больше предела: проверка размера ДО чтения.
+
+    «Прочитать целиком, потом отказать по размеру» защитой не является —
+    память к моменту проверки уже израсходована. Здесь проверяется, что из
+    файла действительно берётся ограниченный кусок.
+    """
+    from simintech_mcp import server
+
+    path = tmp_path / "big.bin"
+    path.write_bytes(b"x" * 5000)
+
+    data, truncated = server._read_bounded(str(path), 100)
+
+    assert truncated is True
+    assert len(data) == 100, "прочитано должно быть ровно 100 байт"
+
+
+def test_read_bounded_keeps_small_file_intact(tmp_path):
+    """Файл меньше предела читается целиком и не помечается обрезанным."""
+    from simintech_mcp import server
+
+    path = tmp_path / "small.bin"
+    path.write_bytes(b"abc")
+
+    assert server._read_bounded(str(path), 100) == (b"abc", False)
+
+
+@pytest.mark.anyio
+async def test_inspect_project_file_refuses_oversized(monkeypatch, tmp_path):
+    """Слишком большой .xprt отвергается, а не читается в память целиком."""
+    from simintech_mcp import server
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "MAX_PROJECT_BYTES", 64)
+    (tmp_path / "big.xprt").write_text("x" * 500, encoding="utf-8")
+
+    text = await _error("inspect_project_file", {"path": "big.xprt"})
+
+    assert "больше" in text
+
+
+@pytest.mark.anyio
+async def test_summarize_bounds_single_huge_line(monkeypatch, tmp_path):
+    """Строка без переводов не поднимается в память целиком.
+
+    Построчное чтение подняло бы её всю: предел по байтам сработал бы уже
+    после выделения памяти.
+    """
+    from simintech_mcp import server
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(server, "MAX_SUMMARY_BYTES", 200)
+    (tmp_path / "huge.txt").write_text("1 " * 100000, encoding="utf-8")
+
+    text = _tool_text(await mcp.call_tool("summarize_output_file",
+                                          {"path": "huge.txt"}))
+
+    assert "ВНИМАНИЕ" in text, "обрезка должна быть видна в сводке"
+
+
 @pytest.mark.anyio
 async def test_failed_tool_call_is_logged(monkeypatch, tmp_path):
     """Отказ тоже попадает в журнал — иначе причина не видна."""
