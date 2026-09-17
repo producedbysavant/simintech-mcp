@@ -331,6 +331,12 @@ def export_signal_db(path: str = "signals.xml") -> str:
         return (f"База пуста: файл «{destination}» записан, но сигналов в нём "
                 f"нет. Нужен проект с подключённой базой сигналов.")
     categories = ", ".join(cat.name for cat in database.categories[:5])
+    # Шаблонные описания категории — прототип её сигналов, а не сигналы
+    # (см. `simintech_api.sdb.CategoryInfo`): в счёт сигналов они не идут, но
+    # их число полезно видеть — по нему понятно, что база типизированная.
+    templates = sum(len(cat.template_signals) for cat in database.categories)
+    template_note = (f" Прототипов категорий (не сигналы): {templates}."
+                     if templates else "")
     return (f"База сигналов выгружена в «{destination}»: категорий "
             f"{len(database.categories)}, групп {groups}, сигналов {signals}. "
-            f"Категории: {categories}")
+            f"Категории: {categories}{template_note}")

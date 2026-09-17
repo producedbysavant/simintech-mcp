@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Optional
 
@@ -127,8 +128,63 @@ def open_project(path: str) -> str:
     Предыдущий открытый проект закрывается (см. `create_project`).
     """
     prj = Project.open(session._ensure_client(), path)
-    replaced = session._replace_project(prj)
+    replaced = session._replace_project(prj, source_path=path)
     return f"Проект открыт (id={prj.id})" + replaced
+
+
+@mcp.tool()
+@runtime._plain_tool
+def project_network_role() -> str:
+    """Показать роль проекта в распределённом (сетевом) расчёте.
+
+    Роль лежит не в проекте, а рядом с ним — в файле настроек базы сигналов
+    `<имя проекта>.dblocalconf` (или `<имя проекта>.dbconf`), и читается без
+    COM. Инструмент нужен, чтобы «какой это узел» перестало быть догадкой:
+    от роли зависит, кто в сети задаёт модельное время.
+
+    Файл принадлежит не нам: его создаёт SimInTech, и порт приёма данных
+    (по умолчанию 19000 — по файлам поставки, в справке этого числа нет)
+    поднимается у проекта с включённым приёмом. Открытие такого проекта в
+    живой среде начинает слушать порт — знать об этом полезно до запуска.
+
+    Читается только файл рядом с открытым из файла проектом: произвольный путь
+    инструмент не принимает, как и остальные инструменты чтения.
+    """
+    source = session._opened_from()
+    if not source:
+        raise ToolError(
+            "Текущий проект не открывался из файла (создан или ещё не открыт), "
+            "поэтому настроек рядом с ним нет.")
+    from simintech_api.dbconf import load_db_config
+    from simintech_api.exceptions import SimInTechError
+
+    stem = os.path.splitext(source)[0]
+    candidates = [stem + ".dblocalconf", stem + ".dbconf"]
+    found = [path for path in candidates if os.path.exists(path)]
+    if not found:
+        return (f"Настроек обмена рядом с проектом нет: искали "
+                f"«{os.path.basename(candidates[0])}» и "
+                f"«{os.path.basename(candidates[1])}» в каталоге проекта. "
+                f"Это обычное состояние — файл появляется, когда настройки "
+                f"базы сигналов сохраняли.")
+    try:
+        config = load_db_config(found[0])
+    except SimInTechError as exc:
+        raise ToolError(f"файл «{found[0]}» не разобран: {exc}")
+
+    summary = config.as_dict()
+    role = summary["role"]
+    detail = [f"Файл: {os.path.basename(found[0])}", f"Роль узла: {role}"]
+    if role != "не настроен":
+        detail.append(f"Синхронизация модельного времени: "
+                      f"{'да' if config.sync_time else 'нет'}")
+        if config.server_port is not None:
+            detail.append(f"Порт приёма данных: {config.server_port}")
+        if config.host:
+            detail.append(f"Удалённый сервер: {config.host}:{config.port}")
+    else:
+        detail.append("Сетевой обмен у этого проекта не включён.")
+    return "\n".join(detail)
 
 
 @mcp.tool()

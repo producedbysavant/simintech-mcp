@@ -160,8 +160,13 @@ async def test_set_block_param_allow_unknown_writes(monkeypatch):
 @pytest.mark.anyio
 async def test_set_block_param_class_outside_catalog_writes_with_note(
         monkeypatch):
-    """Класс вне каталога («В файл») не отвергается — проверять нечем."""
-    block = _FakeBlock("В файл", {"filename": "старое.txt"})
+    """Класс вне каталога не отвергается — проверять нечем, и об этом сказано.
+
+    Класс взят заведомо вымышленный: «В файл» раньше служил примером
+    непроверяемого, но теперь он в каталоге (952 класса из движка, 958 после
+    досборки), и держать его здесь значило бы закреплять снятое ограничение.
+    """
+    block = _FakeBlock("Класс-которого-нет-в-каталоге", {"filename": "старое.txt"})
     _install_fake_project(monkeypatch, {"ToFile": block})
 
     text = _tool_text(await mcp.call_tool(
@@ -170,6 +175,38 @@ async def test_set_block_param_class_outside_catalog_writes_with_note(
 
     assert block._props["filename"] == "новое.txt"
     assert "отсутствует в каталоге" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_checks_names_of_to_file(monkeypatch):
+    """«В файл» теперь в каталоге — его имена проверяются, а не пропускаются.
+
+    Это и было целью волны 2 плана: класс, который раньше попадал в ветку
+    «проверять нечем», теперь под проверкой (имена сняты с живой сборки).
+    """
+    block = _FakeBlock("В файл", {"filename": "старое.txt"})
+    _install_fake_project(monkeypatch, {"ToFile": block})
+
+    await mcp.call_tool(
+        "set_block_param", {"block": "ToFile", "param": "step", "value": "[0.2]"})
+
+    assert block._props["step"] == "[0.2]"
+
+
+@pytest.mark.anyio
+async def test_set_block_param_rejects_unknown_name_of_to_file(monkeypatch):
+    """Опечатка в имени параметра «В файл» отвергается каталогом."""
+    block = _FakeBlock("В файл", {"filename": "старое.txt"})
+    _install_fake_project(monkeypatch, {"ToFile": block})
+
+    with pytest.raises(Exception) as excinfo:
+        await mcp.call_tool(
+            "set_block_param",
+            {"block": "ToFile", "param": "filenam", "value": "x.txt"})
+
+    assert "filenam" in str(excinfo.value)
+    assert "filename" in str(excinfo.value)
+    assert "filenam" not in block._props
 
 
 @pytest.mark.anyio
