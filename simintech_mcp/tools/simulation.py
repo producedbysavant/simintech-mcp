@@ -192,9 +192,24 @@ def list_signals() -> str:
     return "\n\n".join(parts)
 
 
+#: Сколько элементов массива читать за один вызов `get_signal`. Каждый элемент —
+#: отдельный COM-вызов (`GetExtArrayElement`), а COM-поток один: число элементов
+#: приходит из параметра, то есть задаётся клиентом, и без предела длинный
+#: массив занял бы поток надолго — тот же класс опасности, что у `MAX_STEP_COUNT`.
+MAX_ARRAY_ITEMS = 100
+
+
+def _array_types() -> tuple:
+    """Типы-массивы (`ARRAY`, `INT_ARRAY`) — импорт здесь, а не наверху."""
+    from simintech_api.constants import DataType
+
+    return (DataType.ARRAY, DataType.INT_ARRAY)
+
+
 @mcp.tool()
 @runtime._com_threaded
-def get_signal(block: str) -> str:
+def get_signal(block: str, max_items: int = 20,
+               index: Optional[int] = None) -> str:
     """Прочитать значение сигнала — он адресуется именем блока.
 
     Работает только у проекта с подключённой базой сигналов. У модели,
@@ -202,33 +217,80 @@ def get_signal(block: str) -> str:
     прямо, а этот инструмент вернёт ошибку. Результат самодельной модели
     забирайте блоком «В файл» и `read_output_file`.
 
+    Массивы читаются **не целиком**: библиотека тянет массив поэлементно, а
+    каждый элемент — отдельный COM-вызов и единственный COM-поток. За один
+    вызов отдаются первые `max_items` значений и полный размер; остальное —
+    по индексу в `index`.
+
     Args:
         block: имя блока (автоимя из `list_blocks`).
+        max_items: сколько элементов массива показать (1…`MAX_ARRAY_ITEMS`).
+        index: прочитать один элемент массива по индексу.
     """
+    if not 0 < max_items <= MAX_ARRAY_ITEMS:
+        raise ToolError(
+            f"max_items={max_items} вне предела 1…{MAX_ARRAY_ITEMS}: каждый "
+            f"элемент массива — отдельный COM-вызов, и такой запрос надолго "
+            f"занял бы единственный COM-поток.")
     try:
         sig = session._ensure_project().signal(block)
-        value = sig.read()
-        return f"{block} = {value}"
+        if sig.data_type not in _array_types():
+            if index is not None:
+                raise ToolError(
+                    f"«{block}» — не массив, индекс {index} к нему неприменим")
+            return f"{block} = {sig.read()}"
+
+        size = sig.array_count()
+        if index is not None:
+            if not 0 <= index < size:
+                raise ToolError(
+                    f"индекс {index} вне массива «{block}» (размер {size})")
+            return f"{block}[{index}] = {sig.read_array_element(index)}"
+
+        shown = min(size, max_items)
+        values = [sig.read_array_element(i) for i in range(shown)]
+        tail = "" if shown == size else f" … ещё {size - shown}"
+        return f"{block} [{size}] = [{', '.join(str(v) for v in values)}{tail}]"
+    except ToolError:
+        raise
     except Exception as exc:
         return f"ERROR: {exc}"
 
 
 @mcp.tool()
 @runtime._com_threaded
-def set_signal(block: str, value: float) -> str:
+def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
     """Записать значение в сигнал (адресуется именем блока).
 
     Записывать можно только сигналы проекта с подключённой базой сигналов —
     как и `get_signal`.
 
+    Целому массиву значение не присваивается: запись идёт либо в скаляр, либо
+    в один элемент по индексу. Массив целиком — это уже не «одно число от
+    клиента», и такой записи здесь нет намеренно.
+
     Args:
         block: имя блока (автоимное, из `list_blocks`).
         value: значение (float).
+        index: индекс элемента массива; без него — скалярная запись.
     """
     try:
         sig = session._ensure_project().signal(block)
-        sig.write(value)
-        return f"{block} = {value}"
+        if index is None:
+            sig.write(value)
+            return f"{block} = {value}"
+
+        if sig.data_type not in _array_types():
+            raise ToolError(
+                f"«{block}» — не массив, запись по индексу {index} неприменима")
+        size = sig.array_count()
+        if not 0 <= index < size:
+            raise ToolError(
+                f"индекс {index} вне массива «{block}» (размер {size})")
+        sig.set_array_element(index, value)
+        return f"{block}[{index}] = {value}"
+    except ToolError:
+        raise
     except Exception as exc:
         return f"ERROR: {exc}"
 
