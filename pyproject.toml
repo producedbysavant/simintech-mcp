@@ -23,7 +23,7 @@ dependencies = [
     # уже на импорте (`ImportError`), а `create_project` — с AttributeError:
     # собрать считающуюся модель было нельзя вообще. Как только в
     # simintech-code появится тег новее — заменить SHA на него.
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@5f83b5b35054fc3f58ca13b88b69300d40aceeda",
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@3b6900d4cbad8e976951ab99e307be3a1eba98a8",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в

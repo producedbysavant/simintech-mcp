@@ -198,7 +198,7 @@ mypy                                            # конфиг в pyproject.toml
 Объявлена прямой git-ссылкой **на коммит**:
 
 ```
-simintech-api @ git+https://github.com/producedbysavant/simintech-code@5f83b5b35054fc3f58ca13b88b69300d40aceeda
+simintech-api @ git+https://github.com/producedbysavant/simintech-code@3b6900d4cbad8e976951ab99e307be3a1eba98a8
 ```
 
 Не на тег: в `v0.2.0` нет `standard_block_size`, `default_output_dir`,
