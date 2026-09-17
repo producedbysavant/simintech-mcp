@@ -19,6 +19,7 @@ async def test_all_tools_registered():
         "status", "disconnect",
         "create_project", "open_project", "save_project", "close_project",
         "set_calc_time", "project_network_role",
+        "get_project_config", "set_project_config",
         "add_block", "connect", "list_blocks", "list_wires",
         "get_block_params", "set_block_param",
         "run", "step", "stop", "get_time",

@@ -189,6 +189,53 @@ def project_network_role() -> str:
 
 @mcp.tool()
 @runtime._com_threaded
+def get_project_config() -> str:
+    """Показать параметры расчётного слоя проекта.
+
+    Время и шаг расчёта (`starttime`, `endtime`, `hmin`, `hmax`), метод
+    интегрирования (`intmet`) и служебные имена слоя — список шире, чем
+    «настройки расчёта», и на живом проекте в нём есть, например, `comp_names`.
+
+    Читаются из выгрузки проекта, а не через COM: метода чтения свойств слоя в
+    интерфейсе нет, есть только запись. Заодно это список имён, которые в
+    проекте есть, — по нему проверяется `set_project_config`.
+
+    У проекта, созданного через `create_project`, параметры есть (он берётся из
+    шаблона). Пустой ответ — у проекта без расчётного слоя: тогда расчёт в нём
+    не идёт вообще, и это не «настройки по умолчанию», а их отсутствие.
+    """
+    settings = session._ensure_project().calc_settings()
+    if not settings:
+        raise ToolError(
+            "В проекте нет параметров расчётного слоя: сам слой отсутствует. "
+            "Так выглядит проект без шаблона — расчёт в нём не пойдёт.")
+    return ("Параметры расчётного слоя:\n"
+            + "\n".join(f"  {name} = {value}"
+                        for name, value in sorted(settings.items())))
+
+
+@mcp.tool()
+@runtime._com_threaded
+def set_project_config(param: str, value: str) -> str:
+    """Записать параметр расчётного слоя проекта (`SetLayerProp`).
+
+    Имя сверяется с настройками, которые уже есть в проекте (`get_project_config`).
+    Незнакомое отвергается: запись в несуществующее имя среда принимает молча,
+    значение не меняется, и отличить это от успеха потом нечем.
+
+    Время расчёта удобнее задавать через `set_calc_time` — он делает то же
+    самое для `endtime`.
+
+    Args:
+        param: имя параметра (`endtime`, `hmin`, `intmet`, …).
+        value: значение строкой — так его принимает среда.
+    """
+    session._ensure_project().set_calc_setting(param, value)
+    return f"{param} = {value}"
+
+
+@mcp.tool()
+@runtime._com_threaded
 def save_project(path: str, binary: bool = False,
                  show_form: bool = True) -> str:
     """Сохранить текущий проект в файл.
