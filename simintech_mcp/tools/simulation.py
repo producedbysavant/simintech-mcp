@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastmcp.exceptions import ToolError
 
-from .. import runtime, session
+from .. import runtime, sandbox, session
 from ..app import mcp
 
 
@@ -192,9 +192,24 @@ def list_signals() -> str:
     return "\n\n".join(parts)
 
 
+#: Сколько элементов массива читать за один вызов `get_signal`. Каждый элемент —
+#: отдельный COM-вызов (`GetExtArrayElement`), а COM-поток один: число элементов
+#: приходит из параметра, то есть задаётся клиентом, и без предела длинный
+#: массив занял бы поток надолго — тот же класс опасности, что у `MAX_STEP_COUNT`.
+MAX_ARRAY_ITEMS = 100
+
+
+def _array_types() -> tuple:
+    """Типы-массивы (`ARRAY`, `INT_ARRAY`) — импорт здесь, а не наверху."""
+    from simintech_api.constants import DataType
+
+    return (DataType.ARRAY, DataType.INT_ARRAY)
+
+
 @mcp.tool()
 @runtime._com_threaded
-def get_signal(block: str) -> str:
+def get_signal(block: str, max_items: int = 20,
+               index: Optional[int] = None) -> str:
     """Прочитать значение сигнала — он адресуется именем блока.
 
     Работает только у проекта с подключённой базой сигналов. У модели,
@@ -202,32 +217,120 @@ def get_signal(block: str) -> str:
     прямо, а этот инструмент вернёт ошибку. Результат самодельной модели
     забирайте блоком «В файл» и `read_output_file`.
 
+    Массивы читаются **не целиком**: библиотека тянет массив поэлементно, а
+    каждый элемент — отдельный COM-вызов и единственный COM-поток. За один
+    вызов отдаются первые `max_items` значений и полный размер; остальное —
+    по индексу в `index`.
+
     Args:
         block: имя блока (автоимя из `list_blocks`).
+        max_items: сколько элементов массива показать (1…`MAX_ARRAY_ITEMS`).
+        index: прочитать один элемент массива по индексу.
     """
+    if not 0 < max_items <= MAX_ARRAY_ITEMS:
+        raise ToolError(
+            f"max_items={max_items} вне предела 1…{MAX_ARRAY_ITEMS}: каждый "
+            f"элемент массива — отдельный COM-вызов, и такой запрос надолго "
+            f"занял бы единственный COM-поток.")
     try:
         sig = session._ensure_project().signal(block)
-        value = sig.read()
-        return f"{block} = {value}"
+        if sig.data_type not in _array_types():
+            if index is not None:
+                raise ToolError(
+                    f"«{block}» — не массив, индекс {index} к нему неприменим")
+            return f"{block} = {sig.read()}"
+
+        size = sig.array_count()
+        if index is not None:
+            if not 0 <= index < size:
+                raise ToolError(
+                    f"индекс {index} вне массива «{block}» (размер {size})")
+            return f"{block}[{index}] = {sig.read_array_element(index)}"
+
+        shown = min(size, max_items)
+        values = [sig.read_array_element(i) for i in range(shown)]
+        tail = "" if shown == size else f" … ещё {size - shown}"
+        return f"{block} [{size}] = [{', '.join(str(v) for v in values)}{tail}]"
+    except ToolError:
+        raise
     except Exception as exc:
         return f"ERROR: {exc}"
 
 
 @mcp.tool()
 @runtime._com_threaded
-def set_signal(block: str, value: float) -> str:
+def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
     """Записать значение в сигнал (адресуется именем блока).
 
     Записывать можно только сигналы проекта с подключённой базой сигналов —
     как и `get_signal`.
 
+    Целому массиву значение не присваивается: запись идёт либо в скаляр, либо
+    в один элемент по индексу. Массив целиком — это уже не «одно число от
+    клиента», и такой записи здесь нет намеренно.
+
     Args:
         block: имя блока (автоимное, из `list_blocks`).
         value: значение (float).
+        index: индекс элемента массива; без него — скалярная запись.
     """
     try:
         sig = session._ensure_project().signal(block)
-        sig.write(value)
-        return f"{block} = {value}"
+        if index is None:
+            sig.write(value)
+            return f"{block} = {value}"
+
+        if sig.data_type not in _array_types():
+            raise ToolError(
+                f"«{block}» — не массив, запись по индексу {index} неприменима")
+        size = sig.array_count()
+        if not 0 <= index < size:
+            raise ToolError(
+                f"индекс {index} вне массива «{block}» (размер {size})")
+        sig.set_array_element(index, value)
+        return f"{block}[{index}] = {value}"
+    except ToolError:
+        raise
     except Exception as exc:
         return f"ERROR: {exc}"
+
+
+# ─── База сигналов ────────────────────────────────────────────────
+
+
+@mcp.tool()
+@runtime._com_threaded
+def export_signal_db(path: str = "signals.xml") -> str:
+    """Выгрузить базу сигналов проекта в XML и показать сводку.
+
+    База отдаётся COM-методом `ExportDBToXML` — без командной строки и без
+    макроса `dbexporttoxml`, которым её выгружали раньше. Файл пишет сам
+    SimInTech; место — каталог результатов (та же песочница, что у
+    `read_output_file`), поэтому относительный путь ищется внутри неё.
+
+    Нужен проект с подключённой базой: у модели из `create_project` базы нет,
+    и сводка скажет об этом прямо, а не покажет пустой файл за успех.
+
+    Args:
+        path: куда положить XML, относительно каталога результатов.
+    """
+    from simintech_api.sdb import SignalDatabase
+
+    destination = sandbox._resolve_output_path(path)
+    session._ensure_project().export_db_to_xml(destination)
+    try:
+        database = SignalDatabase.from_xml(destination)
+    except Exception as exc:
+        raise ToolError(
+            f"база выгружена в «{destination}», но не разобрана: {exc}")
+
+    groups = sum(len(cat.groups) for cat in database.categories)
+    signals = sum(len(group.signals)
+                  for cat in database.categories for group in cat.groups)
+    if not signals:
+        return (f"База пуста: файл «{destination}» записан, но сигналов в нём "
+                f"нет. Нужен проект с подключённой базой сигналов.")
+    categories = ", ".join(cat.name for cat in database.categories[:5])
+    return (f"База сигналов выгружена в «{destination}»: категорий "
+            f"{len(database.categories)}, групп {groups}, сигналов {signals}. "
+            f"Категории: {categories}")
