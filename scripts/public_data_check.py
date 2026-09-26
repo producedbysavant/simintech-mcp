@@ -28,6 +28,7 @@ ALLOWED: Tuple[Pattern[str], ...] = (
     re.compile(r"C:(\\{1,2})SimInTech64"),
     re.compile(r"example\.(com|org)"),
     re.compile(r"noreply@"),
+    re.compile(r"users\.noreply\.github\.com"),  # адрес коммитов GitHub
     re.compile(r"C:\\Users\\(<[^>]+>|Public|Default|user|username|%USERNAME%)"),
     re.compile(r"CLAUDE\.local"),          # имя файла проекта, не хост
 )
