@@ -1,0 +1,33 @@
+# Dependabot: обновления зависимостей и версий action'ов.
+#
+# Группировка намеренная: минорные и патчевые обновления приходят **одной** PR —
+# их редко нужно читать по отдельности, — а мажорные **отдельными**: они ломают,
+# и разбирать их надо поштучно. Версии action'ов сгруппированы целиком: они
+# меняются вместе и проверяются одним прогоном CI.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # Библиотека-ядро закреплена по SHA и поднимается вручную: сначала
+      # публикуется simintech-code, затем пин в pyproject.toml становится
+      # рабочим (см. комментарий у зависимости и `scripts/check_pins.py`).
+      # Автообновление здесь сломало бы этот порядок.
+      - dependency-name: "simintech-api"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
