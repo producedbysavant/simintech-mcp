@@ -32,19 +32,16 @@ ALLOWED: Tuple[Pattern[str], ...] = (
     re.compile(r"CLAUDE\.local"),          # имя файла проекта, не хост
 )
 
-#: Зоны, где находка правила — заведомо синтетический пример, а не данные:
-#: тесты разбора Windows-путей и документация о форматах (в исторических планах
-#: примеры не переписываются). Список закрытый: он не отключает правило, а
-#: фиксирует, что вхождения просмотрены при разборе. Префикс пути + правило
-#: (`*` — любое правило зоны).
+#: Зоны, где находка правила — заведомо синтетический пример, а не данные.
+#: Список закрытый: он не отключает правило, а фиксирует, что вхождения
+#: просмотрены при разборе. Запись — (путь, правило); путь, оканчивающийся на
+#: `/`, задаёт каталог и сверяется по границе компонента (иначе `tests-evil/`
+#: попал бы под исключение `tests/`), иначе — конкретный файл.
 ALLOWLIST_PATHS: Tuple[Tuple[str, str], ...] = (
     ("scripts/public_data_check.py", "*"),           # определения правил
     ("tests/unit/test_public_data_check.py", "*"),   # их проверка
-    ("tests/", "unc-path"),                          # тесты разбора сетевых путей
     # План по этому гейту: в нём примеры правил и разбор находок.
     ("docs/superpowers/plans/2026-09-26-ecosystem-hardening.md", "*"),
-    # Исторический план: синтетический пример UNC-пути в описании отказа.
-    ("docs/superpowers/plans/2026-09-21-script-bridge.md", "unc-path"),
 )
 
 RULES: Tuple[Tuple[str, Pattern[str]], ...] = (
@@ -93,9 +90,15 @@ SKIP_SUFFIXES = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz"}
 
 @dataclass
 class Findings:
-    """Находки: путь, строка, правило, фрагмент."""
+    """Находки и счётчик просмотренных файлов.
+
+    Счётчик нужен, чтобы «ничего не найдено» не смешивалось с «ничего не
+    проверено»: пустое дерево (или каталог, целиком попавший в `SKIP_DIRS`)
+    даёт тот же пустой список, но это провал проверки, а не чистый результат.
+    """
 
     items: List[Tuple[str, int, str, str]] = field(default_factory=list)
+    scanned: int = 0
 
     def add(self, path: str, line: int, rule: str, fragment: str) -> None:
         self.items.append((path, line, rule, fragment.strip()[:80]))
@@ -110,26 +113,54 @@ class Findings:
         )
 
 
+def _in_zone(path: str, prefix: str) -> bool:
+    """Путь внутри зоны: каталог — по границе компонента, иначе точное имя.
+
+    `startswith` без границы пустил бы `tests-evil/…` под исключение `tests/`.
+    """
+    if prefix.endswith("/"):
+        return path.startswith(prefix)
+    return path == prefix
+
+
 def _rule_allowed(path: str, rule: str) -> bool:
     """Зона, в которой это правило не применяется (см. ALLOWLIST_PATHS)."""
     return any(
-        path.startswith(prefix) and zone in ("*", rule)
+        _in_zone(path, prefix) and zone in ("*", rule)
         for prefix, zone in ALLOWLIST_PATHS
     )
 
 
+def _allowed_spans(line: str) -> List[Tuple[int, int]]:
+    """Диапазоны разрешённых образцов в строке.
+
+    Гасится только совпавшая часть, а не строка целиком: в строке
+    «см. https://help.simintech.ru, стенд 10.0.0.5» разрешённый домен не должен
+    прятать приватный адрес — иначе allowlist становится способом обойти гейт.
+    """
+    return [
+        match.span() for pattern in ALLOWED for match in pattern.finditer(line)
+    ]
+
+
+def _overlaps(span: Tuple[int, int], spans: List[Tuple[int, int]]) -> bool:
+    """Пересекается ли совпадение правила с разрешённым образцом."""
+    return any(start < span[1] and span[0] < end for start, end in spans)
+
+
 def scan_text(text: str, *, path: str = "<text>") -> Findings:
-    """Найти приватные маркеры в тексте (allowlist гасит находку в строке)."""
+    """Найти приватные маркеры в тексте; разрешённые образцы гасят совпадение."""
     findings = Findings()
     for number, line in enumerate(text.splitlines(), start=1):
-        if any(pattern.search(line) for pattern in ALLOWED):
-            continue
+        allowed = _allowed_spans(line)
         for rule, pattern in RULES:
             if _rule_allowed(path, rule):
                 continue
-            match = pattern.search(line)
-            if match:
+            for match in pattern.finditer(line):
+                if _overlaps(match.span(), allowed):
+                    continue
                 findings.add(path, number, rule, match.group(0))
+                break
     return findings
 
 
@@ -163,29 +194,46 @@ def scan_tree(root: Path, *, files: Optional[Iterable[Path]] = None) -> Findings
     for path in sorted(files):
         if not path.is_file():
             continue
-        if SKIP_DIRS & set(path.parts) or path.suffix.lower() in SKIP_SUFFIXES:
+        # Каталоги пропуска берутся **относительно корня**: имена выше него
+        # (репозиторий, лежащий внутри каталога `build`, в CI или у человека)
+        # иначе выключили бы проверку целиком — и молча.
+        try:
+            relative = str(path.relative_to(root))
+        except ValueError:
             continue
-        relative = str(path.relative_to(root))
+        if (SKIP_DIRS & set(Path(relative).parts)
+                or path.suffix.lower() in SKIP_SUFFIXES):
+            continue
         if (path.suffix.lower() in FORBIDDEN_SUFFIXES
                 and not relative.startswith(FIXTURE_DIR)):
             findings.add(relative, 0, "forbidden-file", path.name)
+            findings.scanned += 1
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        findings.scanned += 1
         findings.items.extend(scan_text(text, path=relative).items)
     return findings
 
 
 def main(root: Path) -> int:
-    """0 — приватных маркеров нет; 1 — есть (печатает находки)."""
+    """0 — приватных маркеров нет; 1 — есть находки либо проверка не состоялась.
+
+    «Ничего не проверено» — тоже отказ: пустой список файлов даёт тот же ответ,
+    что чистый, и гейт, зелёный на неработающем скане, хуже отсутствующего.
+    """
     findings = scan_tree(root)
     if findings:
         print(findings)
         print(f"\nНаходок: {len(findings.items)}. См. DATA_POLICY.md.")
         return 1
-    print("Приватных маркеров не найдено.")
+    if findings.scanned == 0:
+        print("Проверка не состоялась: не просмотрено ни одного файла "
+              "(пустое дерево или недоступен git). Это не «чисто».")
+        return 1
+    print(f"Приватных маркеров не найдено (проверено файлов: {findings.scanned}).")
     return 0
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import subprocess
 
-from public_data_check import Findings, scan_text, scan_tree
+from public_data_check import Findings, main, scan_text, scan_tree
 
 
 def test_private_ip_is_flagged():
@@ -100,7 +100,40 @@ def test_claude_local_filename_is_allowed():
 
 
 def test_allowlisted_zone_skips_rule():
-    """В зоне синтетических примеров правило не применяется."""
+    """В зоне, где правила определены, они не применяются."""
     unc = r"путь \\srv-files\share\project"
-    assert not scan_text(unc, path="tests/unit/test_x.py")
+    assert not scan_text(unc, path="scripts/public_data_check.py")
     assert scan_text(unc, path="simintech_api/x.py")
+
+
+def test_allowed_fragment_does_not_hide_other_findings():
+    """Разрешённый образец гасит только себя, а не строку целиком.
+
+    Иначе allowlist становится способом обойти гейт: достаточно упомянуть в
+    строке публичный домен вендора, и приватный адрес рядом с ним не найдётся.
+    """
+    assert scan_text("см. https://help.simintech.ru, стенд 10.0.0.5", path="x.md")
+
+
+def test_zone_prefix_requires_component_boundary():
+    """`tests-evil/` не попадает под исключение `tests/`."""
+    assert scan_text(r"путь \\srv-files\share\project", path="tests-evil/x.py")
+
+
+def test_skip_dirs_are_relative_to_root(tmp_path):
+    """Имя каталога ВЫШЕ корня не выключает проверку.
+
+    Иначе репозиторий, лежащий внутри каталога `build` (а так бывает и в CI),
+    сканировался бы вхолостую — и молча.
+    """
+    root = tmp_path / "build" / "repo"
+    root.mkdir(parents=True)
+    (root / "x.md").write_text("стенд 10.0.0.5", encoding="utf-8")
+
+    assert scan_tree(root)
+
+
+def test_empty_tree_is_not_clean(tmp_path, capsys):
+    """Пустой результат ≠ чистый результат: «не проверено» — тоже отказ."""
+    assert main(tmp_path) == 1
+    assert "не состоялась" in capsys.readouterr().out
