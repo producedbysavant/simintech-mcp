@@ -19,11 +19,17 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Пины зависимостей
+        # До установки: мёртвый SHA (такое уже было — историю simintech-code
+        # пересоздавали) падал бы невнятным `upload-pack: not our ref` изнутри
+        # pip. Здесь он называется по имени, и починка очевидна.
+        run: python scripts/check_pins.py
+
       - name: Установка
         run: pip install -e ".[test]" flake8 mypy
 
       - name: Стиль
-        run: flake8 simintech_mcp tests --max-line-length=88 --extend-ignore=E203,W503
+        run: flake8 simintech_mcp tests scripts --max-line-length=88 --extend-ignore=E203,W503
 
       - name: Типы
         run: mypy

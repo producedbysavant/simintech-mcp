@@ -132,9 +132,13 @@ claude mcp add simintech -- simintech-mcp
 
 ```bash
 python3.11 -m pytest tests/unit -q     # без COM, работает и на Linux
-flake8 simintech_mcp tests --max-line-length=88 --extend-ignore=E203,W503
+flake8 simintech_mcp tests scripts --max-line-length=88 --extend-ignore=E203,W503
 mypy
 ```
+
+`scripts/check_pins.py` — гейт целостности зависимости: до установки проверяет,
+что закреплённый в `pyproject.toml` коммит `simintech-code` существует в origin
+(историю библиотеки пересоздавали, и мёртвый пин один раз уже уехал в `main`).
 
 Тесты разложены по тем же границам, что и код: `tests/unit/test_<область>.py`,
 общие фейки — в `tests/unit/_support.py`. То же проверяет CI
