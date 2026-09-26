@@ -1,0 +1,24 @@
+# Правила форматирования для редакторов: VS Code, JetBrains, Vim, Sublime.
+# Настройки согласованы с .gitattributes — переводы строк LF везде.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# В Markdown два пробела в конце строки — это принудительный перенос,
+# поэтому хвостовые пробелы здесь не удаляются автоматически.
+[*.md]
+trim_trailing_whitespace = false
+indent_size = 4
+
+# Служебные файлы GitHub и конфиги принято писать с отступом в 2 пробела
+[*.{yml,yaml,json}]
+indent_size = 2
+
+[*.toml]
+indent_size = 4

@@ -1,0 +1,8 @@
+# Проверка секретов до попадания в коммит: тот же конфиг, что и в CI.
+# Ставится один раз: pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        args: ["--config", ".gitleaks.toml"]

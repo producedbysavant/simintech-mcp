@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "simintech-mcp"
+# Версия берётся из `simintech_mcp/__init__.py`: пока она была прописана в двух
+# местах, они разошлись (в `__init__.py` осталось 0.1.0 против 0.2.0 здесь), и
+# `simintech_mcp.__version__` врал. Та же правка сделана в `simintech-code`.
+dynamic = ["version"]
+description = "MCP-сервер для управления SimInTech через COM API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "producedbysavant" }]
+dependencies = [
+    # Библиотека-ядро. Для локальной разработки заменить на path-зависимость:
+    # simintech-api = { path = "../simintech-code", editable = true }
+    #
+    # Пин на КОММИТ, а не на тег v0.3.0, который указывает на него же.
+    # Причина — изменяемость ссылки на тег: `refs/tags` можно передвинуть, и та
+    # же строка зависимости начнёт разрешаться в другой код, причём молча.
+    # В этом проекте такой случай уже был, только обратный: тег v0.2.0 указывал
+    # на код 0.1.0 (47 коммитов назад), где нет ни `standard_block_size`, ни
+    # `default_output_dir`, ни `Project.from_template` — сервер падал на нём уже
+    # на импорте. SHA переписать нельзя, поэтому закрепляет именно он.
+    #
+    # 13415c5e4927a05e17f6d8e3e096cb0b9c23f65b — merge PR #11: скриптовый мост
+    # (`ScriptBridge`, `script_probe`). Тег `v0.3.0` намеренно НЕ используется:
+    # он указывает на `a2daa1c`, где моста ещё нет, а передвинуть тег — значит
+    # молча подменить зависимость. Перед сменой пина проверять, что новый
+    # коммит несёт нужное: `git show <sha>:simintech_api/__init__.py` даёт
+    # ожидаемую `__version__`, а `standard_block_size` и `default_output_dir`
+    # в нём есть.
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@13415c5e4927a05e17f6d8e3e096cb0b9c23f65b",
+    "mcp>=1.0.0",
+    "fastmcp>=2.0",
+    # Импортируется напрямую — проверка корректности .xprt в
+    # `inspect_project_file`. Приходит и транзитивно с simintech-api, но своя
+    # зависимость честнее: обычный xml.etree на чужом файле открывает XXE.
+    "defusedxml>=0.7",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+    # Маркер @pytest.mark.anyio регистрирует плагин, встроенный в anyio.
+    "anyio>=4.0",
+]
+
+[project.scripts]
+simintech-mcp = "simintech_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["simintech_mcp"]
+
+[tool.hatch.version]
+path = "simintech_mcp/__init__.py"
+
+[tool.hatch.metadata]
+# Зависимость объявлена прямой git-ссылкой (см. выше). Hatchling по умолчанию
+# такие ссылки запрещает: без этого флага сборка падает с
+# "Dependency #1 ... cannot be a direct reference".
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["simintech_mcp"]
+# Проверять и тела функций без аннотаций. Иначе проверка затронула бы только
+# подписанные функции — то есть почти ничего: инструменты как раз и были без
+# аннотаций возврата.
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+# Сторонние библиотеки без заглушек — перечислены поимённо, а не общим
+# `ignore_missing_imports`. Общий флаг молча выключал проверку и для
+# simintech-api: в нём не было маркера PEP 561 (`simintech_api/py.typed`),
+# поэтому mypy считал библиотеку нетипизированной, каждый вызов её API
+# получал тип `Any`, и гейт был слеп к опечатке в имени метода и к смене
+# сигнатуры — ровно к тому классу ошибок, к которому относится
+# `set_silent_mode`. Маркер добавлен в библиотеку; `fastmcp`/`mcp` приходят с
+# `py.typed` сами, без заглушек остаётся `defusedxml`.
+module = ["defusedxml", "defusedxml.*", "simintech_api", "simintech_api.*"]
+# `simintech-api` здесь держится до тех пор, пока пин в `dependencies` не
+# переедет на коммит/тег с маркером: CI ставит зависимость по гиту и гоняет
+# `mypy` без `PYTHONPATH`, а установленная копия без `py.typed` дала бы
+# `import-untyped`. Флаг НЕ делает библиотеку `Any`: `ignore_missing_imports`
+# глушит только сообщение об отсутствующих заглушках, а найденный пакет с
+# маркером проверяется как обычно — это проверено внедрённой опечаткой в
+# вызове `Project.get_main_page()` (ошибка `attr-defined` на месте).
+ignore_missing_imports = true
