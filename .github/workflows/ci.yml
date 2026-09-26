@@ -37,6 +37,22 @@ jobs:
       - name: Тесты
         run: pytest tests/unit -q
 
+  # Публичные данные: не секреты (их ловит gitleaks), а приватные
+  # идентификаторы — адреса, домашние каталоги, сетевые ресурсы, чужие
+  # проектные файлы. Общая политика — DATA_POLICY.md в simintech-code,
+  # правила — в самом скрипте, рядом с ними.
+  public-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Публичные данные
+        run: python scripts/public_data_check.py
+
   # Проверка секретов по всей истории.
   # `fetch-depth: 0` обязателен: при checkout по умолчанию виден один коммит,
   # и секрет, попавший в историю раньше, остался бы незамеченным.

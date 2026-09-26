@@ -6,3 +6,14 @@ repos:
     hooks:
       - id: gitleaks
         args: ["--config", ".gitleaks.toml"]
+
+  # Публичные данные — тот же гейт, что и job `public-data` в CI: секреты
+  # ловит gitleaks, а приватные идентификаторы (адреса, домашние каталоги,
+  # чужие проектные файлы) — этот скрипт.
+  - repo: local
+    hooks:
+      - id: public-data
+        name: Публичные данные (DATA_POLICY.md в simintech-code)
+        entry: python3 scripts/public_data_check.py
+        language: system
+        pass_filenames: false
