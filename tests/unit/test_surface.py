@@ -82,6 +82,7 @@ async def test_all_tools_registered():
         "list_signals", "get_signal", "set_signal", "export_signal_db",
         "read_output_file", "summarize_output_file", "inspect_project_file",
         "layout_place", "help_text",
+        "export_model_text",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
 
