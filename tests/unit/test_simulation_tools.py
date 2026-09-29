@@ -77,6 +77,27 @@ async def test_step_reports_stalled_time(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_stalled_run_names_the_page_script_cause(monkeypatch):
+    """Отказ называет и скрипт страницы, который не скомпилировался.
+
+    Замер 2026-09-28 (поставка 2.26.6.23): ошибки компиляции скрипта страницы
+    через COM не читаются — расчёт стартует молча и стоит. Текст отказа —
+    единственная клиентская поверхность диагностики этого симптома, поэтому
+    причина названа прямо в нём; без неё клиент ищет её только среди соединений
+    и блоков.
+    """
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    sim.run_to_result = False
+
+    run_text = await _error("run", {"to_time": 1.0})
+    assert "скрипт страницы не скомпилировался" in run_text
+
+    _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    step_text = await _error("step", {"count": 1})
+    assert "скрипт страницы не скомпилировался" in step_text
+
+
+@pytest.mark.anyio
 async def test_step_reports_time_delta(monkeypatch):
     """Успешные шаги подтверждаются дельтой времени."""
     _install_fake_simulation(monkeypatch, [0.0, 0.003])
