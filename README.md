@@ -99,12 +99,12 @@ claude mcp add simintech -- simintech-mcp
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
 | Результаты | `read_output_file`, `summarize_output_file` |
 | Текст модели | `export_model_text`, `import_model_text` |
-| Языковой слой | `get_page_script`, `set_page_script`, `run_page_script` |
+| Языковой слой | `get_page_script`, `set_page_script`, `run_page_script`, `inject_submodel_script` |
 | Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role` |
 | Layout | `layout_place` |
 | Справка | `help_text` |
 
-Всего инструментов — 34. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 35. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):

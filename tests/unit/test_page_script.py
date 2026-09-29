@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -204,6 +205,25 @@ class _BridgeRefuses(_BridgeRuns):
         raise ScriptBridgeError("расчёт не подтвердил рост модельного времени")
 
 
+class _BridgeCollects(_BridgeRuns):
+    """Мост-подделка: во время «прогона» пишет строки в файл сбора.
+
+    Подделка моделирует **переход**: инструмент очищает файл сбора перед
+    прогоном, поэтому тест, пишущий файл заранее, проверял бы не то — данные
+    должны появиться в ходе прогона, как их пишет присвоенный скрипт.
+    """
+
+    collected = "STEP 1\nSTEP 2\n"
+
+    def run_page_script(self, body: str, result_path: Path):
+        # Путь берём из песочницы, а не из тела: внутри тела он разбит на
+        # склейки с `chr(34)`, и поиск «первого литерала» нашёл бы мусор.
+        if type(self).collected is not None:
+            path = Path(os.environ["SIMINTECH_OUTPUT_DIR"]) / page_script.COLLECT_FILE
+            path.write_text(type(self).collected, encoding="utf-8")
+        return super().run_page_script(body, result_path)
+
+
 def _outcome(kind: str):
     from simintech_api.script_probe import ContourOutcome
     return ContourOutcome(kind=kind, lines=[])
@@ -332,3 +352,81 @@ async def test_run_page_script_refuses_abort_with_last_line(monkeypatch, tmp_pat
 
     assert "aborted" in text
     assert "УСПЕЛО" in text, "строка, до которой дошло тело, не показана"
+
+
+# ─── inject_submodel_script ──────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_inject_submodel_script_returns_collected_data(
+        monkeypatch, tmp_path):
+    """Собранные данные читаются из каталога результатов и попадают в ответ."""
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Ok(_BridgeCollects):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
+
+    _install(monkeypatch, tmp_path, _Ok, project=_FakeProject(["k_0"]))
+
+    text = _text(await mcp.call_tool(
+        "inject_submodel_script", {"script": 'writelnutf8(fw, "STEP");'}))
+
+    assert "STEP 1" in text
+    assert "Отчёт об изменениях" in text
+
+
+@pytest.mark.anyio
+async def test_inject_submodel_script_refuses_when_nothing_collected(
+        monkeypatch, tmp_path):
+    """Пустой файл сбора — отказ: «присвоили — и ничего не происходит» ровно так
+    и выглядело до находки `reinitsubmodel`."""
+    from simintech_api.script_probe import OUTCOME_OK
+
+    from _support import _error
+
+    class _Silent(_BridgeCollects):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
+        collected = ""
+
+    _install(monkeypatch, tmp_path, _Silent, project=_FakeProject())
+
+    message = await _error("inject_submodel_script", {"script": "x();"})
+
+    assert "не исполнялся" in message or "пуст" in message
+
+
+@pytest.mark.anyio
+async def test_inject_submodel_script_uses_measured_recipe(monkeypatch, tmp_path):
+    """Тело содержит обязательный `reinitsubmodel` и рецепт дозаписи.
+
+    Рецепт измерен 2026-09-29: файл открывается и закрывается **на каждом шаге**
+    (иначе он залочен процессом SimInTech и снаружи не читается), а дописывание
+    идёт через `seek` и `filesize` — режим создания усекает файл.
+    """
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Ok(_BridgeCollects):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
+
+    _install(monkeypatch, tmp_path, _Ok, project=_FakeProject())
+
+    await mcp.call_tool("inject_submodel_script", {"script": "y();"})
+
+    body = _Ok.body
+    assert "reinitsubmodel(objid);" in body
+    assert body.index("reinitsubmodel(objid);") > body.index('setprop(objid, "script"')
+    assert "seek(fw, filesize(fw));" in body, "нет дописывания — файл будет усечён"
+    assert "freeobject(fw);" in body, "файл не закрыт — останется залоченным"
+    assert "y();" in body
+
+
+@pytest.mark.anyio
+async def test_inject_submodel_script_refuses_empty_body(monkeypatch, tmp_path):
+    """Пустое тело — отказ до COM-вызова: собирать нечего."""
+    from _support import _error
+
+    _install(monkeypatch, tmp_path, _BridgeRuns, project=_FakeProject())
+
+    message = await _error("inject_submodel_script", {"script": "  \n"})
+
+    assert "пуст" in message.lower()

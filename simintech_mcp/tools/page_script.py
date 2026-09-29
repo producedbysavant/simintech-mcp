@@ -20,6 +20,7 @@ from typing import Tuple
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
 from simintech_api.exceptions import ScriptBridgeError
+from simintech_api.model_operations import build_inject_submodel_script_body
 from simintech_api.script_probe import (
     OUTCOME_ABORTED,
     OUTCOME_MODEL_NOT_RUNNING,
@@ -273,4 +274,114 @@ def run_page_script(script: str) -> str:
         f"{_describe_outcome(outcome, what='Что видно')}\n"
         f"{_change_report(before, after, restored)}\n"
         f"---- строки тела ----\n{lines}"
+    )
+
+
+#: Имя файла сбора внутри каталога результатов. Клиенту оно не нужно: данные
+#: возвращаются в ответе, а каталог — тот же, что у остальных инструментов.
+COLLECT_FILE = "submodel-collect.txt"
+
+#: Предел данных сбора, отдаваемых в ответ: строки читает человек.
+MAX_COLLECT_BYTES = 64 * 1024
+
+
+def _collect_body(body: str, collect_path: str) -> str:
+    """Обернуть строки сбора в рецепт дозаписи файла.
+
+    Рецепт измерен 2026-09-29 (пробы collect1–collect5, поставка 2.26.6.23):
+
+    * присвоенный скрипт исполняется **на каждом шаге** расчёта, и переменные
+      между шагами переживают (счётчик в пробе вырос до 37);
+    * файл, открытый в `initialization`, к моменту тела уже не тот: писать
+      через него нельзя, а сам он держит блокировку — файл сбора остаётся
+      залоченным процессом SimInTech, и снаружи его не прочитать;
+    * поэтому файл открывается **и закрывается телом на каждом шаге**, а
+      дописывание идёт `seek` в конец — режимы создания (`-1`) и записи (`1`)
+      усекают файл, и в нём оставалась бы одна последняя строка;
+    * `filesize` принимает **дескриптор**, а не имя файла (на этом упала третья
+      проба: `filesize("путь")` обрывает тело молча).
+
+    Файл создаёт вызывающий: режим `2` («чтение и запись») новый файл не создаёт.
+    """
+    literal = collect_path.replace("\\", "/").replace('"', "")
+    lines = [line for line in body.splitlines() if line.strip()]
+    rendered = "\n".join(lines)
+    return (
+        f'fw = createfile("{literal}", 2);\n'
+        "seek(fw, filesize(fw));\n"
+        f"{rendered}\n"
+        "freeobject(fw);\n"
+    )
+
+
+@mcp.tool()
+@runtime._com_threaded
+def inject_submodel_script(script: str) -> str:
+    """Создать субмодель со скриптом сбора данных и вернуть собранное.
+
+    Субмодель создаётся пустой (`createprimitiv` с кодом типа 102), ей
+    присваивается скрипт, и вызывается `reinitsubmodel` — **без него скрипт не
+    компилируется**, и снаружи это выглядит как «присвоили — и ничего не
+    происходит», без единого сообщения (замер 2026-09-29). Присвоенный скрипт
+    исполняется на каждом шаге расчёта.
+
+    **Как писать тело.** `script` — строки, исполняемые на каждом шаге; файл
+    сбора уже открыт и в конце него выставлена позиция — пишите через дескриптор
+    `fw`: `writelnutf8(fw, "шаг");`. Объявлять `fw` не нужно, закрывать тоже.
+    Строки сбора **дописываются**: в ответе будет по строке на каждый шаг.
+
+    **Что в ответе.** Вердикт контура, отчёт об изменениях (в нём видно
+    созданную субмодель) и собранные данные — содержимое файла сбора, не больше
+    64 КиБ. Пустой файл — **отказ**: он означает, что присвоенный скрипт не
+    исполнялся.
+
+    **Чего инструмент не делает.** Не соединяет субмодель с моделью и не
+    добавляет в неё порты. `time` внутри присвоенного скрипта как число не
+    читается (`floattostr(time)` даёт пустую строку, замер 2026-09-29), поэтому
+    счётчик шагов ведётся телом клиента, а не временем.
+
+    Args:
+        script: строки сбора, исполняемые на каждом шаге расчёта; пишут через
+            дескриптор `fw`.
+    """
+    if not script.strip():
+        raise ToolError(
+            "тело сбора пусто: скрипту нечего записывать, и файл сбора остался "
+            "бы пустым — то есть отказ пришёл бы всё равно, но позже и с менее "
+            "понятной причиной.")
+    collect_path = os.path.join(sandbox.output_root(), COLLECT_FILE)
+    # Файл создаём заранее и пустым: скрипт открывает его режимом «чтение и
+    # запись», а этот режим новый файл не создаёт. Заодно это чистка прошлого
+    # прогона — иначе пустой файл не отличить от неперезаписанного.
+    Path(collect_path).write_text("", encoding="utf-8")
+    before = _object_names()
+    outcome, restored = _run(
+        build_inject_submodel_script_body(_collect_body(script, collect_path)))
+    after = _object_names()
+    if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
+        raise ToolError(
+            f"субмодель со скриптом не создана: исход «{outcome.kind}»"
+            + (f", последняя строка тела: {outcome.lines[-1]!r}"
+               if outcome.lines else "")
+            + ". Прежний скрипт страницы возвращён, проект не изменён.")
+    data, truncated, error = sandbox._load_result_file(
+        collect_path, MAX_COLLECT_BYTES, sandbox._MISSING_RESULT_FILE)
+    if error:
+        raise ToolError(
+            f"субмодель создана, но файла сбора нет: {error}. Данные пишет "
+            "присвоенный скрипт — он исполняется на каждом шаге расчёта, "
+            "поэтому пустой ответ означает, что расчёт не шёл.")
+    collected = data.decode("utf-8", errors="replace")
+    if not collected.strip():
+        raise ToolError(
+            "субмодель создана, но файл сбора пуст: присвоенный скрипт не "
+            "исполнялся. Так выглядит пропущенный `reinitsubmodel` — поэтому "
+            "инструмент добавляет его сам; проверьте, что модель считает "
+            "(неподключённый вход останавливает расчёт молча).")
+    note = "\n… данные обрезаны по пределу" if truncated else ""
+    return (
+        f"Субмодель со скриптом сбора создана.\n"
+        f"{_describe_outcome(outcome, what='Вердикт')}\n"
+        f"{_change_report(before, after, restored)}\n"
+        f"---- собранные данные ({collect_path}) ----\n{collected}{note}"
     )
