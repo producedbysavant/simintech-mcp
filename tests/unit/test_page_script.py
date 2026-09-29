@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from simintech_api.script_probe import ContourOutcome
 
 from simintech_mcp import session
 from simintech_mcp.server import mcp
@@ -259,3 +260,75 @@ async def test_set_page_script_refuses_empty_script(monkeypatch, tmp_path):
     message = await _error("set_page_script", {"script": "   \n"})
 
     assert "пуст" in message.lower()
+
+
+# ─── run_page_script (клапан) ────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_run_page_script_returns_outcome_and_body_lines(
+        monkeypatch, tmp_path):
+    """Клапан отдаёт исход как есть — включая «модель не считает»."""
+    from simintech_api.script_probe import OUTCOME_MODEL_NOT_RUNNING
+
+    class _Stuck(_BridgeRuns):
+        outcome = ContourOutcome(kind=OUTCOME_MODEL_NOT_RUNNING,
+                                 lines=["СТРОКА ТЕЛА"])
+        restored = "// прежний"
+
+    _install(monkeypatch, tmp_path, _Stuck, project=_FakeProject(["k_0"]))
+
+    text = _text(await mcp.call_tool("run_page_script", {"script": "x();"}))
+
+    assert "не считает" in text
+    assert "СТРОКА ТЕЛА" in text, "строки тела не показаны"
+    # Полный текст прежнего скрипта клапан не печатает: он возвращён в проект,
+    # и прочитать его можно `get_page_script`. В ответе — факт возврата.
+    assert "Прежний скрипт страницы возвращён: да" in text
+
+
+@pytest.mark.anyio
+async def test_run_page_script_reports_objects_added(monkeypatch, tmp_path):
+    """Отчёт об изменениях собирается инструментом: снимки до и после различаются.
+
+    Подделка проекта моделирует **переход**: первый снимок отдаёт один объект,
+    второй — два. Подделка, возвращающая одно и то же, кодировала бы допущение
+    кода и не поймала бы отчёт, который всегда пишет «добавленных нет».
+    """
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Growing(_FakeProject):
+        seen = 0
+
+        def get_current_page(self):
+            type(self).seen += 1
+            names = (["k_0"] if type(self).seen == 1
+                     else ["k_0", "Субмодель_0"])
+            return _FakePage(names)
+
+    class _Ok(_BridgeRuns):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
+
+    _install(monkeypatch, tmp_path, _Ok,
+             project=_Growing(["k_0"]))
+
+    text = _text(await mcp.call_tool("run_page_script", {"script": "x();"}))
+
+    assert "было 1" in text and "стало 2" in text
+    assert "Субмодель_0" in text
+
+
+@pytest.mark.anyio
+async def test_run_page_script_refuses_abort_with_last_line(monkeypatch, tmp_path):
+    """Обрыв — не отказ инструмента, а исход: он показывается, а не прячется."""
+    from simintech_api.script_probe import OUTCOME_ABORTED
+
+    class _Aborted(_BridgeRuns):
+        outcome = ContourOutcome(kind=OUTCOME_ABORTED, lines=["УСПЕЛО"])
+
+    _install(monkeypatch, tmp_path, _Aborted, project=_FakeProject())
+
+    text = _text(await mcp.call_tool("run_page_script", {"script": "x();"}))
+
+    assert "aborted" in text
+    assert "УСПЕЛО" in text, "строка, до которой дошло тело, не показана"
