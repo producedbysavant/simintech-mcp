@@ -162,3 +162,100 @@ async def test_get_page_script_refuses_with_reason(monkeypatch, tmp_path):
 
     assert "состояние" in message
     assert "копией проекта" in message, "отказ не говорит, что делать"
+
+
+# ─── set_page_script ─────────────────────────────────────────────────────────
+
+
+class _BridgeRuns:
+    """Мост-подделка контура: возвращает заданный исход и «прежний скрипт».
+
+    Подделка моделирует **переход**, а не подставляет удобный ответ: тело
+    запоминается, исход задаётся тестом, а `restored` меняется так же, как в
+    жизни (мост возвращает на место то, что было до установки).
+    """
+
+    outcome = None
+    restored = ""
+    body = ""
+    result_path: Path | None = None
+
+    def __init__(self, client, project_id: int):
+        self.project_id = project_id
+
+    def run_page_script(self, body: str, result_path: Path):
+        from simintech_api.core.script_bridge import PageRunResult
+        type(self).body = body
+        type(self).result_path = Path(result_path)
+        return PageRunResult(outcome=type(self).outcome,
+                             restored_script=type(self).restored)
+
+    def install_script(self, script: str) -> None:
+        """Оставленный скрипт: инструмент зовёт его, только если проверка прошла."""
+        type(self).installed = script
+
+
+class _BridgeRefuses(_BridgeRuns):
+    """Мост-подделка: расчёт не сдвинул время — так выглядит отказ моста."""
+
+    def run_page_script(self, body: str, result_path: Path):
+        from simintech_api.exceptions import ScriptBridgeError
+        raise ScriptBridgeError("расчёт не подтвердил рост модельного времени")
+
+
+def _outcome(kind: str):
+    from simintech_api.script_probe import ContourOutcome
+    return ContourOutcome(kind=kind, lines=[])
+
+
+@pytest.mark.anyio
+async def test_set_page_script_keeps_script_when_it_compiles(monkeypatch, tmp_path):
+    """Скрипт собрался — он остаётся в странице, а прежний приходит в ответе."""
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Keeps(_BridgeRuns):
+        outcome = _outcome(OUTCOME_OK)
+        restored = "// прежний"
+        installed = ""
+
+    _install(monkeypatch, tmp_path, _Keeps, project=_FakeProject(["k_0"]))
+
+    text = _text(await mcp.call_tool(
+        "set_page_script", {"script": "seterrorflag(0);"}))
+
+    assert _Keeps.installed == "seterrorflag(0);", "скрипт не оставлен в странице"
+    assert "// прежний" in text, "прежний скрипт не отдан клиенту"
+    assert "Отчёт об изменениях" in text
+
+
+@pytest.mark.anyio
+async def test_set_page_script_refuses_when_it_does_not_compile(
+        monkeypatch, tmp_path):
+    """Не собрался — отказ, и скрипт в странице **не** оставляется."""
+    from simintech_api.script_probe import OUTCOME_NOT_COMPILED
+
+    from _support import _error
+
+    class _Broken(_BridgeRuns):
+        outcome = _outcome(OUTCOME_NOT_COMPILED)
+        installed = ""
+
+    _install(monkeypatch, tmp_path, _Broken, project=_FakeProject())
+
+    message = await _error("set_page_script", {"script": "x("})
+
+    assert "не собрался" in message or "не компилир" in message
+    assert _Broken.installed == "", "скрипт оставлен, хотя не собрался"
+    assert "окне сообщений" in message, "отказ не говорит, где искать причину"
+
+
+@pytest.mark.anyio
+async def test_set_page_script_refuses_empty_script(monkeypatch, tmp_path):
+    """Пустой текст — отказ: `SetPageScript` с пустой строкой **стирает** скрипт."""
+    from _support import _error
+
+    _install(monkeypatch, tmp_path, _BridgeRuns, project=_FakeProject())
+
+    message = await _error("set_page_script", {"script": "   \n"})
+
+    assert "пуст" in message.lower()

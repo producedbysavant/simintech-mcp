@@ -13,16 +13,33 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from typing import Tuple
+
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
 from simintech_api.exceptions import ScriptBridgeError
+from simintech_api.script_probe import (
+    OUTCOME_ABORTED,
+    OUTCOME_MODEL_NOT_RUNNING,
+    OUTCOME_NOT_COMPILED,
+    OUTCOME_OK,
+    OUTCOME_SECTION_NOT_RUN,
+    ContourOutcome,
+)
 
-from .. import runtime, session
+from .. import runtime, sandbox, session
 from ..app import mcp
 
 #: Сколько объектов страницы перечислять в отчёте: список — для человека, а не
 #: для машинной обработки, поэтому длинный хвост обрезается.
 MAX_REPORTED_OBJECTS = 20
+
+#: Имя файла результата контура внутри каталога результатов. Клиенту оно не
+#: нужно: строки тела возвращаются в ответе, а каталог — тот же, что у
+#: остальных инструментов.
+RESULT_FILE = "page-script-result.txt"
 
 
 def _bridge() -> ScriptBridge:
@@ -103,3 +120,109 @@ def get_page_script() -> str:
         return ("Скрипт текущей страницы пуст: у этой страницы скрипта нет. "
                 "Поставить его можно инструментом `set_page_script`.")
     return f"Скрипт текущей страницы:\n{script}"
+
+
+def _install_script(script: str) -> None:
+    """Оставить скрипт в текущей странице.
+
+    Отдельной функцией — чтобы тест мог подменить её и проверить, что скрипт
+    остаётся **только** после успешной проверки компиляции.
+    """
+    _bridge().install_script(script)
+
+
+def _result_path() -> Path:
+    """Путь файла результата внутри каталога результатов (песочница)."""
+    return Path(os.path.join(sandbox.output_root(), RESULT_FILE))
+
+
+def _run(body: str) -> Tuple[ContourOutcome, str]:
+    """Выполнить тело контуром: `(исход, прежний скрипт)`, либо отказ `ToolError`.
+
+    Отказ моста (`ScriptBridgeError`) означает, что состояние проекта
+    неопределённо: тело могло не установиться, а могло и отработать. Поэтому он
+    не превращается в исход, а выходит наружу — с объяснением, что проверить.
+    """
+    try:
+        run = _bridge().run_page_script(body, _result_path())
+    except ScriptBridgeError as exc:
+        raise ToolError(
+            f"выполнить скрипт страницы не удалось: {exc}. Тело идёт в секцию "
+            "`initialization`, поэтому расчёт должен сдвинуть модельное время: "
+            "проверьте, что модель считает — неподключённый вход останавливает "
+            "расчёт всей модели молча."
+        ) from exc
+    return run.outcome, run.restored_script
+
+
+def _describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
+    """Строка состояния для исхода, при котором работа **состоялась**.
+
+    Исходы `not-compiled` и `aborted` сюда не попадают: они означают, что
+    работа не сделана, и обрабатываются отказом у вызывающего.
+    """
+    if outcome.kind == OUTCOME_OK:
+        return f"{what}: скрипт собрался и отработал, расчёт идёт."
+    if outcome.kind == OUTCOME_MODEL_NOT_RUNNING:
+        return (f"{what}: скрипт собрался и отработал, но модель не считает — "
+                "вероятная причина: неподключённый вход останавливает расчёт "
+                "всей модели.")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        return (f"{what}: секция `initialization` не выполнилась, хотя расчёт "
+                "шёл. Причину по этому признаку определить нечем.")
+    return f"{what}: исход «{outcome.kind}»."
+
+
+@mcp.tool()
+@runtime._com_threaded
+def set_page_script(script: str) -> str:
+    """Поставить скрипт в текущую страницу проекта и проверить, что он собрался.
+
+    **Прежний скрипт в ответе.** `SetPageScript` затирает скрипт страницы, не
+    сообщая, что там было; инструмент возвращает прежний текст, чтобы клиент мог
+    его восстановить. Проверка «собрался ли» — единственная доступная: среда об
+    ошибке компиляции молчит, а признак один — расчёт сдвинул модельное время.
+
+    **Как это устроено.** Контурный режим (`run_page_script`) всегда возвращает
+    прежний скрипт — иначе он не был бы безопасным. Поэтому работа идёт в два
+    шага: сначала скрипт исполняется контуром (проверка компиляции) и прежний
+    текст возвращается на место, затем — только если проверка прошла — скрипт
+    ставится в страницу насовсем.
+
+    **Чего инструмент не делает.** Не правит скрипт отдельного блока и не
+    работает с `.inc`-файлами — это отдельная тема. Не чистит скрипт: пустой
+    текст отвергается, потому что `SetPageScript` с пустой строкой стирает
+    прежний скрипт молча.
+
+    Args:
+        script: текст скрипта встроенного языка для текущей страницы.
+    """
+    if not script.strip():
+        raise ToolError(
+            "скрипт пуст. `SetPageScript` с пустой строкой **стирает** прежний "
+            "скрипт страницы, поэтому пустой текст отвергается: если цель — "
+            "очистить скрипт, сделайте это осознанно и передайте скрипт с одним "
+            "комментарием.")
+    before = _object_names()
+    outcome, restored = _run(script)
+    if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
+        reason = (
+            "скрипт не собрался (среда об ошибке молчит; текст ошибки — в окне "
+            "сообщений редактора SimInTech)"
+            if outcome.kind == OUTCOME_NOT_COMPILED else
+            "скрипт оборвался на исполнении; последняя записанная строка: "
+            + repr(outcome.lines[-1] if outcome.lines else "")
+        )
+        raise ToolError(
+            f"скрипт не поставлен: {reason}. Прежний скрипт страницы возвращён "
+            "на место, проект не изменён.")
+    _install_script(script)
+    after = _object_names()
+    return (
+        f"Скрипт поставлен в текущую страницу.\n"
+        f"{_describe_outcome(outcome, what='Вердикт')}\n"
+        f"{_change_report(before, after, restored)}\n"
+        f"Чтобы вернуть прежний скрипт — передайте его текст в "
+        f"`set_page_script`.\n"
+        f"---- прежний скрипт ----\n{restored}"
+    )
