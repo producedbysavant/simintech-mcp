@@ -85,6 +85,25 @@ async def test_layout_place_rejects_connection_outside_block_ids(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_rejects_pair_without_arrow(monkeypatch):
+    """Токен без `->` — отказ, а не молчаливый пропуск связи.
+
+    Раньше такая пара тихо выпадала из расстановки: клиент получал
+    подтверждение успеха, а связь не учитывалась — блоки вставали в один слой.
+    """
+    _install_fake_project(monkeypatch, {
+        "k_0": _PlacedBlock("k_0", 1),
+        "kx_0": _PlacedBlock("kx_0", 2),
+    })
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0,kx_0", "connections": "k_0→kx_0"})
+
+    assert "k_0→kx_0" in text, "отказ обязан называть неразобранный токен"
+    assert "->" in text, "отказ обязан показывать ожидаемую форму пары"
+
+
+@pytest.mark.anyio
 async def test_connect_only_remembers_wire(monkeypatch):
     """connect запоминает линию, но НЕ трассирует её.
 
