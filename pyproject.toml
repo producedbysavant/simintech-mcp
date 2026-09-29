@@ -40,7 +40,14 @@ dependencies = [
     # simintech-code, и только потом этот пин становится рабочим.** Перед сменой
     # проверять и то, и другое: что коммит существует и что в нём есть нужные
     # символы (`tests/unit/test_dependency_contract.py`).
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@b77f65946c4298b49bbcb7e4224d9d1826a4adee",
+    # 3cb1894715068e9392454ff023a832e60f02325b — вершина ветки
+    # `feat/page-script-read` репозитория simintech-code (PR #16), версия
+    # библиотеки 0.10.0. **Временный пин**: контур языкового слоя
+    # (`run_page_script`, `read_page_script`, `model_operations`) лежит в цепочке
+    # ещё не влитых PR (#15 → #16), и на `main` этих символов пока нет —
+    # `tests/unit/test_dependency_contract.py` назовёт их отсутствие.
+    # После мержа цепочки пин переводится на `git rev-parse origin/main`.
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@3cb1894715068e9392454ff023a832e60f02325b",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
