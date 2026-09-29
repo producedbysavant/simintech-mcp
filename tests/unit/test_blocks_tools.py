@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from simintech_api import ComCallError
 
 from simintech_mcp.server import mcp
 
@@ -12,6 +13,7 @@ from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
 from _support import (
     _FakeBlock,
     _FakeProjectWithCreate,
+    _PlacedBlock,
     _error,
     _install_fake_project,
     _text,
@@ -605,3 +607,101 @@ async def test_add_block_names_created_block_when_setup_fails(monkeypatch):
     assert "уже создан" in text
     assert "k_0" in text
     assert len(project.created) == 1
+
+
+# ─── list_wires: контракт ответа ──────────────────────────────────
+
+class _FakeWire:
+    """Линия с идентификатором — больше `list_wires` от COM не читает."""
+
+    def __init__(self, wire_id):
+        self.id = wire_id
+
+
+class _BrokenWirePage:
+    """Страница, у которой перечисление линий падает."""
+
+    def __init__(self, error):
+        self._error = error
+
+    def get_wires(self):
+        raise self._error
+
+
+class _BrokenWireProject:
+    def __init__(self, page):
+        self._page = page
+
+    def get_main_page(self):
+        return self._page
+
+
+def _page_with_wires(monkeypatch, wire_ids, extra_blocks=()):
+    """Страница с заданными линиями (подделка собирает их из блоков)."""
+    block = _PlacedBlock("k_0", 1)
+    block.wires = [(_FakeWire(i), "kx_0", 0, 0) for i in wire_ids]
+    blocks = {"k_0": block}
+    for name, block_id in extra_blocks:
+        blocks[name] = _PlacedBlock(name, block_id)
+    _install_fake_project(monkeypatch, blocks)
+
+
+@pytest.mark.anyio
+async def test_list_wires_reports_empty_page(monkeypatch):
+    """Пустая страница: названо отсутствие линий, а не счётчик с нулём."""
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = _text(await mcp.call_tool("list_wires", {}))
+
+    assert "Линий связи на странице нет" in text
+
+
+@pytest.mark.anyio
+async def test_list_wires_reports_ids_and_says_what_it_cannot(monkeypatch):
+    """Ответ несёт количество, идентификаторы и оговорку про концы линий.
+
+    Оговорка — часть контракта, а не украшение: концы линий через COM не
+    читаются, и клиент обязан узнать об этом из ответа, а не догадываться по
+    отсутствию пары «откуда → куда».
+    """
+    _page_with_wires(monkeypatch, [11, 12, 13], extra_blocks=[("kx_0", 2)])
+
+    text = _text(await mcp.call_tool("list_wires", {}))
+
+    assert "Линий связи: 3" in text
+    assert "блоков на странице: 2" in text
+    assert "11, 12, 13" in text
+    assert "через COM не читаются" in text
+
+
+@pytest.mark.anyio
+async def test_list_wires_truncates_a_long_list_with_a_marker(monkeypatch):
+    """Больше 20 линий: печатаются первые 20, усечение помечено «…».
+
+    Без пометки клиент счёл бы список полным и не заметил бы остальные линии.
+    """
+    _page_with_wires(monkeypatch, range(1, 26))
+
+    text = _text(await mcp.call_tool("list_wires", {}))
+
+    assert "Линий связи: 25" in text
+    listed = text.split("Идентификаторы:")[1]
+    assert "1, 2, 3" in listed
+    assert "20 …" in listed, "усечение обязано быть помечено"
+    assert ", 21" not in listed, "двадцать первая линия не печатается"
+
+
+@pytest.mark.anyio
+async def test_list_wires_refuses_when_enumeration_fails(monkeypatch):
+    """Сбой перечисления — отказ, а не «линий нет».
+
+    Подстановка пустого списка выдала бы сбой среды за честный ноль объектов:
+    клиент, доверяющий `isError`, увидел бы успех и продолжил работу по
+    недостоверной модели схемы.
+    """
+    page = _BrokenWirePage(ComCallError("GetPageObjectCount"))
+    monkeypatch.setattr(session, "_project", _BrokenWireProject(page))
+
+    text = await _error("list_wires", {})
+
+    assert "ComCallError" in text
