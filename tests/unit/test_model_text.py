@@ -82,7 +82,10 @@ class _BridgeRunsContour:
     def run_page_script(self, body: str, result_path: Path) -> PageRunResult:
         type(self).body = body
         type(self).result_path = Path(result_path)
-        if type(self).outcome.kind == OUTCOME_OK:
+        # Артефакт пишет только тело выгрузки. У тела сборки пути нет, а первый
+        # строковый литерал — имя блока («Ступенька»): запись по нему создавала
+        # файл в текущем каталоге, и так он однажды попал в коммит ветки.
+        if type(self).outcome.kind == OUTCOME_OK and "savemodeltofile(" in body:
             Path(_dump_path_from_body(body)).write_text(
                 "﻿" + type(self).payload, encoding="utf-8")
         return PageRunResult(outcome=type(self).outcome,
