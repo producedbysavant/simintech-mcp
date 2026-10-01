@@ -53,6 +53,11 @@ REQUIRED = [
     ("simintech_api.model_operations", "build_export_model_text_body"),
     ("simintech_api.model_operations", "build_import_model_text_body"),
     ("simintech_api.model_operations", "build_inject_submodel_script_body"),
+    # Пакет проектов (tools/pack.py): класс Pack и клиентские методы, которые
+    # инструменты пакета зовут напрямую. Клиент в тестах пакета — подделка,
+    # поэтому без этой строки переименование в библиотеке всплыло бы только
+    # на Windows, у клиента (ревью mcp#25).
+    ("simintech_api", "Pack"),
 ]
 
 #: Методы, вызываемые сервером у `Project`.
@@ -61,6 +66,17 @@ PROJECT_METHODS = [
     "set_calc_end_time", "set_calc_setting", "calc_settings", "simulation",
     "list_signals", "signal", "export_db_to_xml", "show_form",
     "save_xml", "save_binary",
+]
+
+#: Методы, вызываемые сервером у `COMClient` напрямую (пакетный путь идёт
+#: мимо `Project`).
+CLIENT_METHODS = [
+    "open_pack", "get_opened_file_name", "get_process_id",
+]
+
+#: Методы, вызываемые сервером у `Pack` (tools/pack.py).
+PACK_METHODS = [
+    "project_ids", "start", "run", "step", "stop", "close",
 ]
 
 
@@ -77,6 +93,23 @@ def test_project_has_method(method):
     from simintech_api import Project
 
     assert callable(getattr(Project, method, None)), f"Project.{method} отсутствует"
+
+
+@pytest.mark.parametrize("method", CLIENT_METHODS)
+def test_com_client_has_method(method):
+    """`COMClient` умеет то, что сервер у него вызывает (пакет и процесс)."""
+    from simintech_api import COMClient
+
+    assert callable(getattr(COMClient, method, None)), \
+        f"COMClient.{method} отсутствует"
+
+
+@pytest.mark.parametrize("method", PACK_METHODS)
+def test_pack_has_method(method):
+    """`Pack` умеет то, что сервер у него вызывает (tools/pack.py)."""
+    from simintech_api import Pack
+
+    assert callable(getattr(Pack, method, None)), f"Pack.{method} отсутствует"
 
 
 #: Методы `ScriptBridge`, которые зовёт сервер. Проверяются отдельно от
