@@ -136,14 +136,17 @@ async def test_open_pack_replaces_previous(monkeypatch):
 
     client = _FakePackClient()
     old = _install_pack(monkeypatch, client, pack_id=500)
+    # id читается ДО закрытия: `Pack.close` обнуляет идентификатор, и чтение
+    # после — уже не тот id, что ушёл в ClosePack.
+    old_id = old.id
     monkeypatch.setattr(session, "_ensure_client", lambda: client)
 
     text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
 
-    assert client.closed_packs == [old.id]
+    assert client.closed_packs == [old_id]
     assert "ПАКЕТ СМЕНИЛСЯ" in text
     assert session._pack is not old
-    assert session._pack.id != old.id
+    assert session._pack.id != old_id
 
 
 @pytest.mark.anyio
@@ -188,12 +191,13 @@ async def test_close_pack_closes_and_names(monkeypatch):
 
     client = _FakePackClient()
     pack = _install_pack(monkeypatch, client, pack_id=555)
+    pack_id = pack.id  # до закрытия: close обнуляет идентификатор
     monkeypatch.setattr(session, "_project", _ClosableProject(project_id=22))
     monkeypatch.setattr(session, "_project_path", None)
 
     text = _text(await mcp.call_tool("close_pack", {}))
 
-    assert client.closed_packs == [pack.id]
+    assert client.closed_packs == [pack_id]
     assert "Пакет закрыт" in text and "«Пакет.pak»" in text
     assert session._pack is None
     assert session._project is None
@@ -520,12 +524,13 @@ async def test_close_pack_resets_project_when_membership_unknown(monkeypatch):
     """
     client = _FakePackClient(fail_composition=True)
     pack = _install_pack(monkeypatch, client, pack_id=555)
+    pack_id = pack.id  # до закрытия: close обнуляет идентификатор
     monkeypatch.setattr(session, "_project", _ClosableProject(project_id=11))
     monkeypatch.setattr(session, "_project_path", None)
 
     text = _text(await mcp.call_tool("close_pack", {}))
 
-    assert client.closed_packs == [pack.id]
+    assert client.closed_packs == [pack_id]
     assert session._project is None
     assert "на всякий случай" in text
 
@@ -666,6 +671,7 @@ async def test_disconnect_closes_pack_and_names_member(monkeypatch):
     """
     client = _FakePackClient()
     pack = _install_pack(monkeypatch, client, pack_id=555)
+    pack_id = pack.id  # до закрытия: close обнуляет идентификатор
     project = _ClosableProject(project_id=22)
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "_project_path", None)
@@ -673,7 +679,7 @@ async def test_disconnect_closes_pack_and_names_member(monkeypatch):
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
-    assert client.closed_packs == [pack.id]
+    assert client.closed_packs == [pack_id]
     assert project.closed is False, "участника закрывает пакет, не CloseProject"
     assert "закрыт вместе с пакетом" in text
     assert client.disconnected
