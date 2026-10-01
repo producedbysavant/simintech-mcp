@@ -19,12 +19,13 @@ from simintech_mcp.tools import pack as pack_tools
 
 from _support import _ClosableProject, _error, _text
 
-#: Файлы участников — как у демо-пакета поставки.
+#: Файлы участников — как у демо-пакета поставки (путь синтетический:
+#: `C:\Users\<user>` — форма, разрешённая DLP-гейтом).
 _FILES = {
-    11: r"C:\Users\demo\AppData\Local\Temp\pak-demo\Непрерывная часть.prt",
-    22: r"C:\Users\demo\AppData\Local\Temp\pak-demo\Дискретная часть.prt",
+    11: r"C:\Users\<user>\AppData\Local\Temp\pak-demo\Непрерывная часть.prt",
+    22: r"C:\Users\<user>\AppData\Local\Temp\pak-demo\Дискретная часть.prt",
 }
-_PAK = r"C:\Users\demo\AppData\Local\Temp\pak-demo\Пакет.pak"
+_PAK = r"C:\Users\<user>\AppData\Local\Temp\pak-demo\Пакет.pak"
 
 
 class _FakePackClient:
