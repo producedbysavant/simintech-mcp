@@ -5,6 +5,14 @@
 импортировал, молча не отдаст свои инструменты в `tools/list`.
 """
 
-from . import blocks, files, help, layout, project, simulation
+from . import blocks, files, help, layout, model_text, project, simulation
 
-__all__ = ["blocks", "files", "help", "layout", "project", "simulation"]
+__all__ = [
+    "blocks",
+    "files",
+    "help",
+    "layout",
+    "model_text",
+    "project",
+    "simulation",
+]
