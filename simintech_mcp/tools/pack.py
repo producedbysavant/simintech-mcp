@@ -12,28 +12,44 @@
 * участники открытого пакета видны как открытые проекты (`GetProjectCount`
   0 → 2), и обёртка `Project` по id участника работает (страницы, настройки);
 * время участников растёт пошагово: `PackStep` × 5 → 6e-05/0.001 с;
-* `PackStart`+`PackRun` поднимают время до первого синхрошага (0.0099/0.01) и
-  в COM-инстансе дальше **не продвигают** — плато ≥2 с, и после перезапуска
+* `PackStart` время **не обнуляет**: после `PackStop` повторные
+  `PackStart`+`PackRun` оставили времена на прежнем уровне (0.0099/0.01) —
+  поэтому `pack_step` читает «до» рядом со `start()` без риска сравнить с
+  нулём после перезапуска;
+* `PackStart`+`PackRun` в COM-инстансе поднимают время до первого синхрошага
+  (0.0099/0.01) и дальше **не продвигают** — плато ≥2 с, и после перезапуска
   тоже. Поэтому `pack_run` не обещает непрерывный прогон, а `pack_step` —
   рабочая форма продвижения;
-* `PackRun` без PackRun-цикла, `RunToPack` без ожидания — то же плато, а
-  `WaitForTimePack` (внутри `Pack.run_to`) в пробе не вернулся за ~4 минуты —
-  поэтому `pack_run(to_time=…)` в наборе **нет**: подтверждать достижение
-  отметки нечем, а отдавать непроверяемое ожидание — против контракта;
+* `RunToPack` без PackRun-цикла — то же плато, а `WaitForTimePack` (внутри
+  `Pack.run_to`) в пробе не вернулся за ~4 минуты — поэтому
+  `pack_run(to_time=…)` в наборе **нет**: подтверждать достижение отметки
+  нечем, а отдавать непроверяемое ожидание — против контракта;
 * `CloseProject` участника **исключает его из пакета** (состав 2 → 1) — отсюда
-  защита участника в `session._replace_project` и отказ `close_project`;
+  защита участника; решение «участник / не участник / неизвестно» принимает
+  `session._pack_membership`, и «неизвестно» трактуется как «нельзя
+  исключить»:
+  `_replace_project` такого проекта не закрывает, `close_project` отказывает,
+  `close_pack`/`_replace_pack`/`disconnect` сбрасывают состояние текущего
+  проекта после **удавшегося** закрытия пакета (неудавшееся — только
+  предупреждение: уверять «закрыт вместе с пакетом» рядом с «закрыть не
+  удалось» — противоречие);
 * `ClosePack` закрывает участников; `ClosePack(-1)` роняет `mmain.exe`
   (Access violation, замер) — поэтому id ≤ 0 в него не подаётся никогда;
 * открытие одного файла дважды открывает **второй** пакет (дедупа нет) —
   поэтому `open_pack` закрывает прежний пакет сессии;
 * идентификаторы участников среда выдаёт заново после изменений состава —
   адресовать участника надо **индексом состава**, а не сохранённым id.
+
+Состав читается **один раз** на вызов (`_member_ids`), а имена файлов и
+времена — по уже прочитанным id: два независимых чтения состава могли
+разойтись (состав меняется из GUI, id нестабильны), и пары «участник ↔
+время» собирались бы по позиции из разных списков (ревью mcp#25).
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Pack, Project
@@ -43,26 +59,38 @@ from ..app import mcp
 from .simulation import MAX_STEP_COUNT
 
 
-def _member_list(pack: Pack) -> List[List]:
-    """Участники как строки состава: `[id, файл]` по порядку запуска.
+def _member_ids(pack: Pack) -> List[int]:
+    """Идентификаторы участников — единственное чтение состава на вызов.
 
-    Имя файла даёт `GetOpenedFileName` — на живом пакете это полный путь
-    участника (замер 01.10.2026). Пустая строка — участник не связан с файлом;
-    это не отказ: состав всё равно перечисляется.
+    Может отказать (подпорченный пакет) — вызывающий решает, отказ это или
+    текст; главное, что и имена, и времена дальше берутся по ЭТИМ id, а не
+    по второму чтению состава.
     """
-    return [[pid, pack.client.get_opened_file_name(pid)]
-            for pid in pack.project_ids()]
+    return list(pack.project_ids())
 
 
-def _member_times(pack: Pack) -> List[Optional[float]]:
-    """Модельное время участников; `None` — не прочиталось.
+def _member_name(pack: Pack, pid: int) -> Optional[str]:
+    """Имя файла участника; `None` — прочитать не удалось.
 
-    Недоступное время не отказ само по себе (состав важнее), но скрывать его
-    нельзя: `None` печатается явно, а `pack_step` на нём отказывает — шаги,
-    которых нельзя подтвердить, не успех.
+    Сбой чтения имени не валит перечисление: `list_pack_projects` — в том
+    числе диагностика повреждённого пакета, и падать на том, что он
+    диагностирует, ему нельзя (ревью mcp#25). Пустая строка — «участник не
+    связан с файлом», `None` — «имя не прочитано»; это разные состояния.
+    """
+    try:
+        return pack.client.get_opened_file_name(pid)
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
+def _member_times(pack: Pack, member_ids: List[int]) -> List[Optional[float]]:
+    """Модельное время участников по уже прочитанным id; `None` — не прочиталось.
+
+    Имена здесь не нужны — они уже прочитаны тем же вызовом, что и id, —
+    поэтому этот помощник не трогает состав вовсе.
     """
     times: List[Optional[float]] = []
-    for pid in pack.project_ids():
+    for pid in member_ids:
         try:
             times.append(float(pack.client.call("GetProjectTime", pid)))
         except Exception:                                     # noqa: BLE001
@@ -71,23 +99,36 @@ def _member_times(pack: Pack) -> List[Optional[float]]:
 
 
 def _pack_time(times: List[Optional[float]]) -> Optional[float]:
-    """Время пакета — минимум по участникам; `None` — если ни одно не прочитано."""
-    known = [t for t in times if t is not None]
-    return min(known) if known else None
+    """Время пакета — минимум по **всем** участникам; None — если хоть один неизвестен.
+
+    Минимум по читаемому подмножеству — не время пакета: если между замерами
+    «до» и «после» менялось само подмножество, разность фабриковала бы рост
+    (или ложный отказ «не сдвинулось»). Поэтому неизвестное время одного
+    участника делает неизвестным время пакета (ревью mcp#25).
+    """
+    if not times or any(t is None for t in times):
+        return None
+    return min(times)                                         # type: ignore[type-var]
 
 
 def _fmt_time(value: Optional[float]) -> str:
     return "время недоступно" if value is None else f"{value:g}"
 
 
-def _composition_lines(members: List[List]) -> str:
-    """Перечисление состава: индекс, id, имя файла — по строке на участника."""
-    lines = []
-    for index, (pid, file_name) in enumerate(members):
-        name = (os.path.basename(file_name.replace("\\", "/"))
-                if file_name else "не связан с файлом")
-        lines.append(f"  [{index}] id={pid} «{name}»")
-    return "\n".join(lines)
+def _file_label(name: Optional[str]) -> str:
+    """Имя файла участника для перечисления: три состояния — три текста."""
+    if name is None:
+        return "файл не прочитан"
+    if not name:
+        return "не связан с файлом"
+    return os.path.basename(name.replace("\\", "/"))
+
+
+def _composition_lines(members: List[Tuple[int, Optional[str]]]) -> str:
+    """Перечисление состава: индекс, id, файл — по строке на участника."""
+    return "\n".join(
+        f"  [{index}] id={pid} «{_file_label(name)}»"
+        for index, (pid, name) in enumerate(members))
 
 
 # ─── Жизненный цикл ───────────────────────────────────────────────
@@ -124,7 +165,17 @@ def open_pack(path: str) -> str:
             f"пакет сессии не тронут.")
     pack = Pack(client, pack_id)
     replaced = session._replace_pack(pack, source_path=path)
-    members = _member_list(pack)
+    # Состав — после установки пакета в сессию: даже если он не читается,
+    # пакет уже текущий, и клиент должен узнать это из ответа, а не из отказа
+    # с потерянным состоянием (ревью mcp#25).
+    try:
+        ids = _member_ids(pack)
+        members = [(pid, _member_name(pack, pid)) for pid in ids]
+    except Exception as exc:                                  # noqa: BLE001
+        return (f"Пакет {session._pack_label()} открыт, но состав прочитать не "
+                f"удалось ({type(exc).__name__}: {exc}). Пакет стал текущим "
+                f"пакетом сессии: повторите `list_pack_projects`, а закрыть "
+                f"пакет можно `close_pack`." + replaced)
     return (f"Пакет {session._pack_label()} открыт: проектов {len(members)}\n"
             + _composition_lines(members) + replaced)
 
@@ -142,17 +193,24 @@ def close_pack() -> str:
         return "Без изменений: пакет не был открыт"
     pack = session._ensure_pack()
     label = session._pack_label()
-    member = session._project_is_pack_member()
+    # Принадлежность проверяется ДО закрытия: после него состав уже не
+    # прочитать. `None` (состав не читается) — тот же сброс, что и «участник»:
+    # неизвестно, жив ли текущий проект, а мёртвый id в сессии хуже
+    # сброшенного.
+    membership = session._pack_membership()
     # Порядок как у `close_project`: сначала закрыть, потом сбросить
     # состояние. Сбой `ClosePack` оставляет пакет текущим — его видно, и
     # закрытие можно повторить, а не потерять открытым внутри mmain.exe.
     pack.close()
     session._set_pack(None)
     tail = ""
-    if member:
+    if membership is not False:
         session._set_project(None)
         tail = (" Текущий проект — участник пакета — закрыт вместе с ним: "
-                "текущего проекта больше нет.")
+                "текущего проекта больше нет." if membership else
+                " Принадлежность текущего проекта к пакету проверить не "
+                "удалось; текущий проект сброшен на всякий случай: текущего "
+                "проекта больше нет.")
     return f"Пакет закрыт: {label}" + tail
 
 
@@ -171,17 +229,24 @@ def list_pack_projects() -> str:
     Модельное время участников здесь единственный способ увидеть ход расчёта
     пакета: отдельного «времени пакета» у COM API нет, а время пакета равно
     минимуму времён участников (общее время, канон библиотеки) — оно печатается
-    отдельной строкой.
+    отдельной строкой и недоступно, если хоть одно время участника не
+    прочиталось.
     """
     pack = session._ensure_pack()
-    members = _member_list(pack)
-    times = _member_times(pack)
+    try:
+        ids = _member_ids(pack)
+    except Exception as exc:                                  # noqa: BLE001
+        raise ToolError(
+            f"Состав пакета {session._pack_label()} прочитать не удалось "
+            f"({type(exc).__name__}: {exc}): идентификаторы участников не "
+            f"получены, перечислять нечего. Закрыть пакет можно `close_pack`; "
+            f"если состав не читается и дальше, пакет, вероятно, повреждён.")
+    members = [(pid, _member_name(pack, pid)) for pid in ids]
+    times = _member_times(pack, ids)
     lines = []
-    for index, (pid, file_name) in enumerate(members):
-        name = (os.path.basename(file_name.replace("\\", "/"))
-                if file_name else "не связан с файлом")
-        lines.append(f"  [{index}] id={pid} «{name}» — модельное время "
-                     f"{_fmt_time(times[index])}")
+    for index, (pid, name) in enumerate(members):
+        lines.append(f"  [{index}] id={pid} «{_file_label(name)}» — модельное "
+                     f"время {_fmt_time(times[index])}")
     total = _pack_time(times)
     return (f"Пакет {session._pack_label()}: проектов {len(members)}\n"
             + "\n".join(lines)
@@ -205,17 +270,22 @@ def select_pack_project(index: int) -> str:
             изменений состава.
     """
     pack = session._ensure_pack()
-    ids = pack.project_ids()
+    ids = _member_ids(pack)
     if not 0 <= index < len(ids):
         raise ToolError(
             f"index={index} вне состава пакета {session._pack_label()}: "
-            f"участников {len(ids)}, допустимо 0…{len(ids) - 1}. Состав — "
-            f"`list_pack_projects`.")
+            f"участников {len(ids)}"
+            + (f", допустимо 0…{len(ids) - 1}" if ids else "")
+            + ". Состав — `list_pack_projects`.")
     pid = ids[index]
     if session._project is not None and session._project.id == pid:
         return (f"Без изменений: проект [{index}] уже текущий — "
                 f"{session._project_label()}")
-    source = pack.client.get_opened_file_name(pid) or None
+    name = _member_name(pack, pid)
+    # Пустая строка (и непрочитанное имя) — не то же, что «проект из шаблона»:
+    # метка обязана называть неизвестный источник неизвестным, а не выдумывать
+    # шаблон (ревью mcp#25).
+    source = name or ""
     project = Project(pack.client, pid)
     replaced = session._replace_project(project, source_path=source)
     return f"Текущий проект: {session._project_label()}" + replaced
@@ -240,14 +310,15 @@ def pack_run() -> str:
     не двигает — подтверждать достижение отметки нечем.
     """
     pack = session._ensure_pack()
-    before = _pack_time(_member_times(pack))
+    ids = _member_ids(pack)
+    before = _pack_time(_member_times(pack, ids))
     pack.start()
     pack.run()
-    after = _pack_time(_member_times(pack))
+    after = _pack_time(_member_times(pack, ids))
     if after is None:
-        return ("Расчёт пакета запущен (неблокирующий вызов; модельное время "
-                "участников не прочиталось — подтвердить ход через "
-                "`list_pack_projects`)")
+        return ("Расчёт пакета запущен (неблокирующий вызов). Модельное время "
+                "участников прочиталось не полностью — подтвердить ход можно "
+                "через `list_pack_projects`.")
     return (f"Расчёт пакета запущен (неблокирующий вызов). Время пакета: "
             f"{_fmt_time(before)} → {after:g}. В COM-инстансе непрерывный "
             f"прогон не наблюдался: время поднимается до первого синхрошага "
@@ -262,7 +333,11 @@ def pack_step(count: int = 1) -> str:
 
     Проверяется **фактический** рост времени пакета (минимум по участникам):
     иначе шаги, которых расчёт не выполнил, выглядели бы успехом — тот же
-    контракт, что у `step`. Если время не сдвинулось, инструмент отказывает.
+    контракт, что у `step`. Если время хотя бы одного участника не прочиталось
+    или не сдвинулось, инструмент отказывает: неполное чтение — не рост, а
+    его отсутствие — не шаги. `PackStart` время не обнуляет (замер
+    01.10.2026), поэтому «до» читается рядом со `start()` без сравнения с
+    нулём после перезапуска.
 
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
@@ -275,18 +350,21 @@ def pack_step(count: int = 1) -> str:
             f"каждый шаг — отдельный COM-вызов, и такой вызов надолго занял бы "
             f"выделенный поток. Разбейте на несколько вызовов `pack_step`.")
     pack = session._ensure_pack()
+    ids = _member_ids(pack)
+    before = _pack_time(_member_times(pack, ids))
     pack.start()
-    before = _pack_time(_member_times(pack))
     for _ in range(count):
         pack.step()
-    after = _pack_time(_member_times(pack))
-    if after is None:
+    after = _pack_time(_member_times(pack, ids))
+    if before is None or after is None:
         raise ToolError(
-            f"Модельное время участников пакета не прочиталось — "
-            f"подтвердить, что {count} шагов выполнились, нечем. Повторите "
-            f"`list_pack_projects`: если время и там недоступно, пакет, "
-            f"вероятно, повреждён или закрыт средой.")
-    if before is None or after <= before:
+            f"Модельное время участников пакета прочиталось не полностью — "
+            f"подтвердить, что {count} шагов выполнились, нечем. Разность "
+            f"минимумов по читаемому подмножеству была бы фабрикацией: "
+            f"участник, чьё время не читается, из минимума выпадает. "
+            f"Повторите `list_pack_projects`: если время и там недоступно, "
+            f"пакет, вероятно, повреждён или закрыт средой.")
+    if after <= before:
         raise ToolError(
             f"Время пакета не сдвинулось после {count} шагов (осталось "
             f"{after:g} с). Обычно это значит, что расчёт не идёт: у "

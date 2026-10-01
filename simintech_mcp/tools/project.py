@@ -53,7 +53,7 @@ def disconnect() -> str:
         return "Без изменений: соединения не было — сбрасывать нечего"
     project = session._project
     label = session._project_label()
-    in_pack = session._project_is_pack_member()
+    in_pack = session._pack_membership()
     pack = session._pack
     pack_label = session._pack_label()
     # Пакет, проект и линии сбрасываются до попыток закрыть: состояние сессии
@@ -72,7 +72,11 @@ def disconnect() -> str:
             failed += (f" ВНИМАНИЕ: пакет {pack_label} закрыть не удалось "
                        f"({type(exc).__name__}: {exc}) — он и его участники "
                        f"могли остаться открытыми в SimInTech.")
-    if project is not None and not in_pack:
+    # Прямое закрытие — только когда точно известно, что проект не участник
+    # (False); при `None` (состав пакета не читается) проект не закрывается:
+    # закрытие участника исключило бы его из состава (замер 01.10.2026), а
+    # «неизвестно» — не разрешение.
+    if project is not None and in_pack is False:
         try:
             project.close()
             closed.append(f"проект {label} закрыт")
@@ -84,7 +88,11 @@ def disconnect() -> str:
                        f"({type(exc).__name__}: {exc}) — он мог остаться "
                        f"открытым в SimInTech.")
     elif project is not None and pack_closed:
-        closed.append(f"проект {label} закрыт вместе с пакетом")
+        if in_pack:
+            closed.append(f"проект {label} закрыт вместе с пакетом")
+        else:
+            closed.append(f"проект {label} — участие в пакете не подтверждено "
+                          f"(состав не читался)")
     if session._client is not None:
         session._client.disconnect()
         session._client = None
@@ -324,7 +332,19 @@ def close_project() -> str:
     """
     if session._project is None:
         return "Без изменений: проект не был открыт"
-    if session._project_is_pack_member():
+    membership = session._pack_membership()
+    if membership is not False:
+        if membership is None:
+            # Состав пакета не читается — «неизвестно» не разрешение: если
+            # проект участник, CloseProject исключит его из состава (замер
+            # 01.10.2026), а отличить «участник» от «не участник» нечем.
+            raise ToolError(
+                "Принадлежность текущего проекта к открытому пакету "
+                "проверить не удалось (состав пакета не читается): закрывать "
+                "вслепую нельзя — если проект участник, закрытие исключит его "
+                "из состава пакета (живой замер 01.10.2026). Повторите "
+                "`list_pack_projects`; закрыть пакет целиком можно "
+                "`close_pack`.")
         raise ToolError(
             f"Текущий проект — участник открытого пакета "
             f"{session._pack_label()}: его закрытие исключило бы проект из "

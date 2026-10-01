@@ -29,16 +29,28 @@ _PAK = r"C:\Users\<user>\AppData\Local\Temp\pak-demo\Пакет.pak"
 
 
 class _FakePackClient:
-    """Клиент пакета: состав, времена (сценарием) и раскладка COM-вызовов."""
+    """Клиент пакета: состав, времена (сценарием) и раскладка COM-вызовов.
 
-    def __init__(self, members=(11, 22), times=None):
+    Сбои задаются точечно (`fail_composition`, `times_raises_for`,
+    `name_raises_for`, `close_raises_for`): инструменты обязаны переживать
+    повреждённый пакет — это их диагностический случай, а не исключение.
+    """
+
+    def __init__(self, members=(11, 22), times=None, *,
+                 fail_composition=False, times_raises_for=(),
+                 name_raises_for=(), close_raises_for=()):
         self.members = list(members)
         #: Очередь времён для `GetProjectTime` — общая на все чтения, как в
         #: жизни: сначала «до», потом «после», по одному вызову на участника.
         #: Кончилась очередь — время стоит: рост обязан задаваться тестом.
         self.times = list(times or [])
+        self.fail_composition = fail_composition
+        self.times_raises_for = set(times_raises_for)
+        self.name_raises_for = set(name_raises_for)
+        self.close_raises_for = set(close_raises_for)
         self.calls = []
         self.closed_packs = []
+        self.disconnected = False
         self._next_pack = 900
 
     # ── COMClient-поверхность ─────────────────────────────────────
@@ -48,20 +60,33 @@ class _FakePackClient:
         return self._next_pack
 
     def close_pack(self, pack_id):
-        self.closed_packs.append(pack_id)
         self.calls.append(("ClosePack", pack_id))
+        if pack_id in self.close_raises_for:
+            raise RuntimeError("пакет уже закрыт средой")
+        self.closed_packs.append(pack_id)
+
+    def disconnect(self):
+        self.disconnected = True
 
     def get_opened_file_name(self, project_id):
+        if project_id in self.name_raises_for:
+            raise RuntimeError("имя файла участника не читается")
         return _FILES.get(project_id, "")
 
     # ── call() — методы Pack ──────────────────────────────────────
     def call(self, method, *args):
         self.calls.append((method,) + args)
         if method == "PackGetProjCount":
+            if self.fail_composition:
+                raise RuntimeError("состав пакета не читается")
             return len(self.members)
         if method == "PackGetProjectIdByIndex":
+            if self.fail_composition:
+                raise RuntimeError("состав пакета не читается")
             return self.members[args[1]]
         if method == "GetProjectTime":
+            if args[0] in self.times_raises_for:
+                raise RuntimeError("время участника не читается")
             return self.times.pop(0) if self.times else 0.0
         if method in ("PackStart", "PackRun", "PackStep", "PackPause",
                       "PackStop", "CloseProject"):
@@ -222,13 +247,7 @@ async def test_list_pack_projects_shows_times_and_pack_time(monkeypatch):
 async def test_list_pack_projects_survives_unreadable_time(monkeypatch):
     """Недоступное время печатается явно, а не прячется за успехом."""
 
-    class _NoTime(_FakePackClient):
-        def call(self, method, *args):
-            if method == "GetProjectTime":
-                raise RuntimeError("пакет повреждён")
-            return super().call(method, *args)
-
-    client = _NoTime()
+    client = _FakePackClient(times_raises_for=(11, 22))
     _install_pack(monkeypatch, client)
 
     text = _text(await mcp.call_tool("list_pack_projects", {}))
@@ -373,18 +392,12 @@ async def test_pack_step_refuses_when_time_frozen(monkeypatch):
 async def test_pack_step_refuses_without_readable_time(monkeypatch):
     """Время нечитаемо — подтвердить шаги нечем: отказ."""
 
-    class _NoTime(_FakePackClient):
-        def call(self, method, *args):
-            if method == "GetProjectTime":
-                raise RuntimeError("пакет повреждён")
-            return super().call(method, *args)
-
-    client = _NoTime()
+    client = _FakePackClient(times_raises_for=(11, 22))
     _install_pack(monkeypatch, client)
 
     text = await _error("pack_step", {"count": 1})
 
-    assert "не прочиталось" in text
+    assert "прочиталось не полностью" in text
 
 
 @pytest.mark.anyio
@@ -452,7 +465,233 @@ def test_replace_project_keeps_pack_member(monkeypatch):
 
 
 def test_pack_time_is_min_over_members():
-    """Время пакета — минимум известных времён; пусто — None."""
+    """Время пакета — минимум по ВСЕМ участникам; неизвестный — делает None.
 
-    assert pack_tools._pack_time([0.5, None, 0.1]) == 0.1
+    Минимум по читаемому подмножеству — не время пакета (ревью mcp#25).
+    """
+
+    assert pack_tools._pack_time([0.5, 0.1, 0.3]) == 0.1
+    assert pack_tools._pack_time([0.5, None, 0.1]) is None
     assert pack_tools._pack_time([None, None]) is None
+    assert pack_tools._pack_time([]) is None
+
+
+# ─── Повреждённый пакет и сбои чтения (ревью mcp#25) ──────────────
+
+
+def test_replace_project_fails_closed_when_composition_unreadable(monkeypatch):
+    """Состав не читается — прежний проект НЕ закрывается.
+
+    «Неизвестно» ≠ «не участник»: иначе сбой чтения состава сам отключал бы
+    защиту участника ровно в том случае, ради которого она заведена.
+    """
+    client = _FakePackClient(fail_composition=True)
+    _install_pack(monkeypatch, client)
+    previous = _ClosableProject(project_id=11)
+    monkeypatch.setattr(session, "_project", previous)
+
+    note = session._replace_project(_ClosableProject(project_id=7777))
+
+    assert previous.closed is False
+    assert "проверить не удалось" in note
+
+
+@pytest.mark.anyio
+async def test_close_project_refuses_when_membership_unknown(monkeypatch):
+    """close_project при нечитаемом составе отказывает и проект не трогает."""
+
+    client = _FakePackClient(fail_composition=True)
+    _install_pack(monkeypatch, client)
+    monkeypatch.setattr(session, "_project", _ClosableProject(project_id=11))
+    monkeypatch.setattr(session, "_project_path", None)
+
+    text = await _error("close_project", {})
+
+    assert "проверить не удалось" in text
+    assert session._project is not None, "проект не должен быть потерян"
+
+
+@pytest.mark.anyio
+async def test_close_pack_resets_project_when_membership_unknown(monkeypatch):
+    """Состав не читался — после удавшегося закрытия проекта в сессии не остаётся.
+
+    Неизвестно, жив ли текущий проект (мог быть участником), а мёртвый
+    идентификатор в сессии хуже сброшенного.
+    """
+    client = _FakePackClient(fail_composition=True)
+    pack = _install_pack(monkeypatch, client, pack_id=555)
+    monkeypatch.setattr(session, "_project", _ClosableProject(project_id=11))
+    monkeypatch.setattr(session, "_project_path", None)
+
+    text = _text(await mcp.call_tool("close_pack", {}))
+
+    assert client.closed_packs == [pack.id]
+    assert session._project is None
+    assert "на всякий случай" in text
+
+
+@pytest.mark.anyio
+async def test_open_pack_failed_previous_close_keeps_project(monkeypatch):
+    """Сбой закрытия прежнего пакета — и проект НЕ объявляется закрытым.
+
+    «Закрыт вместе с пакетом» рядом с «пакет закрыть не удалось» —
+    противоречие: сброс текущего проекта происходит только по факту закрытия.
+    """
+    client = _FakePackClient(close_raises_for={500})
+    _install_pack(monkeypatch, client, pack_id=500)
+    project = _ClosableProject(project_id=11)
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(session, "_project_path", None)
+    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+
+    text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
+
+    assert "ВНИМАНИЕ" in text
+    assert "закрыт вместе с ним" not in text
+    assert "мог остаться открытым вместе с пакетом" in text
+    assert session._project is project
+
+
+@pytest.mark.anyio
+async def test_open_pack_reports_unreadable_composition_but_installs(monkeypatch):
+    """Пакет становится текущим, даже если состав не читается.
+
+    Иначе клиент получил бы отказ с изменённым состоянием: пакет открыт, но
+    не учтён в сессии — и закрыть его нечем.
+    """
+    client = _FakePackClient(fail_composition=True)
+    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "_pack", None)
+    monkeypatch.setattr(session, "_pack_path", None)
+
+    text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
+
+    assert "состав прочитать не удалось" in text
+    assert session._pack is not None
+
+
+@pytest.mark.anyio
+async def test_list_pack_projects_reports_unreadable_composition(monkeypatch):
+    """Нечитаемый состав — отказ с рецептом, а не IndexError из недр."""
+
+    client = _FakePackClient(fail_composition=True)
+    _install_pack(monkeypatch, client)
+
+    text = await _error("list_pack_projects", {})
+
+    assert "прочитать не удалось" in text
+    assert "close_pack" in text
+
+
+@pytest.mark.anyio
+async def test_list_pack_projects_tolerates_member_name_failure(monkeypatch):
+    """Сбой чтения имени одного участника не валит перечисление."""
+
+    client = _FakePackClient(times=[0.1, 0.2], name_raises_for={22})
+    _install_pack(monkeypatch, client)
+
+    text = _text(await mcp.call_tool("list_pack_projects", {}))
+
+    assert "[0]" in text and "[1]" in text
+    assert "файл не прочитан" in text
+
+
+@pytest.mark.anyio
+async def test_list_pack_projects_reads_composition_once(monkeypatch):
+    """Состав читается ОДИН раз: пары «участник ↔ время» не могут разъехаться."""
+
+    client = _FakePackClient(times=[0.1, 0.2])
+    _install_pack(monkeypatch, client)
+
+    text = _text(await mcp.call_tool("list_pack_projects", {}))
+
+    assert len(_method_calls(client, "PackGetProjCount")) == 1
+    assert "модельное время 0.1" in text
+    assert "модельное время 0.2" in text
+
+
+@pytest.mark.anyio
+async def test_pack_step_refuses_when_one_member_time_unreadable(monkeypatch):
+    """Время одного участника не читается — рост НЕ фабрикуется.
+
+    Минимум по читаемому подмножеству — не время пакета: смена подмножества
+    между замерами показала бы рост, которого не было, или отказ с неверным
+    диагнозом «не сдвинулось».
+    """
+    client = _FakePackClient(times=[0.001, 0.5, 0.001, 0.5],
+                             times_raises_for=(22,))
+    _install_pack(monkeypatch, client)
+
+    text = await _error("pack_step", {"count": 1})
+
+    assert "прочиталось не полностью" in text
+    assert "не сдвинулось" not in text
+
+
+@pytest.mark.anyio
+async def test_pack_step_reads_time_before_start(monkeypatch):
+    """«До» читается ДО PackStart: окно замера — как у pack_run."""
+
+    client = _FakePackClient(times=[0.0, 0.0, 0.001, 0.001])
+    _install_pack(monkeypatch, client)
+
+    await mcp.call_tool("pack_step", {"count": 1})
+
+    names = [c[0] for c in client.calls]
+    assert names.index("GetProjectTime") < names.index("PackStart")
+
+
+@pytest.mark.anyio
+async def test_select_pack_project_unknown_source_is_named(monkeypatch):
+    """Пустое/нечитаемое имя файла — «источник файла не назван», не «из шаблона»."""
+
+    client = _FakePackClient(name_raises_for={22})
+    _install_pack(monkeypatch, client)
+    monkeypatch.setattr(session, "_project", None)
+    monkeypatch.setattr(session, "_project_path", None)
+
+    text = _text(await mcp.call_tool("select_pack_project", {"index": 1}))
+
+    assert "источник файла не назван" in text
+    assert "из шаблона" not in text
+
+
+@pytest.mark.anyio
+async def test_disconnect_closes_pack_and_names_member(monkeypatch):
+    """disconnect с открытым паком: пакет закрыт, участника закрывает он.
+
+    До этого у ветки disconnect с паком не было ни одного теста (ревью
+    mcp#25): регрессия «участник закрыт напрямую» или пропавший
+    `_set_pack(None)` оставались зелёными.
+    """
+    client = _FakePackClient()
+    pack = _install_pack(monkeypatch, client, pack_id=555)
+    project = _ClosableProject(project_id=22)
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(session, "_project_path", None)
+    monkeypatch.setattr(session, "_client", client)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert client.closed_packs == [pack.id]
+    assert project.closed is False, "участника закрывает пакет, не CloseProject"
+    assert "закрыт вместе с пакетом" in text
+    assert client.disconnected
+    assert session._pack is None and session._project is None
+
+
+@pytest.mark.anyio
+async def test_disconnect_pack_failure_does_not_claim_member_closed(monkeypatch):
+    """Сбой закрытия пакета — без утверждения, что участник закрыт."""
+
+    client = _FakePackClient(close_raises_for={555})
+    _install_pack(monkeypatch, client, pack_id=555)
+    monkeypatch.setattr(session, "_project", _ClosableProject(project_id=22))
+    monkeypatch.setattr(session, "_project_path", None)
+    monkeypatch.setattr(session, "_client", client)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert "ВНИМАНИЕ" in text
+    assert "закрыт вместе с пакетом" not in text
+    assert session._project is None

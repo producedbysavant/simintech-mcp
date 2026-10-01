@@ -87,22 +87,33 @@ def _client_is_alive(client: COMClient) -> bool:
     return True
 
 
+def _drop_dead_session() -> None:
+    """Сбросить состояние сессии, привязанное к мёртвому COM-клиенту.
+
+    Одна точка на три места (`_ensure_client`, `_ensure_project`,
+    `_ensure_pack`): клиент, проект и пакет указывают в один и тот же мёртвый
+    прокси, и сбрасывать их порознь — значит однажды забыть одно из трёх.
+    Линии уходят вместе с проектом (`_set_project`) — смена проекта и сброс
+    линий остаются одной операцией.
+    """
+    global _client
+    _set_project(None)
+    _set_pack(None)
+    _client = None
+
+
 def _ensure_client() -> COMClient:
     """Подключиться к COM-серверу (лениво), не отдав мёртвый клиент.
 
     Мёртвый клиент сбрасывается вместе с проектом и пакетом
-    (`_set_project(None)` + `_set_pack(None)`): проект держит **собственный**
-    `_client` (создаётся с ним в `from_template`/`open`), поэтому подмена
-    только `session._client` оставила бы проект на мёртвом прокси, а его
-    COM-идентификаторы после смены сервера всё равно недействительны. Сброс
-    идёт через `_set_project` — единственное место смены проекта, — поэтому
-    линии уходят вместе с ним; пакет же указывает в тот же мёртвый сервер.
+    (`_drop_dead_session`): проект держит **собственный** `_client`
+    (создаётся с ним в `from_template`/`open`), поэтому подмена только
+    `session._client` оставила бы проект на мёртвом прокси, а его
+    COM-идентификаторы после смены сервера всё равно недействительны.
     """
     global _client
     if _client is not None and not _client_is_alive(_client):
-        _set_project(None)
-        _set_pack(None)
-        _client = None
+        _drop_dead_session()
     if _client is None:
         _client = COMClient(silent_mode=True).connect()
     return _client
@@ -123,11 +134,8 @@ def _ensure_project() -> Project:
     столько же, сколько проект. Отказ называет причину и рецепт, а не
     «Нет открытого проекта»: клиент иначе решил бы, что проект не создавали.
     """
-    global _client
     if _client is not None and not _client_is_alive(_client):
-        _set_project(None)
-        _set_pack(None)
-        _client = None
+        _drop_dead_session()
         raise ToolError(
             "Соединение с SimInTech потеряно: mmain.exe не отвечает (пробный "
             "COM-вызов не прошёл). Состояние сессии сброшено — текущий проект "
@@ -182,10 +190,19 @@ def _project_label() -> str:
     """
     if _project is None:
         return ""
-    # Обратный слэш — разделитель путей Windows, а тесты идут и на Linux:
-    # `posixpath.basename` его не режет, и метка осталась бы полным путём.
-    name = (os.path.basename(_project_path.replace("\\", "/"))
-            if _project_path else "проект из шаблона")
+    # None и пустая строка — разные состояния: None — проект создан (файла
+    # нет), "" — файл у проекта есть, но среда его не назвала (так выглядит
+    # участник пакета при пустом `GetOpenedFileName`). Свалить оба в «проект
+    # из шаблона» — назвать файловый проект шаблонным во всех ответах правок
+    # (ревью mcp#25).
+    if _project_path is None:
+        name = "проект из шаблона"
+    elif not _project_path:
+        name = "источник файла не назван"
+    else:
+        # Обратный слэш — разделитель путей Windows, а тесты идут и на Linux:
+        # `posixpath.basename` его не режет, и метка осталась бы полным путём.
+        name = os.path.basename(_project_path.replace("\\", "/"))
     return f"«{name}» (id={_project.id})"
 
 
@@ -228,7 +245,7 @@ def _replace_project(project: Project,
     """
     previous = _project
     previous_label = _project_label()
-    stays_in_pack = previous is not None and _project_is_pack_member()
+    membership = _pack_membership() if previous is not None else False
     # Смена проекта и сброс линий — одна операция (`_set_project`): линии
     # принадлежат предыдущему проекту, их идентификаторы после смены
     # указывают в никуда.
@@ -237,7 +254,14 @@ def _replace_project(project: Project,
         return ""
     switch = (f"\nТЕКУЩИЙ ПРОЕКТ СМЕНИЛСЯ: было {previous_label} → "
               f"стало {_project_label()}.")
-    if stays_in_pack:
+    if membership is not False:
+        # `None` (состав пака не читается) — тот же запрет, что и «участник»:
+        # молча закрыть нельзя, иначе сбой чтения сам отключает защиту.
+        if membership is None:
+            return switch + (" Принадлежность прежнего проекта к открытому "
+                             "пакету проверить не удалось (состав пака не "
+                             "читается): проект оставлен открытым — закрытие "
+                             "участника исключило бы его из состава пакета.")
         return switch + (" Прежний проект — участник открытого пакета: он "
                          "оставлен в пакете, а не закрыт (закрытие исключило "
                          "бы его из состава пакета).")
@@ -265,11 +289,8 @@ def _ensure_pack() -> Pack:
     отказ называет это, а не только «пакета нет»: клиент иначе решил бы, что
     пакет не открывали.
     """
-    global _client
     if _client is not None and not _client_is_alive(_client):
-        _set_project(None)
-        _set_pack(None)
-        _client = None
+        _drop_dead_session()
         raise ToolError(
             "Соединение с SimInTech потеряно: mmain.exe не отвечает (пробный "
             "COM-вызов не прошёл). Состояние сессии сброшено — пакет и "
@@ -323,12 +344,25 @@ def _pack_member_ids() -> Optional[List[int]]:
         return None
 
 
-def _project_is_pack_member() -> bool:
-    """Участник ли текущий проект открытого пакета сессии."""
-    if _project is None:
+def _pack_membership() -> Optional[bool]:
+    """Участие текущего проекта в открытом пакете сессии: True / False / None.
+
+    `None` — состав пакета прочитать не удалось, и «участник» от «не
+    участник» отличить нечем. Вызывающие обязаны трактовать `None` как
+    «нельзя исключить» (fail-closed): закрывающие операции над таким проектом
+    не выполняются — `CloseProject` участника исключает его из состава (замер
+    01.10.2026), — а сброс состояния текущего проекта после закрытия пакета
+    выполняется: неизвестно, жив ли проект, а мёртвый идентификатор в сессии
+    хуже сброшенного. Обычное `bool` здесь означало бы, что сбой чтения
+    состава сам отключает защиту — ровно в том случае, ради которого она
+    заведена (ревью mcp#25).
+    """
+    if _pack is None or _project is None:
         return False
     ids = _pack_member_ids()
-    return ids is not None and _project.id in ids
+    if ids is None:
+        return None
+    return _project.id in ids
 
 
 def _replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
@@ -348,21 +382,34 @@ def _replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
     """
     previous = _pack
     previous_label = _pack_label()
-    member = previous is not None and _project_is_pack_member()
+    membership = _pack_membership() if previous is not None else False
     _set_pack(pack, source_path)
     if previous is None or previous is pack:
         return ""
     switch = (f"\nПАКЕТ СМЕНИЛСЯ: было {previous_label} → "
               f"стало {_pack_label()}.")
     warning = ""
+    closed = False
     try:
         previous.close()
+        closed = True
     except Exception as exc:                                  # noqa: BLE001
         warning = (f" ВНИМАНИЕ: предыдущий пакет закрыть не удалось "
                    f"({type(exc).__name__}: {exc}) — он мог остаться открытым "
                    f"в SimInTech.")
-    if member:
+    # Сброс текущего проекта — только по факту закрытия пакета: уверение
+    # «закрыт вместе с пакетом» рядом с предупреждением «пакет закрыть не
+    # удалось» — противоречие, и оно уже случалось (ревью mcp#25).
+    if closed and membership is not False:
         _set_project(None)
-        switch += (" Текущий проект — участник закрытого пакета — закрыт "
-                   "вместе с ним: текущего проекта больше нет.")
+        if membership is None:
+            switch += (" Принадлежность текущего проекта к закрытому пакету "
+                       "проверить не удалось; текущий проект сброшен на "
+                       "всякий случай: текущего проекта больше нет.")
+        else:
+            switch += (" Текущий проект — участник закрытого пакета — закрыт "
+                       "вместе с ним: текущего проекта больше нет.")
+    elif not closed and membership is True:
+        switch += (" Текущий проект — участник пакета, который закрыть не "
+                   "удалось: проект мог остаться открытым вместе с пакетом.")
     return switch + warning
