@@ -408,6 +408,93 @@ def set_block_param(block: str, param: str, value: str,
     return f"{block}.{param} = {actual}" + tail
 
 
+#: Предел размера блока в пикселях. Это не предел числа COM-вызовов, а
+#: отсечка очевидных ошибок единиц изменения («360» против «360 мм» или
+#: «3.6»): настоящий размер блока — десятки-сотни пикселей.
+MAX_BLOCK_SIZE = 10000
+
+
+def _size_value(value: float) -> str:
+    """Значение размера строкой: целые — без `.0`, как их пишет сама среда."""
+    return f"{value:g}"
+
+
+def _size_text(sizes) -> str:
+    """Размер для ответов: `360x120` — формат среды (`GetBlockPropAsString`)."""
+    width, height = sizes
+    return f"{_size_value(width)}x{_size_value(height)}"
+
+
+@mcp.tool()
+@runtime._com_threaded(mutates_project=True)
+def set_block_size(block: str, width: float, height: float) -> str:
+    """Задать размер блока в пикселях схемы.
+
+    Размер — **графическое** свойство: пишется через `SetGraphBlockProp`
+    (`Width`/`Height`), а обычный `SetBlockProp` (и `set_block_param`) эти
+    имена молча игнорирует — в каталоге параметров их поэтому нет. Живой
+    замер 01.10.2026 (поставка 2.26.6.23): «Усилитель» 32×32 → 140×80, «Порт
+    входа» 64×16 → 360×120; нечётные и дробные значения принимаются
+    (141×79 применились и удержались) — сетки 2 px у этого пути нет, а
+    прежнее «среда нечётные не принимает» относилось к записи через контур
+    страницы (`setprop` в скрипте), у которой своя судьба значения.
+
+    Заданный размер **переживает инициализацию**: после `ProjectStart`
+    прочитанные габариты не изменились (замер там же) — заново среда блок не
+    ужимает. После записи схема перерисовывается, и линии страницы
+    перетрассировуются (`NormalizeWire`): координаты портов после смены
+    размера сместились, как при перемещении блока.
+
+    Ответ печатает **перечитанный** размер. Принятое средой значение с
+    отличием от запрошенного — примечание; вовсе не изменившийся размер —
+    отказ: размера, которого нет, — не успех.
+
+    Args:
+        block: имя блока (автоимя из `list_blocks`).
+        width: ширина в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
+        height: высота в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
+    """
+    if not 0 < width <= MAX_BLOCK_SIZE or not 0 < height <= MAX_BLOCK_SIZE:
+        raise ToolError(
+            f"Размер {_size_text((width, height))} вне пределов: ширина и "
+            f"высота — в пикселях, больше 0 и не больше {MAX_BLOCK_SIZE} "
+            f"(отсечка ошибок единиц измерения: настоящий размер блока — "
+            f"десятки-сотни пикселей).")
+    project = session._ensure_project()
+    page = project.get_main_page()
+    target = page.find_block(block)
+    if target is None:
+        return _missing_block(block)
+    before = target.get_size()
+    try:
+        target.set_graph_prop("Width", _size_value(width))
+        target.set_graph_prop("Height", _size_value(height))
+    except Exception as exc:                                  # noqa: BLE001
+        return f"ERROR: {exc}"
+    # Порядок как у расстановки: изменённая геометрия → перерисовка →
+    # трассировка линий (контракт `layout_place`).
+    project.repaint()
+    for wire in page.get_wires():
+        # `normalize()` безопасен и на линии, созданной не этой сессией.
+        wire.normalize()
+    after = target.get_size()
+    requested = (float(width), float(height))
+    if after == before and after != requested:
+        raise ToolError(
+            f"Размер блока '{block}' не изменился: было и осталось "
+            f"{_size_text(before)}, запрошено {_size_text(requested)}. Среда "
+            f"запись не применила. Повторите вызов; если размер не меняется "
+            f"и дальше, проверьте, что имя из `list_blocks` — и сообщите "
+            f"среду и версию: это отступление от замера 01.10.2026, где "
+            f"`SetGraphBlockProp` применялся к тем же блокам.")
+    note = ""
+    if after != requested:
+        note = (f" (среда приняла {_size_text(after)}, а запрошено "
+                f"{_size_text(requested)})")
+    return (f"Размер блока '{block}': {_size_text(before)} → "
+            f"{_size_text(after)}{note}")
+
+
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).
 ParamValue = Union[int, float, str, List[Union[int, float, str]]]
 

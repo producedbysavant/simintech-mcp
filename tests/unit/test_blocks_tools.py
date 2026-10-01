@@ -12,6 +12,7 @@ from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
 
 from _support import (
     _FakeBlock,
+    _FakeProject,
     _FakeProjectWithCreate,
     _PlacedBlock,
     _error,
@@ -706,3 +707,129 @@ async def test_list_wires_refuses_when_enumeration_fails(monkeypatch):
     text = await _error("list_wires", {})
 
     assert "ComCallError" in text
+
+
+# ─── set_block_size (mcp#24, п.5) ─────────────────────────────────
+
+
+class _SizeBlock:
+    """Блок с размером: `set_graph_prop` пишет Width/Height, `get_size` читает.
+
+    Подделка моделирует переход: замер 01.10.2026 — `SetGraphBlockProp`
+    принимает значения как есть, и чётные, и нечётные.
+    """
+
+    def __init__(self, name="kx_0", size=(32.0, 32.0)):
+        self._name = name
+        self._size = list(size)
+        self.graph_writes = []
+        self.class_name = "Усилитель"
+        self.id = 3
+
+    def get_name(self):
+        return self._name
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def set_graph_prop(self, name, value):
+        self.graph_writes.append((name, value))
+        self._size[0 if name == "Width" else 1] = float(value)
+        return self
+
+
+class _ImmutableSizeBlock(_SizeBlock):
+    """Блок, который размер не принимает вовсе (отступление от замера)."""
+
+    def set_graph_prop(self, name, value):
+        self.graph_writes.append((name, value))
+        return self
+
+
+class _EvenOnlyBlock(_SizeBlock):
+    """Блок, принимающий только чётные значения (трансформация записи)."""
+
+    def set_graph_prop(self, name, value):
+        self.graph_writes.append((name, value))
+        even = float(value) - float(value) % 2
+        self._size[0 if name == "Width" else 1] = even
+        return self
+
+
+@pytest.mark.anyio
+async def test_set_block_size_applies_and_repaints(monkeypatch):
+    """Размер пишется через SetGraphBlockProp, перечитывается, схема обновляется."""
+    block = _SizeBlock()
+    project = _FakeProject({"kx_0": block})
+    monkeypatch.setattr(session, "_project", project)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "kx_0", "width": 140, "height": 80}))
+
+    assert block.graph_writes == [("Width", "140"), ("Height", "80")]
+    assert block.get_size() == (140.0, 80.0)
+    assert "32x32 → 140x80" in text
+    assert project.repaints == 1, "после смены размера схема перерисовывается"
+
+
+@pytest.mark.anyio
+async def test_set_block_size_accepts_odd_values(monkeypatch):
+    """Нечётные значения SetGraphBlockProp принимает (замер 01.10.2026)."""
+    block = _SizeBlock()
+    monkeypatch.setattr(session, "_project", _FakeProject({"kx_0": block}))
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "kx_0", "width": 141, "height": 79}))
+
+    assert block.get_size() == (141.0, 79.0)
+    assert "32x32 → 141x79" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_size_refuses_when_nothing_changed(monkeypatch):
+    """Размер не изменился — отказ: размера, которого нет, — не успех."""
+    block = _ImmutableSizeBlock()
+    monkeypatch.setattr(session, "_project", _FakeProject({"kx_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "kx_0", "width": 140, "height": 80})
+
+    assert "не изменился" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_size_notes_accepted_difference(monkeypatch):
+    """Принятое средой значение, отличное от запрошенного, — примечание."""
+    block = _EvenOnlyBlock()
+    monkeypatch.setattr(session, "_project", _FakeProject({"kx_0": block}))
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "kx_0", "width": 141, "height": 79}))
+
+    assert "среда приняла 140x78" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("width,height", [(0, 10), (-5, 10), (10, 0),
+                                          (10001, 10), (10, 10001)])
+async def test_set_block_size_bounds(monkeypatch, width, height):
+    """Пределы проверяются до COM: ни одной записи в блок."""
+    block = _SizeBlock()
+    monkeypatch.setattr(session, "_project", _FakeProject({"kx_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "kx_0", "width": width, "height": height})
+
+    assert "вне пределов" in text
+    assert block.graph_writes == []
+
+
+@pytest.mark.anyio
+async def test_set_block_size_missing_block(monkeypatch):
+    """Нет блока — отказ с общим текстом «не найден»."""
+    monkeypatch.setattr(session, "_project", _FakeProject({}))
+
+    text = await _error("set_block_size",
+                        {"block": "нетакого", "width": 10, "height": 10})
+
+    assert "не найден" in text
