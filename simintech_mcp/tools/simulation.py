@@ -325,7 +325,7 @@ def get_signal(block: str, max_items: int = 20,
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
     """Записать значение в сигнал (адресуется именем блока).
 

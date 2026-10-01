@@ -378,6 +378,7 @@ class _FakeSignal:
 class _SignalProject:
     def __init__(self, signal):
         self._signal = signal
+        self.id = 7  # ответы правок называют проект (issue #18)
 
     def signal(self, block):
         return self._signal

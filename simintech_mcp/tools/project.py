@@ -47,6 +47,7 @@ def disconnect() -> str:
     if session._client is None and session._project is None:
         return "Без изменений: соединения не было — сбрасывать нечего"
     project = session._project
+    label = session._project_label()
     # Проект и линии сбрасываются вместе (`session._set_project`) — до попытки
     # закрыть: состояние сессии не должно зависеть от того, ответил ли COM.
     session._set_project(None)
@@ -64,7 +65,9 @@ def disconnect() -> str:
     if session._client is not None:
         session._client.disconnect()
         session._client = None
-    return "Сессия завершена: проект закрыт, соединение разорвано" + failed
+    done = (f"Сессия завершена: проект {label} закрыт, соединение разорвано"
+            if label else "Сессия завершена: соединение разорвано")
+    return done + failed
 
 
 # ─── Проекты ──────────────────────────────────────────────────────
@@ -82,7 +85,8 @@ def create_project(project_hint: str = "model",
     `simintech-code/docs/reference/com_api_inventory.md`, §18.
 
     Предыдущий открытый проект закрывается: иначе они копились бы внутри
-    `mmain.exe`.
+    `mmain.exe`. Смена текущего проекта называется в ответе явно («было …
+    → стало …», issue #18).
 
     Args:
         project_hint: подсказка для сообщения. Имя проекта задаёт среда,
@@ -107,7 +111,7 @@ def create_project(project_hint: str = "model",
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def set_calc_time(seconds: float) -> str:
     """Задать конечное время расчёта проекта (`endtime` расчётного слоя).
 
@@ -125,11 +129,14 @@ def set_calc_time(seconds: float) -> str:
 def open_project(path: str) -> str:
     """Открыть существующий проект SimInTech (.prt/.xprt).
 
-    Предыдущий открытый проект закрывается (см. `create_project`).
+    Предыдущий открытый проект закрывается (см. `create_project`), и ответ
+    называет это явно: «было … → стало …» — вместе с именем открытого файла.
+    Смена текущего проекта — событие сессии, и молчание о ней стоило живой
+    ошибки (issue #18: импорт ушёл в проект, снятый ради образца).
     """
     prj = Project.open(session._ensure_client(), path)
     replaced = session._replace_project(prj, source_path=path)
-    return f"Проект открыт (id={prj.id})" + replaced
+    return f"Проект открыт: {session._project_label()}" + replaced
 
 
 @mcp.tool()
@@ -215,7 +222,7 @@ def get_project_config() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def set_project_config(param: str, value: str) -> str:
     """Записать параметр расчётного слоя проекта (`SetLayerProp`).
 
@@ -279,13 +286,19 @@ def save_project(path: str, binary: bool = False,
 @mcp.tool()
 @runtime._com_threaded
 def close_project() -> str:
-    """Закрыть текущий проект."""
+    """Закрыть текущий проект.
+
+    Ответ называет, что именно закрыто, и что текущего проекта больше нет:
+    следующий мутирующий вызов после закрытия откажет, и агент не должен
+    искать причину (issue #18).
+    """
     if session._project is None:
         return "Без изменений: проект не был открыт"
     project = session._project
+    label = session._project_label()
     # Порядок: сначала закрыть, потом сбросить состояние. Если `CloseProject`
     # не ответил, проект остаётся текущим — его видно и можно закрыть повторно,
     # а не потерять открытым внутри mmain.exe.
     project.close()
     session._set_project(None)
-    return "Проект закрыт"
+    return f"Проект закрыт: {label} — текущего проекта больше нет"

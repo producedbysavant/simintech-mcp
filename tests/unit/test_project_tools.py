@@ -14,6 +14,7 @@ from simintech_mcp.tools import project as project_tools
 
 from _support import (
     _TemplateProject,
+    _WireProject,
     _error,
     _install_fake_template,
     _install_savable,
@@ -58,6 +59,51 @@ async def test_create_project_rejects_non_positive_end_time(monkeypatch):
 
     assert "положительным" in text
     assert opened == [], "шаблон открывать было нельзя"
+
+
+@pytest.mark.anyio
+async def test_open_project_names_file_and_reports_switch(monkeypatch):
+    """open_project называет файл и смену проекта (issue #18).
+
+    Раньше ответ был «Проект открыт (id=17)»: агент не видел, какой файл
+    стал текущим и на какой сменён, — на этом и разошлись образец и правка.
+    """
+
+    opened = _WireProject({}, project_id=17)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(lambda client, path: opened))
+    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(_WireProject({}, project_id=12),
+                         source_path=r"C:\a\CoolInt.prt")
+    try:
+        text = _text(await mcp.call_tool(
+            "open_project", {"path": r"C:\b\sub_TractionState.prt"}))
+
+        assert "Проект открыт: «sub_TractionState.prt» (id=17)" in text
+        assert "СМЕНИЛСЯ" in text
+        assert "было «CoolInt.prt» (id=12)" in text
+        assert session._project is opened
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_create_project_reports_switch_from_previous(monkeypatch):
+    """Создание поверх открытого проекта называет смену (issue #18)."""
+
+    _project_obj, _opened = _install_fake_template(monkeypatch)
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(_WireProject({}, project_id=12),
+                         source_path=r"C:\a\CoolInt.prt")
+    try:
+        text = _text(await mcp.call_tool("create_project", {}))
+
+        assert "СМЕНИЛСЯ" in text
+        assert "было «CoolInt.prt» (id=12)" in text
+        assert "стало «проект из шаблона» (id=5)" in text
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio

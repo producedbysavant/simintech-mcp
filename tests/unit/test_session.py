@@ -87,6 +87,99 @@ def test_replace_project_without_previous(monkeypatch):
     assert not fresh.closed
 
 
+# ─── Имя проекта в ответах (issue #18) ────────────────────────────
+
+
+def _with_project(project, source_path=None):
+    """Поставить проект текущим; вернуть функцию восстановления прежнего."""
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(project, source_path=source_path)
+    return lambda: session._set_project(prev_project, source_path=prev_path)
+
+
+def test_project_label_names_opened_file_and_id():
+    """Открытый из файла проект называется именем файла и id.
+
+    Это имя ответы правок приводят как адрес («Изменения внесены в: …»):
+    без каталога — по имени файла проект и находят, — но с id, который
+    различает одноимённые файлы из разных каталогов.
+    """
+    restore = _with_project(_WireProject({}, project_id=12),
+                            source_path=r"C:\work\CoolInt.prt")
+    try:
+        assert session._project_label() == "«CoolInt.prt» (id=12)"
+    finally:
+        restore()
+
+
+def test_project_label_for_created_project():
+    """У созданного из шаблона имени нет — метка говорит это прямо."""
+    restore = _with_project(_WireProject({}, project_id=5))
+    try:
+        assert session._project_label() == "«проект из шаблона» (id=5)"
+    finally:
+        restore()
+
+
+def test_project_label_without_project_is_empty():
+    """Без проекта метки нет: подставлять «None» в адрес правки нельзя."""
+    restore = _with_project(None)
+    try:
+        assert session._project_label() == ""
+    finally:
+        restore()
+
+
+def test_replace_project_note_names_the_switch(monkeypatch):
+    """Смена проекта названа явно: было A → стало B (issue #18).
+
+    Смена — событие сессии: без её названия агент узнаёт о ней только по
+    косвенному признаку (счётчику объектов в следующем ответе).
+    """
+    restore = _with_project(_ClosableProject(project_id=12),
+                            source_path=r"C:\a\CoolInt.prt")
+    try:
+        note = session._replace_project(
+            _ClosableProject(project_id=17),
+            source_path=r"C:\b\sub_TractionState.prt")
+
+        assert "СМЕНИЛСЯ" in note
+        assert "было «CoolInt.prt» (id=12)" in note
+        assert "стало «sub_TractionState.prt» (id=17)" in note
+    finally:
+        restore()
+
+
+def test_replace_project_without_previous_has_no_switch_note(monkeypatch):
+    """Первый проект «сменой» не объявляется: было — ничего."""
+    restore = _with_project(None)
+    try:
+        note = session._replace_project(_ClosableProject(project_id=5))
+        assert note == ""
+    finally:
+        restore()
+
+
+def test_mutation_note_names_current_project():
+    """Хвост ответа правки: «Изменения внесены в: <метка>»."""
+    restore = _with_project(_WireProject({}, project_id=3),
+                            source_path=r"C:\work\CoolInt.prt")
+    try:
+        assert session._mutation_note() == (
+            "\nИзменения внесены в: «CoolInt.prt» (id=3)")
+    finally:
+        restore()
+
+
+def test_mutation_note_without_project_is_empty():
+    """Без проекта хвост пуст: «внесены в никуда» — ложь."""
+    restore = _with_project(None)
+    try:
+        assert session._mutation_note() == ""
+    finally:
+        restore()
+
+
 @pytest.mark.anyio
 async def test_disconnect_resets_project_and_client(monkeypatch):
     """disconnect() сбрасывает и проект: иначе остаётся мёртвый ProjectId."""
@@ -104,6 +197,7 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
 
     client = _Client()
     monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(session, "_project_path", None)
     monkeypatch.setattr(session, "_client", client)
 
     text = _text(await mcp.call_tool("disconnect", {}))
@@ -113,6 +207,7 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
     assert session._project is None
     assert session._client is None
     assert "Сессия завершена" in text
+    assert "id=7" in text, "завершение сессии обязано назвать закрытый проект"
 
 
 @pytest.mark.anyio
@@ -136,6 +231,20 @@ async def test_close_project_without_project_is_noop(monkeypatch):
     text = _text(await mcp.call_tool("close_project", {}))
 
     assert "Без изменений" in text
+
+
+@pytest.mark.anyio
+async def test_close_project_names_what_was_closed(monkeypatch):
+    """Закрытие называет проект и что текущего проекта больше нет (issue #18)."""
+
+    _install_wire_project(monkeypatch, {})
+    monkeypatch.setattr(session, "_project", _WireProject({}, project_id=42))
+    monkeypatch.setattr(session, "_project_path", None)
+
+    text = _text(await mcp.call_tool("close_project", {}))
+
+    assert "«проект из шаблона» (id=42)" in text
+    assert "текущего проекта больше нет" in text
 
 
 def test_replace_project_reports_failed_close(monkeypatch):

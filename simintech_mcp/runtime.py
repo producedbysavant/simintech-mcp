@@ -56,6 +56,14 @@ ERROR_PREFIX = "ERROR:"
 #: поэтому тест поверхности читает фактически применённый, а не любой.
 COM_THREAD_MARK = "_simintech_com_threaded"
 
+#: Метка мутирующего инструмента: `True` — к успешному ответу обвязка
+#: добавляет адрес правки («Изменения внесены в: …»,
+#: `session._mutation_note`). Метку ставит декоратор по флагу
+#: `mutates_project`, поэтому тест поверхности видит фактический контракт:
+#: забытый флаг вернул бы слепые ответы — ровно дыра issue #18 (импорт ушёл
+#: не в тот проект, а ответ не назвал, куда именно).
+MUTATES_PROJECT_MARK = "_simintech_mutates_project"
+
 
 def _call_guarded(fn: Callable[..., Any], args: Tuple[Any, ...],
                   kwargs: Dict[str, Any]) -> Any:
@@ -92,6 +100,21 @@ def _report_contract_drift(result: str) -> None:
     head = result.lstrip()[:8].lower()
     if head.startswith(("error", "ошибка", "отказ")):
         log_event("contract-drift", text=result[:120])
+
+
+def _append_mutation_note(result: Any) -> Any:
+    """Дописать к успешному ответу правки адресата: «Изменения внесены в: …».
+
+    Импорт `session` ленивый: обвязке незачем тянуть домен при импорте модуля
+    (тесты runtime не обязаны знать `simintech_api`), а «какому проекту
+    принадлежит правка» всё равно решает сессия — единственное место, где
+    проект меняется.
+    """
+    if not isinstance(result, str):
+        return result
+    from . import session
+    note = session._mutation_note()
+    return result + note if note else result
 
 
 # ─── Структурированный журнал ─────────────────────────────────────
@@ -179,7 +202,8 @@ def _instrumented(fn: Callable[..., Any],
     return wrapper
 
 
-def _com_threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
+def _com_threaded(fn: Callable[..., Any] | None = None, *,
+                  mutates_project: bool = False) -> Callable[..., Any]:
     """Выполнить инструмент в выделенном COM-потоке.
 
     Делает три вещи, каждая из которых обязательна:
@@ -187,6 +211,12 @@ def _com_threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
     * ограничивает ожидание (`COM_CALL_TIMEOUT`) — зависание COM не должно
       подвешивать сервер молча;
     * приводит отказ к `ToolError`, то есть к `isError` в ответе.
+
+    Плюс контракт «ответ правки называет проект»: при `mutates_project=True`
+    к успешному ответу добавляется адрес (`session._mutation_note`). Хвост
+    ставит обвязка, а не сам инструмент: текущий проект — скрытое состояние
+    сессии, и новый мутирующий инструмент иначе молча выпал бы из контракта
+    (issue #18 — импорт ушёл не в тот проект, а ответ не назвал, куда).
 
     Ограничение таймаута: сам COM-вызов в потоке **не прерывается**, поэтому
     после срабатывания таймаута работа может ещё продолжаться — измерено на
@@ -202,10 +232,16 @@ def _com_threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
     и повтор подхватил бы тот же мёртвый прокси, пока не вызван `disconnect`.
     Поэтому рецепт в тексте отказа называет оба шага.
     """
+    if fn is None:
+        # Декоратор вызван с флагом (`@_com_threaded(mutates_project=True)`):
+        # вернуть обёртку, которая дождётся самой функции.
+        return functools.partial(_com_threaded,
+                                 mutates_project=mutates_project)
+
     def invoke(*args: Any, **kwargs: Any) -> Any:
         future = _COM_EXECUTOR.submit(_call_guarded, fn, args, kwargs)
         try:
-            return future.result(timeout=COM_CALL_TIMEOUT)
+            result = future.result(timeout=COM_CALL_TIMEOUT)
         except FutureTimeout as exc:
             raise ToolError(
                 f"COM-вызов не ответил за {COM_CALL_TIMEOUT:.0f} с: SimInTech "
@@ -215,9 +251,14 @@ def _com_threaded(fn: Callable[..., Any]) -> Callable[..., Any]:
                 f"тот же нерабочий COM-прокси, и отказывали бы все "
                 f"COM-инструменты, а не только этот."
             ) from exc
+        if mutates_project:
+            result = _append_mutation_note(result)
+        return result
 
     wrapper = _instrumented(fn, invoke)
     setattr(wrapper, COM_THREAD_MARK, True)
+    if mutates_project:
+        setattr(wrapper, MUTATES_PROJECT_MARK, True)
     return wrapper
 
 

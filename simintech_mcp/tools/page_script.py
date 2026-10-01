@@ -175,7 +175,7 @@ def _describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def set_page_script(script: str) -> str:
     """Поставить скрипт в текущую страницу проекта и проверить, что он собрался.
 
@@ -230,7 +230,7 @@ def set_page_script(script: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def run_page_script(script: str) -> str:
     """Выполнить произвольный скрипт в секции `initialization` текущей страницы.
 
@@ -315,7 +315,7 @@ def _collect_body(body: str, collect_path: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def inject_submodel_script(script: str) -> str:
     """Создать субмодель со скриптом сбора данных и вернуть собранное.
 

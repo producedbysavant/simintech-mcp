@@ -501,6 +501,7 @@ class _CreateProject:
     def __init__(self, block_cls=_CreatedBlock):
         self.created = []
         self._block_cls = block_cls
+        self.id = 7  # ответы правок называют проект (issue #18)
 
     def get_main_page(self):
         return self

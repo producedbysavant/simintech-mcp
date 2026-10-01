@@ -9,9 +9,9 @@ from fastmcp.exceptions import ToolError
 
 from simintech_mcp.server import mcp
 
-from simintech_mcp import runtime
+from simintech_mcp import runtime, session
 
-from _support import _FakeBlock, _error, _install_fake_project
+from _support import _FakeBlock, _WireProject, _error, _install_fake_project
 
 
 def test_com_threaded_uses_single_dedicated_thread():
@@ -95,6 +95,51 @@ def test_com_threaded_preserves_signature():
 
     import inspect
     assert list(inspect.signature(sample).parameters) == ["name", "count"]
+
+
+def test_mutating_tool_response_names_the_project():
+    """Флаг `mutates_project` добавляет к ответу адрес правки (issue #18).
+
+    Проект — скрытое состояние сессии: между «какой открыт» и «куда внесена
+    правка» иначе нет ни одной видимой точки, и импорт уходит не в тот проект
+    молча (живой случай 01.10.2026).
+    """
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(_WireProject({}, project_id=9),
+                         source_path=r"C:\w\Model.prt")
+    try:
+        @runtime._com_threaded(mutates_project=True)
+        def tool() -> str:
+            return "Правка сделана"
+
+        assert tool() == ("Правка сделана\n"
+                          "Изменения внесены в: «Model.prt» (id=9)")
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+def test_plain_response_gets_no_mutation_note():
+    """Инструмент без флага хвоста не получает: «внесены» было бы ложью."""
+
+    @runtime._com_threaded
+    def tool() -> str:
+        return "Чтение сделано"
+
+    assert tool() == "Чтение сделано"
+
+
+def test_mutation_note_is_empty_without_project():
+    """Без проекта хвост пуст, а не «внесены в None»."""
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(None)
+    try:
+        @runtime._com_threaded(mutates_project=True)
+        def tool() -> str:
+            return "ok"
+
+        assert tool() == "ok"
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
 
 
 def test_log_event_writes_json_lines(monkeypatch, tmp_path):
