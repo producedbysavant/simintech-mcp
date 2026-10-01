@@ -140,17 +140,20 @@ def _composition_lines(members: List[Tuple[int, Optional[str]]]) -> str:
 @runtime._plain_tool
 def create_pack(path: str, projects: List[str],
                 inactive: Optional[List[int]] = None,
-                relative: bool = True,
+                no_sync: Optional[List[int]] = None,
                 synchronize: bool = True) -> str:
     """Собрать пакет проектов (`.pak`) текстом — COM не нужен.
 
     `.pak` — плоский INI-файл со списком проектов `.prt` (`[Files]`; порядок
     строк — порядок запуска): собрать его — файловая операция, без COM.
     Проекты рядом с пакетом указываются **голыми именами** (`a.prt` — так
-    пишет и сама среда; при другом каталоге — путь относительно `.pak` или
-    абсолютный). Файл записывается UTF-8 с BOM и CRLF, как файлы поставки, и
-    тут же перечитывается разборщиком: расхождение формата стало бы отказом
-    здесь, а не отказом среды при `open_pack`.
+    пишет и сама среда; при другом каталоге — путь относительно `.pak`).
+    Относительная запись не может выходить за каталог пакета: среда
+    развернула бы её мимо пакета, а читатель такие записи не выдаёт (замер
+    01.10.2026) — проект за каталогом указывается **абсолютным** путём, как
+    это делает и сама среда. Файл записывается UTF-8 с BOM и CRLF, как файлы
+    поставки, и тут же перечитывается разборщиком: расхождение формата стало
+    бы отказом здесь, а не отказом среды при `open_pack`.
 
     Живой замер 01.10.2026 (поставка 2.26.6.23): собранный так пакет среда
     открывает (`OpenPack` отвечает, состав читается). Файлы проектов должны
@@ -160,10 +163,12 @@ def create_pack(path: str, projects: List[str],
     Args:
         path: путь к файлу `.pak` (должен оканчиваться на `.pak`).
         projects: пути к проектам; порядок задаёт порядок запуска.
-        inactive: позиции (0-based) в `projects`, помечаемые неактивными
-            (`[Active]` и `[TimeSync]` = 0 — как среда пишет выключенные).
-        relative: `RelativePath` — режим записи путей (по умолчанию включён,
-            как у среды); пути при этом пишутся как переданы.
+        inactive: позиции (0-based) в `projects`, исключаемые из расчёта
+            (`[Active]` = 0). От `no_sync` не зависит: в примерах поставки
+            эти флаги и совпадают, и расходятся.
+        no_sync: позиции, у которых выключается пер-проектная синхронизация
+            реального времени (`[TimeSync]` = 0); из расчёта такой проект не
+            исключается.
         synchronize: `Synchronize` — объединение списков сигналов проектов
             (по умолчанию включено, как у большинства файлов поставки).
     """
@@ -180,11 +185,13 @@ def create_pack(path: str, projects: List[str],
         raise ToolError(
             f"Каталог «{base}» не существует — файл пакета записывать некуда.")
     off = set(inactive or [])
-    bad = sorted(i for i in off if not 0 <= i < len(projects))
-    if bad:
-        raise ToolError(
-            f"inactive: позиции {bad} вне списка projects (в нём "
-            f"{len(projects)} записей, допустимо 0…{len(projects) - 1}).")
+    unsynced = set(no_sync or [])
+    for label, positions in (("inactive", off), ("no_sync", unsynced)):
+        bad = sorted(i for i in positions if not 0 <= i < len(projects))
+        if bad:
+            raise ToolError(
+                f"{label}: позиции {bad} вне списка projects (в нём "
+                f"{len(projects)} записей, допустимо 0…{len(projects) - 1}).")
     missing = []
     entries = []
     for index, project in enumerate(projects):
@@ -194,7 +201,7 @@ def create_pack(path: str, projects: List[str],
         if not os.path.isfile(candidate):
             missing.append(f"[{index}] {project}")
         entries.append(PackEntry(project, active=index not in off,
-                                 time_sync=index not in off))
+                                 time_sync=index not in unsynced))
     if missing:
         raise ToolError(
             "Проекты не найдены (относительные пути ищутся от каталога "
@@ -202,18 +209,29 @@ def create_pack(path: str, projects: List[str],
             + "\nСначала сохраните их (`save_project` с `binary=True`) или "
               "поправьте пути.")
     try:
-        pack = write_pack(Path(path), entries, synchronize=synchronize,
-                          relative=relative)
+        pack = write_pack(Path(path), entries, synchronize=synchronize)
     except Exception as exc:                                  # noqa: BLE001
         raise ToolError(
             f"пакет не собран: {type(exc).__name__}: {exc}") from exc
     lines = []
     for index, item in enumerate(pack.projects):
-        tail = "" if (item.active and item.time_sync) else " — неактивен"
+        marks = []
+        if not item.active:
+            marks.append("неактивен")
+        if not item.time_sync:
+            marks.append("без синхронизации")
+        tail = f" — {', '.join(marks)}" if marks else ""
         lines.append(f"  [{index}] {item.path}{tail}")
+    # Единственное разрешённое писателем расхождение разбора — абсолютные
+    # записи: среда их принимает (так пишет и сама за каталогом пакета), но
+    # переносимость ниже — клиент обязан это видеть, а не узнавать при переносе.
+    note = ""
+    if pack.problems:
+        note = "\nПримечание: " + "; ".join(pack.problems)
     return (f"Пакет собран и перечитан: «{os.path.basename(path)}» — "
             f"проектов {pack.project_count} (перезаписан целиком).\n"
             + "\n".join(lines)
+            + note
             + f"\nОткрыть: `open_pack(\"{path}\")`.")
 
 

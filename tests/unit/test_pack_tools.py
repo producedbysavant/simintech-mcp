@@ -727,7 +727,7 @@ async def test_create_pack_writes_and_rereads(tmp_path):
 
 @pytest.mark.anyio
 async def test_create_pack_marks_inactive(tmp_path):
-    """Позиции из inactive помечаются [Active]/[TimeSync] = 0."""
+    """Позиции из inactive помечаются [Active] = 0; [TimeSync] не трогается."""
     from simintech_api.pak import load_pack
 
     for name in ("a.prt", "b.prt"):
@@ -740,8 +740,33 @@ async def test_create_pack_marks_inactive(tmp_path):
 
     pack = load_pack(target)
     assert [(p.active, p.time_sync) for p in pack.projects] == [
-        (True, True), (False, False)]
+        (True, True), (False, True)]
     assert "неактивен" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_marks_no_sync_separately(tmp_path):
+    """no_sync выключает [TimeSync], не исключая проект из расчёта.
+
+    Флаги независимы и в поставке встречаются в обоих сочетаниях — поэтому
+    не сводятся к одному параметру (замечание ревью): проект может считаться
+    и при этом не синхронизироваться с реальным временем.
+    """
+    from simintech_api.pak import load_pack
+
+    for name in ("a.prt", "b.prt"):
+        (tmp_path / name).write_bytes(b"stub")
+    target = tmp_path / "Сборка.pak"
+
+    text = _text(await mcp.call_tool("create_pack", {
+        "path": str(target), "projects": ["a.prt", "b.prt"],
+        "no_sync": [0]}))
+
+    pack = load_pack(target)
+    assert [(p.active, p.time_sync) for p in pack.projects] == [
+        (True, False), (True, True)]
+    assert "без синхронизации" in text
+    assert "неактивен" not in text
 
 
 @pytest.mark.anyio
@@ -800,3 +825,48 @@ async def test_create_pack_refuses_out_of_range_inactive(tmp_path):
         "inactive": [3]})
 
     assert "inactive" in text
+
+    text = await _error("create_pack", {
+        "path": str(tmp_path / "x.pak"), "projects": ["a.prt"],
+        "no_sync": [3]})
+
+    assert "no_sync" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_refuses_escaping_relative(tmp_path):
+    """Относительный путь за каталог пакета — отказ до записи файла.
+
+    Раньше такая запись уходила в файл молча: проверка «файл существует»
+    проходила (`../b.prt` находится), а читатель такие записи не выдаёт —
+    среда развернула бы её мимо пакета (замечание ревью).
+    """
+    (tmp_path / "b.prt").write_bytes(b"stub")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "Сборка.pak"
+
+    text = await _error("create_pack", {
+        "path": str(target), "projects": ["../b.prt"]})
+
+    assert "выходит за каталог" in text
+    assert not target.exists()
+
+
+@pytest.mark.anyio
+async def test_create_pack_notes_absolute_entries(tmp_path):
+    """Абсолютная запись разрешена, но ответ обязан её назвать.
+
+    За каталогом пакета так пишет и среда, поэтому писатель запись не
+    отвергает; но читатель помечает её неразворачиваемой, и клиент должен
+    видеть это в ответе, а не узнавать при переносе пакета.
+    """
+    target = tmp_path / "Сборка.pak"
+    project = tmp_path / "a.prt"
+    project.write_bytes(b"stub")
+
+    text = _text(await mcp.call_tool("create_pack", {
+        "path": str(target), "projects": [str(project)]}))
+
+    assert "абсолютные пути" in text
+    assert "a.prt" in text
