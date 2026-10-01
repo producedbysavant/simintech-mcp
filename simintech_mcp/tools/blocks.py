@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastmcp.exceptions import ToolError
 from simintech_api.constants import standard_block_size
@@ -425,6 +425,70 @@ def _size_text(sizes) -> str:
     return f"{_size_value(width)}x{_size_value(height)}"
 
 
+#: Классы порт-блоков: у них высота не свободна, а задана жёстким правилом
+#: 16 px на строку сигнала (правило передано владельцем, 01.10.2026; его
+#: отсутствие «сильно ломает отображение»). Замер того же дня (поставка
+#: 2.26.6.23): список сигналов **читается через COM** — `PortNames` отдаётся
+#: строкой с разделителем `\r\n` (`'in\r\n'` у однозначного порта,
+#: `'a1\r\na2\r\n'` у двухзначного), — а среда габарит сама **не** подгоняет:
+#: порт с двумя именами остаётся 64×16.
+_PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")
+
+#: Высота одной строки сигнала порт-блока в пикселях: 1 сигнал — 16, 2 — 32
+#: и так далее. Правило жёсткое: любая другая высота ломает отображение.
+PORT_ROW_HEIGHT = 16
+
+
+def _port_signal_count(target) -> Optional[int]:
+    """Число сигналов порт-блока по `PortNames`; `None` — прочитать не удалось.
+
+    Пустой список — тот же `None`, а не ноль сигналов: у порт-блока имя есть
+    всегда (замер: `'in\r\n'` сразу после создания), поэтому «пусто» здесь
+    означает отказ чтения, а не измеренное состояние.
+    """
+    try:
+        value = target.get_property("PortNames")
+    except Exception:                                             # noqa: BLE001
+        return None
+    names = [line for line in str(value).splitlines() if line.strip()]
+    return len(names) or None
+
+
+def _port_height_refusal(name: str, target, height: float) -> Optional[str]:
+    """Отказ, если высота порт-блока нарушает правило 16 px на строку.
+
+    Проверка читается **до** записи: испортить отображение записью — ровно
+    то, что инструмент не должен уметь, а правило полностью вычислимо, и
+    текст отказа называет правильную высоту. Классы, к которым правило не
+    относится (и класс, который не прочитался), пропускаются как раньше.
+    """
+    try:
+        class_name = target.class_name
+    except Exception:                                             # noqa: BLE001
+        return None
+    if class_name not in _PORT_HEIGHT_CLASSES:
+        return None
+    count = _port_signal_count(target)
+    if count is None:
+        return (
+            f"Высоту порт-блока '{name}' задать нельзя: у класса "
+            f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
+            f"на строку сигнала, а список сигналов (`PortNames`) не читается "
+            f"— проверить высоту нечем, и запись наугад могла бы испортить "
+            f"отображение.")
+    required = PORT_ROW_HEIGHT * count
+    if height != required:
+        return (
+            f"Высоту порт-блока '{name}' задать нельзя: у класса "
+            f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
+            f"на строку сигнала — у этого блока строк {count} (`PortNames`), "
+            f"значит высота — {required} px, а запрошено "
+            f"{_size_value(height)}. Среда габарит сама не подгоняет (замер "
+            f"01.10.2026: порт с двумя именами остаётся 64×16), и другая "
+            f"высота ломает отображение строк; ширина при этом свободна.")
+    return None
+
+
 @mcp.tool()
 @runtime._com_threaded(mutates_project=True)
 def set_block_size(block: str, width: float, height: float) -> str:
@@ -444,6 +508,16 @@ def set_block_size(block: str, width: float, height: float) -> str:
     ужимает. После записи схема перерисовывается, и линии страницы
     перетрассировуются (`NormalizeWire`): координаты портов после смены
     размера сместились, как при перемещении блока.
+
+    **У порт-блоков высота не свободна.** Классы «Порт входа»/«Порт выхода»
+    подчиняются жёсткому правилу: `PORT_ROW_HEIGHT` px на строку сигнала — у
+    блока из двух сигналов высота 32. Число строк читается из `PortNames`
+    (COM отдаёт имена построчно: `'a1\r\na2\r\n'`; задаются они скриптом
+    или импортом — замер 01.10.2026), а среда габарит сама не подгоняет:
+    порт с двумя именами остаётся 64×16, и строки ломаются. Поэтому другая
+    высота — отказ с названным правильным значением, а нечитаемый список
+    сигналов — тоже отказ (проверить правило нечем). Ширина задаётся
+    свободно.
 
     Ответ печатает **перечитанный** размер. Принятое средой значение с
     отличием от запрошенного — примечание; вовсе не изменившийся размер —
@@ -465,6 +539,9 @@ def set_block_size(block: str, width: float, height: float) -> str:
     target = page.find_block(block)
     if target is None:
         return _missing_block(block)
+    refusal = _port_height_refusal(block, target, float(height))
+    if refusal is not None:
+        raise ToolError(refusal)
     before = target.get_size()
     try:
         target.set_graph_prop("Width", _size_value(width))
