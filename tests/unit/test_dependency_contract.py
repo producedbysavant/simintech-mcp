@@ -42,6 +42,17 @@ REQUIRED = [
     ("simintech_api.exceptions", "SimInTechError"),
     ("simintech_api.utils.xprt_signals", "XprtSignalReader"),
     ("simintech_api.utils.converters", "value_to_prop_string"),
+    # Контур языкового слоя: исходы, страница и тела операций.
+    ("simintech_api", "PageRunResult"),
+    ("simintech_api", "classify_page_result"),
+    ("simintech_api", "OUTCOME_OK"),
+    ("simintech_api", "OUTCOME_MODEL_NOT_RUNNING"),
+    ("simintech_api", "OUTCOME_ABORTED"),
+    ("simintech_api", "OUTCOME_NOT_COMPILED"),
+    ("simintech_api", "OUTCOME_SECTION_NOT_RUN"),
+    ("simintech_api.model_operations", "build_export_model_text_body"),
+    ("simintech_api.model_operations", "build_import_model_text_body"),
+    ("simintech_api.model_operations", "build_inject_submodel_script_body"),
 ]
 
 #: Методы, вызываемые сервером у `Project`.
@@ -66,3 +77,26 @@ def test_project_has_method(method):
     from simintech_api import Project
 
     assert callable(getattr(Project, method, None)), f"Project.{method} отсутствует"
+
+
+#: Методы `ScriptBridge`, которые зовёт сервер. Проверяются отдельно от
+#: модульных символов: метод — не атрибут модуля, и переименование в нём
+#: `hasattr(module, ...)` не поймает.
+SCRIPT_BRIDGE_METHODS = [
+    "run_probe", "run_page_script", "read_page_script", "install_script",
+]
+
+
+def test_script_bridge_methods_exist():
+    """У `ScriptBridge` есть методы, на которые опирается сервер.
+
+    Второй класс того же дефекта, что и мёртвый пин: коммит существует, а
+    нужного метода в нём нет. Ошибка всплыла бы у клиента — в момент вызова
+    инструмента, а не при сборке.
+    """
+    from simintech_api.core.script_bridge import ScriptBridge
+
+    missing = [name for name in SCRIPT_BRIDGE_METHODS
+               if not callable(getattr(ScriptBridge, name, None))]
+
+    assert not missing, f"ScriptBridge: нет методов {missing}"
