@@ -23,8 +23,6 @@ dependencies = [
     # `standard_block_size`, ни `default_output_dir`, ни `Project.from_template`
     # — сервер падал на нём уже на импорте.
     #
-    # b77f65946c4298b49bbcb7e4224d9d1826a4adee — `main` репозитория
-    # simintech-code, версия библиотеки 0.7.0 (`simintech_api/__init__.py`).
     # Пин ставится **последним по simintech-code**: любой коммит там меняет SHA
     # вершины, и уже записанный пин становится мёртвым.
     #
@@ -40,14 +38,12 @@ dependencies = [
     # simintech-code, и только потом этот пин становится рабочим.** Перед сменой
     # проверять и то, и другое: что коммит существует и что в нём есть нужные
     # символы (`tests/unit/test_dependency_contract.py`).
-    # eb6a7549a4ea904fbfe8b8dac45d7ea81bbaa010 — вершина ветки
-    # `feat/page-script-read` репозитория simintech-code (PR #16), версия
-    # библиотеки 0.10.0. **Временный пин**: контур языкового слоя
-    # (`run_page_script`, `read_page_script`, `model_operations`) лежит в цепочке
-    # ещё не влитых PR (#15 → #16), и на `main` этих символов пока нет —
-    # `tests/unit/test_dependency_contract.py` назовёт их отсутствие.
-    # После мержа цепочки пин переводится на `git rev-parse origin/main`.
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@eb6a7549a4ea904fbfe8b8dac45d7ea81bbaa010",
+    # 30d0ab1772c12c4f14f0565a51a633dd8f57c11b — `main` репозитория
+    # simintech-code, версия библиотеки 0.10.0 (`simintech_api/__init__.py`):
+    # контур языкового слоя влит squash-коммитами PR #15 (`8de8167`) и PR #16
+    # (`30d0ab1`). Прежние пины: `b77f6594…` (0.7.0, `main` до контура) и
+    # `eb6a754…` — временный, на вершине ветки PR #16, пока цепочка не влилась.
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@30d0ab1772c12c4f14f0565a51a633dd8f57c11b",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
