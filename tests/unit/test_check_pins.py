@@ -10,7 +10,14 @@ import subprocess
 
 import pytest
 
-from check_pins import CheckPinsError, git_pins, main, pin_reachable
+from check_pins import (
+    CheckPinsError,
+    expected_shas,
+    git_pins,
+    main,
+    pin_reachable,
+    resolve_tag,
+)
 
 
 def test_git_pins_parses_pinned_dependency(tmp_path):
@@ -29,8 +36,23 @@ def test_git_pins_parses_pinned_dependency(tmp_path):
     ]
 
 
-def test_git_pins_rejects_short_sha(tmp_path):
-    """Не-40-символьная ревизия — не immutable-пин, и это отказ, а не пропуск."""
+def test_git_pins_parses_release_tag(tmp_path):
+    """Релизный тег `vX.Y.Z` — допустимая ревизия: `v*` прикрыт ruleset'ом."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\ndependencies = [\n'
+        '  "simintech-api @ git+https://github.com/o/r@v0.10.1",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    assert git_pins(pyproject) == [
+        ("simintech-api", "https://github.com/o/r", "v0.10.1")
+    ]
+
+
+def test_git_pins_rejects_loose_tag(tmp_path):
+    """Тег без патча (`v1.0`) — не релизный: формат строго `vX.Y.Z`."""
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         '[project]\nname = "x"\n'
@@ -38,8 +60,130 @@ def test_git_pins_rejects_short_sha(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(CheckPinsError, match="не коммит"):
+    with pytest.raises(CheckPinsError, match="ни полный SHA"):
         git_pins(pyproject)
+
+
+def test_git_pins_rejects_branch_ref(tmp_path):
+    """Ветка в пине — отказ: её двигают штатной записью."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\n'
+        'dependencies = ["p @ git+https://github.com/o/r@main"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CheckPinsError, match="ни полный SHA"):
+        git_pins(pyproject)
+
+
+def test_resolve_tag_prefers_commit_of_annotated_tag():
+    """Для аннотированного тега берётся коммит (`^{}`), а не tag-объект."""
+    def run(cmd, **kwargs):
+        out = ("a" * 40 + "\trefs/tags/v0.10.1\n"
+               + "b" * 40 + "\trefs/tags/v0.10.1^{}\n")
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    assert resolve_tag("https://github.com/o/r", "v0.10.1", run=run) == "b" * 40
+
+
+def test_resolve_tag_returns_none_when_missing():
+    """Пустой ответ ls-remote — выпуска нет, и это отказ, а не успех."""
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert resolve_tag("https://github.com/o/r", "v9.9.9", run=run) is None
+
+
+def test_main_prints_resolution_for_tag_pin(tmp_path, capsys):
+    """Успешный тег-пин печатает коммит: это и есть адрес закреплённого кода."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\ndependencies = [\n'
+        '  # sha: ' + "c" * 40 + "\n"
+        '  "p @ git+https://github.com/o/r@v0.10.1",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, "c" * 40 + "\trefs/tags/v0.10.1\n", "")
+
+    assert main(pyproject, run=run) == 0
+    assert "v0.10.1 -> " + "c" * 12 in capsys.readouterr().out
+
+
+def test_main_fails_on_missing_tag(tmp_path, capsys):
+    """Отсутствующий тег — код 1 и названный тег в выводе."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\ndependencies = [\n'
+        '  # sha: ' + "d" * 40 + "\n"
+        '  "p @ git+https://github.com/o/r@v9.9.9",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert main(pyproject, run=run) == 1
+    assert "v9.9.9" in capsys.readouterr().out
+
+
+def test_expected_shas_reads_anchor_above_dependency(tmp_path):
+    """Якорь `# sha:` над строкой зависимости привязывается к её тегу."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\ndependencies = [\n'
+        "  # v0.10.1 — выпуск\n"
+        "  # sha: " + "e" * 40 + "\n"
+        '  "simintech-api @ git+https://github.com/o/r@v0.10.1",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    assert expected_shas(pyproject) == {"v0.10.1": "e" * 40}
+
+
+def test_main_rejects_tag_without_anchor(tmp_path, capsys):
+    """Тег без якоря — отказ ДО сети: без якоря перестановка неотличима."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\n'
+        'dependencies = ["p @ git+https://github.com/o/r@v0.10.1"]\n',
+        encoding="utf-8",
+    )
+
+    called = []
+
+    def run(cmd, **kwargs):
+        called.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert main(pyproject, run=run) == 1
+    assert "БЕЗ ЯКОРЯ" in capsys.readouterr().out
+    assert called == [], "без якоря сеть не трогаем — отказ локальный"
+
+
+def test_main_detects_moved_tag(tmp_path, capsys):
+    """Тег разрешился не в якорный коммит — отказ «переставлен»."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[project]\nname = "x"\ndependencies = [\n'
+        "  # sha: " + "f" * 40 + "\n"
+        '  "p @ git+https://github.com/o/r@v0.10.1",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+
+    def run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd, 0, "0" * 40 + "\trefs/tags/v0.10.1\n", "")
+
+    assert main(pyproject, run=run) == 1
+    assert "ПЕРЕСТАВЛЕН" in capsys.readouterr().out
 
 
 def test_pin_reachable_reports_dead_sha():
