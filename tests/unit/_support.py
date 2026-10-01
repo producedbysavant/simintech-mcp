@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import sys
+from pathlib import Path
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -473,16 +474,25 @@ def _install_fake_template(monkeypatch):
 
 
 class _SavableProject:
-    """Проект, запоминающий, каким методом его сохранили."""
+    """Проект, запоминающий, каким методом его сохранили.
 
-    def __init__(self, raises: bool = False):
+    При `writes=True` запись **действительная** — файл создаётся: инструмент
+    проверяет факт записи по диску (залипшая сессия сообщает об успехе без
+    файла, simintech-code#21), и подделка обязана моделировать переход, а не
+    удобный ответ. `writes=False` моделирует ту самую залипшую сессию.
+    """
+
+    def __init__(self, raises: bool = False, writes: bool = True):
         self.calls = []
         self._raises = raises
+        self._writes = writes
 
     def _record(self, kind: str, path=None) -> None:
         self.calls.append((kind, path))
         if self._raises:
             raise RuntimeError("диск переполнен")
+        if self._writes and kind in ("xml", "binary"):
+            Path(path).write_bytes(b"<stub/>")
 
     def show_form(self) -> None:
         self._record("show_form")
@@ -494,9 +504,10 @@ class _SavableProject:
         self._record("binary", path)
 
 
-def _install_savable(monkeypatch, raises: bool = False) -> "_SavableProject":
+def _install_savable(monkeypatch, raises: bool = False,
+                     writes: bool = True) -> "_SavableProject":
 
-    project = _SavableProject(raises=raises)
+    project = _SavableProject(raises=raises, writes=writes)
     monkeypatch.setattr(session, "_project", project)
     return project
 

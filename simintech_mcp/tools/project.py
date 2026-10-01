@@ -273,6 +273,51 @@ def set_project_config(param: str, value: str) -> str:
     return f"{param} = {value}"
 
 
+def _save_mtime(path: str) -> Optional[int]:
+    """Время правки файла до записи; None — файла нет.
+
+    Нужно, чтобы отличить «файл появился» от «старый файл остался на месте»:
+    залипшая сессия сообщает об успехе, не записывая ничего, и одна лишь
+    проверка «файл есть» приняла бы прежний файл за результат записи.
+    """
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _verify_saved(path: str, before_mtime: Optional[int]) -> None:
+    """Проверить, что запись действительно состоялась.
+
+    `SaveProjectXML` в залипшей сессии сообщает об успехе, **не создавая
+    файл** (simintech-code#21: симптом повторялся трижды подряд, следом
+    `CloseProject` падает с Access violation). Ответ «проект сохранён» по
+    такому вызову — ложь, которую клиент обнаружит только на чтении, и
+    выдавать её нельзя. Поэтому файл должен появиться (не было раньше) или
+    обновиться (время правки изменилось).
+
+    Отказ называет обе возможные причины: залипшую сессию и несуществующий
+    каталог в пути, — и рецепт от первой: повтор в той же сессии бесполезен,
+    помогает перезапуск.
+    """
+    try:
+        after = os.stat(path).st_mtime_ns
+    except OSError:
+        after = None
+    unchanged = (after is not None and before_mtime is not None
+                 and after == before_mtime)
+    if after is not None and not unchanged:
+        return
+    raise ToolError(
+        f"Файл не записан: «{path}» "
+        + ("не обновился" if after is not None else "не появился")
+        + ", хотя вызов среды сообщил об успехе. Проверьте, что каталог в "
+          "пути существует; если с путём всё в порядке — это признак залипшей "
+          "сессии (simintech-code#21): сохранение в ней не проходит, и повтор "
+          "бесполезен. Переподключитесь (`disconnect`) и откройте проект "
+          "заново — рабочая сессия запись выполнит.")
+
+
 @mcp.tool()
 @runtime._com_threaded
 def save_project(path: str, binary: bool = False,
@@ -294,6 +339,11 @@ def save_project(path: str, binary: bool = False,
     состояние окна и окна модели не показывает — выглядит как «проект не
     открылся».
 
+    **Запись проверяется по файлу.** Залипшая сессия сообщает об успехе, не
+    записывая ничего (simintech-code#21), а «сохранено» без файла — ложь,
+    которая всплывёт только на чтении; поэтому файл обязан появиться или
+    обновиться, иначе — отказ с диагнозом.
+
     Args:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
@@ -309,9 +359,13 @@ def save_project(path: str, binary: bool = False,
     else:
         tail = (" Форму не показывали: GUI откроет файл без окна модели.")
     if binary:
+        before = _save_mtime(path)
         project.save_binary(path)
+        _verify_saved(path, before)
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
+    before = _save_mtime(path)
     project.save_xml(path)
+    _verify_saved(path, before)
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 
