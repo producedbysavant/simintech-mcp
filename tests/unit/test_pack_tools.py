@@ -701,3 +701,102 @@ async def test_disconnect_pack_failure_does_not_claim_member_closed(monkeypatch)
     assert "ВНИМАНИЕ" in text
     assert "закрыт вместе с пакетом" not in text
     assert session._project is None
+
+
+# ─── create_pack: сборка пакета текстом (без COM) ─────────────────
+
+
+@pytest.mark.anyio
+async def test_create_pack_writes_and_rereads(tmp_path):
+    """Пакет собирается текстом и перечитывается своим разборщиком."""
+    from simintech_api.pak import load_pack
+
+    for name in ("a.prt", "b.prt"):
+        (tmp_path / name).write_bytes(b"stub")
+    target = tmp_path / "Сборка.pak"
+
+    text = _text(await mcp.call_tool("create_pack", {
+        "path": str(target), "projects": ["a.prt", "b.prt"]}))
+
+    pack = load_pack(target)
+    assert pack.project_count == 2
+    assert pack.problems == ()
+    assert "[0] a.prt" in text and "[1] b.prt" in text
+    assert "open_pack" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_marks_inactive(tmp_path):
+    """Позиции из inactive помечаются [Active]/[TimeSync] = 0."""
+    from simintech_api.pak import load_pack
+
+    for name in ("a.prt", "b.prt"):
+        (tmp_path / name).write_bytes(b"stub")
+    target = tmp_path / "Сборка.pak"
+
+    text = _text(await mcp.call_tool("create_pack", {
+        "path": str(target), "projects": ["a.prt", "b.prt"],
+        "inactive": [1]}))
+
+    pack = load_pack(target)
+    assert [(p.active, p.time_sync) for p in pack.projects] == [
+        (True, True), (False, False)]
+    assert "неактивен" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_resolves_relative_to_pack_dir(tmp_path):
+    """Относительные имена — от каталога пакета (голые имена — штатный режим)."""
+    sub = tmp_path / "prj"
+    sub.mkdir()
+    (sub / "a.prt").write_bytes(b"stub")
+
+    await mcp.call_tool("create_pack", {
+        "path": str(sub / "Сборка.pak"), "projects": ["a.prt"]})
+
+    assert (sub / "Сборка.pak").exists()
+
+
+@pytest.mark.anyio
+async def test_create_pack_refuses_missing_project(tmp_path):
+    """Неполный состав — отказ с перечислением, файл не пишется."""
+    (tmp_path / "a.prt").write_bytes(b"stub")
+    target = tmp_path / "Сборка.pak"
+
+    text = await _error("create_pack", {
+        "path": str(target), "projects": ["a.prt", "нет.prt"]})
+
+    assert "не найдены" in text and "нет.prt" in text
+    assert not target.exists()
+
+
+@pytest.mark.anyio
+async def test_create_pack_refuses_non_pak_extension(tmp_path):
+    """Среда откроет пакетом только .pak — другое расширение отвергается."""
+    (tmp_path / "a.prt").write_bytes(b"stub")
+
+    text = await _error("create_pack", {
+        "path": str(tmp_path / "pack.txt"), "projects": ["a.prt"]})
+
+    assert ".pak" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_refuses_empty_projects(tmp_path):
+    """Пустой список проектов — отказ с рецептом."""
+    text = await _error("create_pack", {
+        "path": str(tmp_path / "x.pak"), "projects": []})
+
+    assert "пуст" in text
+
+
+@pytest.mark.anyio
+async def test_create_pack_refuses_out_of_range_inactive(tmp_path):
+    """Позиция вне списка — отказ, а не молча выключенный чужой проект."""
+    (tmp_path / "a.prt").write_bytes(b"stub")
+
+    text = await _error("create_pack", {
+        "path": str(tmp_path / "x.pak"), "projects": ["a.prt"],
+        "inactive": [3]})
+
+    assert "inactive" in text

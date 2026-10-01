@@ -24,7 +24,7 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 #: вывод из кода: будь оно выводом, проверка повторяла бы декоратор.
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
-    "help_text", "project_network_role",
+    "help_text", "project_network_role", "create_pack",
 }
 
 
@@ -100,7 +100,7 @@ async def test_all_tools_registered():
         "status", "disconnect",
         "create_project", "open_project", "save_project", "close_project",
         "set_calc_time", "project_network_role",
-        "open_pack", "close_pack", "list_pack_projects",
+        "create_pack", "open_pack", "close_pack", "list_pack_projects",
         "select_pack_project", "pack_run", "pack_step", "pack_stop",
         "get_project_config", "set_project_config",
         "add_block", "connect", "list_blocks", "list_wires",
