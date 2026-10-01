@@ -120,43 +120,46 @@ async def test_set_calc_time_delegates_to_project(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_save_project_defaults_to_xml(monkeypatch):
+async def test_save_project_defaults_to_xml(monkeypatch, tmp_path):
     """По умолчанию сохраняется XML, и перед записью показывается форма.
 
     Без показа формы в файл уходит признак «окно скрыто», и GUI открывает
     проект, не показывая окно модели.
     """
+    target = str(tmp_path / "m.xprt")
     project = _install_savable(monkeypatch)
 
-    text = _text(await mcp.call_tool("save_project", {"path": r"C:\m.xprt"}))
+    text = _text(await mcp.call_tool("save_project", {"path": target}))
 
-    assert project.calls == [("show_form", None), ("xml", r"C:\m.xprt")]
+    assert project.calls == [("show_form", None), ("xml", target)]
     assert "XML" in text
     assert "Форма проекта показана" in text
 
 
 @pytest.mark.anyio
-async def test_save_project_binary_flag_writes_prt(monkeypatch):
+async def test_save_project_binary_flag_writes_prt(monkeypatch, tmp_path):
     """binary=True пишет нативный .prt — его открывает GUI SimInTech."""
+    target = str(tmp_path / "m.prt")
     project = _install_savable(monkeypatch)
 
     text = _text(await mcp.call_tool(
-        "save_project", {"path": r"C:\m.prt", "binary": True}))
+        "save_project", {"path": target, "binary": True}))
 
-    assert project.calls == [("show_form", None), ("binary", r"C:\m.prt")]
+    assert project.calls == [("show_form", None), ("binary", target)]
     assert ".prt" in text
 
 
 @pytest.mark.anyio
-async def test_save_project_can_skip_showing_form(monkeypatch):
+async def test_save_project_can_skip_showing_form(monkeypatch, tmp_path):
     """show_form=False — безоконное сохранение: форму не показываем."""
+    target = str(tmp_path / "m.prt")
     project = _install_savable(monkeypatch)
 
     text = _text(await mcp.call_tool(
-        "save_project", {"path": r"C:\m.prt", "binary": True,
+        "save_project", {"path": target, "binary": True,
                          "show_form": False}))
 
-    assert project.calls == [("binary", r"C:\m.prt")]
+    assert project.calls == [("binary", target)]
     assert "Форму не показывали" in text
 
 
@@ -168,6 +171,44 @@ async def test_save_project_failure_is_error(monkeypatch):
     text = await _error("save_project", {"path": r"C:\m.prt", "binary": True})
 
     assert "диск переполнен" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_silent_missing_file(monkeypatch, tmp_path):
+    """«Успех без файла» — отказ с диагнозом залипшей сессии (code#21).
+
+    Живой симптом: `SaveProjectXML` сообщает об успехе, файла нет; следом
+    `CloseProject` падает с Access violation. Отчитаться «сохранено» здесь —
+    соврать клиенту, поэтому запись проверяется по диску.
+    """
+    target = str(tmp_path / "m.xprt")
+    _install_savable(monkeypatch, writes=False)
+
+    text = await _error("save_project", {"path": target})
+
+    assert "не записан" in text
+    assert "не появился" in text
+    assert "#21" in text
+    assert "disconnect" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_untouched_existing_file(
+        monkeypatch, tmp_path):
+    """Прежний файл за результат записи не принимается.
+
+    При залипании сохранение поверх существующего файла оставляет старый —
+    и проверка «файл есть» была бы ложным успехом; поэтому сверяется и время
+    правки.
+    """
+    target = tmp_path / "m.xprt"
+    target.write_bytes(b"<old/>")
+    _install_savable(monkeypatch, writes=False)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "не обнов" in text  # «не обновился»
+    assert "#21" in text
 
 
 def test_status_refuses_when_com_unavailable(monkeypatch):

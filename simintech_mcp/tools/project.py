@@ -38,35 +38,67 @@ def status() -> str:
 @mcp.tool()
 @runtime._com_threaded
 def disconnect() -> str:
-    """Завершить сессию: закрыть проект и отсоединиться от COM-сервера.
+    """Завершить сессию: закрыть пакет, проект и отсоединиться от COM-сервера.
 
     Сбрасывается **всё** состояние сессии. Раньше обнулялся только клиент, а
     текущий проект оставался в глобальной переменной: следующие вызовы шли с
     мёртвым `ProjectId`.
+
+    Пакет закрывается первым: его участники закрываются вместе с ним (живой
+    замер 01.10.2026), поэтому текущий проект-участник отдельно не
+    закрывается — он уже закрыт вместе с пакетом.
     """
-    if session._client is None and session._project is None:
+    if (session._client is None and session._project is None
+            and session._pack is None):
         return "Без изменений: соединения не было — сбрасывать нечего"
     project = session._project
     label = session._project_label()
-    # Проект и линии сбрасываются вместе (`session._set_project`) — до попытки
-    # закрыть: состояние сессии не должно зависеть от того, ответил ли COM.
+    in_pack = session._pack_membership()
+    pack = session._pack
+    pack_label = session._pack_label()
+    # Пакет, проект и линии сбрасываются до попыток закрыть: состояние сессии
+    # не должно зависеть от того, ответил ли COM.
+    session._set_pack(None)
     session._set_project(None)
     failed = ""
-    if project is not None:
+    closed = []
+    pack_closed = False
+    if pack is not None:
+        try:
+            pack.close()
+            pack_closed = True
+            closed.append(f"пакет {pack_label} закрыт")
+        except Exception as exc:                              # noqa: BLE001
+            failed += (f" ВНИМАНИЕ: пакет {pack_label} закрыть не удалось "
+                       f"({type(exc).__name__}: {exc}) — он и его участники "
+                       f"могли остаться открытыми в SimInTech.")
+    # Прямое закрытие — только когда точно известно, что проект не участник
+    # (False); при `None` (состав пакета не читается) проект не закрывается:
+    # закрытие участника исключило бы его из состава (замер 01.10.2026), а
+    # «неизвестно» — не разрешение.
+    if project is not None and in_pack is False:
         try:
             project.close()
+            closed.append(f"проект {label} закрыт")
         except Exception as exc:                              # noqa: BLE001
             # Не выдаём отказ за успех: `COMClient.disconnect()` проекты не
             # закрывает, поэтому при сбое `CloseProject` проект останется жить
             # в mmain.exe.
-            failed = (f" ВНИМАНИЕ: проект закрыть не удалось "
-                      f"({type(exc).__name__}: {exc}) — он мог остаться "
-                      f"открытым в SimInTech.")
+            failed += (f" ВНИМАНИЕ: проект закрыть не удалось "
+                       f"({type(exc).__name__}: {exc}) — он мог остаться "
+                       f"открытым в SimInTech.")
+    elif project is not None and pack_closed:
+        if in_pack:
+            closed.append(f"проект {label} закрыт вместе с пакетом")
+        else:
+            closed.append(f"проект {label} — участие в пакете не подтверждено "
+                          f"(состав не читался)")
     if session._client is not None:
         session._client.disconnect()
         session._client = None
-    done = (f"Сессия завершена: проект {label} закрыт, соединение разорвано"
-            if label else "Сессия завершена: соединение разорвано")
+    summary = ", ".join(closed)
+    done = (f"Сессия завершена: {summary}, соединение разорвано"
+            if summary else "Сессия завершена: соединение разорвано")
     return done + failed
 
 
@@ -241,6 +273,51 @@ def set_project_config(param: str, value: str) -> str:
     return f"{param} = {value}"
 
 
+def _save_mtime(path: str) -> Optional[int]:
+    """Время правки файла до записи; None — файла нет.
+
+    Нужно, чтобы отличить «файл появился» от «старый файл остался на месте»:
+    залипшая сессия сообщает об успехе, не записывая ничего, и одна лишь
+    проверка «файл есть» приняла бы прежний файл за результат записи.
+    """
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def _verify_saved(path: str, before_mtime: Optional[int]) -> None:
+    """Проверить, что запись действительно состоялась.
+
+    `SaveProjectXML` в залипшей сессии сообщает об успехе, **не создавая
+    файл** (simintech-code#21: симптом повторялся трижды подряд, следом
+    `CloseProject` падает с Access violation). Ответ «проект сохранён» по
+    такому вызову — ложь, которую клиент обнаружит только на чтении, и
+    выдавать её нельзя. Поэтому файл должен появиться (не было раньше) или
+    обновиться (время правки изменилось).
+
+    Отказ называет обе возможные причины: залипшую сессию и несуществующий
+    каталог в пути, — и рецепт от первой: повтор в той же сессии бесполезен,
+    помогает перезапуск.
+    """
+    try:
+        after = os.stat(path).st_mtime_ns
+    except OSError:
+        after = None
+    unchanged = (after is not None and before_mtime is not None
+                 and after == before_mtime)
+    if after is not None and not unchanged:
+        return
+    raise ToolError(
+        f"Файл не записан: «{path}» "
+        + ("не обновился" if after is not None else "не появился")
+        + ", хотя вызов среды сообщил об успехе. Проверьте, что каталог в "
+          "пути существует; если с путём всё в порядке — это признак залипшей "
+          "сессии (simintech-code#21): сохранение в ней не проходит, и повтор "
+          "бесполезен. Переподключитесь (`disconnect`) и откройте проект "
+          "заново — рабочая сессия запись выполнит.")
+
+
 @mcp.tool()
 @runtime._com_threaded
 def save_project(path: str, binary: bool = False,
@@ -262,6 +339,11 @@ def save_project(path: str, binary: bool = False,
     состояние окна и окна модели не показывает — выглядит как «проект не
     открылся».
 
+    **Запись проверяется по файлу.** Залипшая сессия сообщает об успехе, не
+    записывая ничего (simintech-code#21), а «сохранено» без файла — ложь,
+    которая всплывёт только на чтении; поэтому файл обязан появиться или
+    обновиться, иначе — отказ с диагнозом.
+
     Args:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
@@ -277,9 +359,13 @@ def save_project(path: str, binary: bool = False,
     else:
         tail = (" Форму не показывали: GUI откроет файл без окна модели.")
     if binary:
+        before = _save_mtime(path)
         project.save_binary(path)
+        _verify_saved(path, before)
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
+    before = _save_mtime(path)
     project.save_xml(path)
+    _verify_saved(path, before)
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 
@@ -291,9 +377,34 @@ def close_project() -> str:
     Ответ называет, что именно закрыто, и что текущего проекта больше нет:
     следующий мутирующий вызов после закрытия откажет, и агент не должен
     искать причину (issue #18).
+
+    Участник открытого пакета не закрывается: `CloseProject` исключил бы его
+    из состава пакета (живой замер 01.10.2026 — состав 2 → 1), а это операция
+    над пакетом, не над проектом. Отказ называет выход: закрыть пакет целиком
+    (`close_pack`) или переключиться на другого участника
+    (`select_pack_project`).
     """
     if session._project is None:
         return "Без изменений: проект не был открыт"
+    membership = session._pack_membership()
+    if membership is not False:
+        if membership is None:
+            # Состав пакета не читается — «неизвестно» не разрешение: если
+            # проект участник, CloseProject исключит его из состава (замер
+            # 01.10.2026), а отличить «участник» от «не участник» нечем.
+            raise ToolError(
+                "Принадлежность текущего проекта к открытому пакету "
+                "проверить не удалось (состав пакета не читается): закрывать "
+                "вслепую нельзя — если проект участник, закрытие исключит его "
+                "из состава пакета (живой замер 01.10.2026). Повторите "
+                "`list_pack_projects`; закрыть пакет целиком можно "
+                "`close_pack`.")
+        raise ToolError(
+            f"Текущий проект — участник открытого пакета "
+            f"{session._pack_label()}: его закрытие исключило бы проект из "
+            f"состава пакета (живой замер 01.10.2026). Закройте пакет целиком "
+            f"(`close_pack`) или выберите другой проект "
+            f"(`select_pack_project`).")
     project = session._project
     label = session._project_label()
     # Порядок: сначала закрыть, потом сбросить состояние. Если `CloseProject`
