@@ -17,9 +17,9 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
     ignore:
-      # Библиотека-ядро закреплена по SHA и поднимается вручную: сначала
-      # публикуется simintech-code, затем пин в pyproject.toml становится
-      # рабочим (см. комментарий у зависимости и `scripts/check_pins.py`).
+      # Библиотека-ядро закреплена по релизному тегу и поднимается вручную:
+      # сначала выпуск в simintech-code, затем пин и якорь `# sha:` в
+      # pyproject.toml (см. комментарий у зависимости и `scripts/check_pins.py`).
       # Автообновление здесь сломало бы этот порядок.
       - dependency-name: "simintech-api"
 
