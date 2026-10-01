@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -13,6 +15,7 @@ from simintech_mcp import session
 from simintech_mcp.tools import project as project_tools
 
 from _support import (
+    _SavableProject,
     _TemplateProject,
     _WireProject,
     _error,
@@ -208,6 +211,71 @@ async def test_save_project_refuses_untouched_existing_file(
     text = await _error("save_project", {"path": str(target)})
 
     assert "не обнов" in text  # «не обновился»
+    assert "#21" in text
+
+
+class _CoarseTimestampProject(_SavableProject):
+    """Запись действительна, но ФС с грубым временем: метка правки не встала.
+
+    FAT хранит время с точностью 2 с, сетевые shares — 1 с: перезапись в ту
+    же секунду не меняет ни метку, ни размер (содержимое записывается той же
+    длины). Подделка моделирует ровно этот переход: файл **перезаписан
+    другим содержимым**, метка восстановлена на прежнюю.
+    """
+
+    def save_xml(self, path: str) -> None:
+        self.calls.append(("xml", path))
+        old = os.stat(path)
+        Path(path).write_bytes(b"<new!>")
+        os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
+
+
+class _IdenticalRewriteProject(_SavableProject):
+    """Перезапись идентичным содержимым с той же меткой (грубая ФС)."""
+
+    def save_xml(self, path: str) -> None:
+        self.calls.append(("xml", path))
+        old = os.stat(path)
+        raw = Path(path).read_bytes()
+        Path(path).write_bytes(raw)
+        os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
+
+
+@pytest.mark.anyio
+async def test_save_project_accepts_coarse_timestamp_fs(monkeypatch, tmp_path):
+    """ФС с грубым временем: перезапись в ту же секунду — не «не записано».
+
+    У FAT (2 с) и сетевых shares (1 с) успешная запись может не изменить
+    метку времени; размер тоже совпадает (содержимое той же длины), и
+    прежняя проверка по метке ложно отказывала бы в успехе (замечание
+    ревью mcp#26). Содержимое при этом другое — вердикт «записано» по нему
+    верен.
+    """
+    target = tmp_path / "m.xprt"
+    target.write_bytes(b"<old/>")
+    monkeypatch.setattr(session, "_project", _CoarseTimestampProject())
+
+    text = _text(await mcp.call_tool("save_project", {"path": str(target)}))
+
+    assert "сохранён" in text
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_identical_rewrite_on_coarse_fs(
+        monkeypatch, tmp_path):
+    """Идентичная перезапись с той же меткой — отказ: от залипания неотличима.
+
+    Остаток проверки назван в докстринге честно: если ни метка, ни размер,
+    ни содержимое не разошлись, отличить состоявшуюся запись от залипшей
+    сессии нечем — и «сохранено» здесь было бы догадкой.
+    """
+    target = tmp_path / "m.xprt"
+    target.write_bytes(b"<same>")
+    monkeypatch.setattr(session, "_project", _IdenticalRewriteProject())
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "не обнов" in text
     assert "#21" in text
 
 

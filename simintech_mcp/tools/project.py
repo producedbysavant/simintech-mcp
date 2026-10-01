@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Project
@@ -273,20 +274,40 @@ def set_project_config(param: str, value: str) -> str:
     return f"{param} = {value}"
 
 
-def _save_mtime(path: str) -> Optional[int]:
-    """Время правки файла до записи; None — файла нет.
+#: Состояние файла для проверки записи: метка правки, размер и хеш
+#: содержимого (`None` — содержимое прочитать не удалось; файла нет — `None`
+#: целиком). Хеш — не избыточность: у файловых систем с грубым разрешением
+#: времени (FAT — 2 с, сетевые shares — 1 с) успешная перезапись в ту же
+#: секунду не меняет ни метку, ни размер, и вердикт по ним одним ложно
+#: отказывал бы в записи, которая состоялась (замечание ревью mcp#26,
+#: 01.10.2026); содержимое же меняется — и только его видит хеш.
+_FileState = Optional[Tuple[int, int, Optional[str]]]
 
-    Нужно, чтобы отличить «файл появился» от «старый файл остался на месте»:
-    залипшая сессия сообщает об успехе, не записывая ничего, и одна лишь
-    проверка «файл есть» приняла бы прежний файл за результат записи.
+
+def _file_state(path: str) -> _FileState:
+    """Снять состояние файла (до или после записи); `None` — файла нет.
+
+    Нужно, чтобы отличить «файл появился или обновился» от «старый файл
+    остался на месте»: залипшая сессия сообщает об успехе, не записывая
+    ничего, и одна лишь проверка «файл есть» приняла бы прежний файл за
+    результат записи.
     """
     try:
-        return os.stat(path).st_mtime_ns
+        stat = os.stat(path)
     except OSError:
         return None
+    digest: Optional[str] = None
+    try:
+        with open(path, "rb") as handle:
+            digest = hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        # Файл может быть занят на чтение (его как раз пишет среда) — тогда
+        # вердикт опирается на метку и размер, как раньше.
+        pass
+    return (stat.st_mtime_ns, stat.st_size, digest)
 
 
-def _verify_saved(path: str, before_mtime: Optional[int]) -> None:
+def _verify_saved(path: str, before: _FileState) -> None:
     """Проверить, что запись действительно состоялась.
 
     `SaveProjectXML` в залипшей сессии сообщает об успехе, **не создавая
@@ -294,26 +315,37 @@ def _verify_saved(path: str, before_mtime: Optional[int]) -> None:
     `CloseProject` падает с Access violation). Ответ «проект сохранён» по
     такому вызову — ложь, которую клиент обнаружит только на чтении, и
     выдавать её нельзя. Поэтому файл должен появиться (не было раньше) или
-    обновиться (время правки изменилось).
+    обновиться — меткой правки, размером **или содержимым**.
+
+    Один лишь размер, впрочем, слаб: перезапись другим содержимым той же
+    длины его не двигает. Полный набор такой: метка → размер → хеш; вердикт
+    «записано» выносится, как только разошёлся любой из них.
+
+    Остаток назван честно: перезапись **идентичным** содержимым с той же
+    меткой и размером (одна секунда на грубой ФС) от залипания неотличима,
+    и такой вызов отвергается — сообщение при этом говорит «не обновился»,
+    а не «среда не записала».
 
     Отказ называет обе возможные причины: залипшую сессию и несуществующий
     каталог в пути, — и рецепт от первой: повтор в той же сессии бесполезен,
     помогает перезапуск.
     """
-    try:
-        after = os.stat(path).st_mtime_ns
-    except OSError:
-        after = None
-    unchanged = (after is not None and before_mtime is not None
-                 and after == before_mtime)
-    if after is not None and not unchanged:
+    after = _file_state(path)
+    written = after is not None and (
+        before is None
+        or after[0] != before[0]
+        or after[1] != before[1]
+        or (after[2] is not None and before[2] is not None
+            and after[2] != before[2]))
+    if written:
         return
     raise ToolError(
         f"Файл не записан: «{path}» "
         + ("не обновился" if after is not None else "не появился")
-        + ", хотя вызов среды сообщил об успехе. Проверьте, что каталог в "
-          "пути существует; если с путём всё в порядке — это признак залипшей "
-          "сессии (simintech-code#21): сохранение в ней не проходит, и повтор "
+        + " (сверены метка правки, размер и содержимое), хотя вызов среды "
+          "сообщил об успехе. Проверьте, что каталог в пути существует; если "
+          "с путём всё в порядке — это признак залипшей сессии "
+          "(simintech-code#21): сохранение в ней не проходит, и повтор "
           "бесполезен. Переподключитесь (`disconnect`) и откройте проект "
           "заново — рабочая сессия запись выполнит.")
 
@@ -342,7 +374,8 @@ def save_project(path: str, binary: bool = False,
     **Запись проверяется по файлу.** Залипшая сессия сообщает об успехе, не
     записывая ничего (simintech-code#21), а «сохранено» без файла — ложь,
     которая всплывёт только на чтении; поэтому файл обязан появиться или
-    обновиться, иначе — отказ с диагнозом.
+    обновиться — меткой правки, размером или содержимым (у ФС с грубым
+    временем одной метки мало), иначе — отказ с диагнозом.
 
     Args:
         path: путь к файлу (абсолютный).
@@ -359,11 +392,11 @@ def save_project(path: str, binary: bool = False,
     else:
         tail = (" Форму не показывали: GUI откроет файл без окна модели.")
     if binary:
-        before = _save_mtime(path)
+        before = _file_state(path)
         project.save_binary(path)
         _verify_saved(path, before)
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
-    before = _save_mtime(path)
+    before = _file_state(path)
     project.save_xml(path)
     _verify_saved(path, before)
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
