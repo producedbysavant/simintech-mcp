@@ -191,13 +191,19 @@ class _ConnectingBlock:
 
 
 class _WireProject:
-    """Проект с одной страницей — минимум для connect/layout_place."""
+    """Проект с одной страницей — минимум для connect/layout_place.
 
-    def __init__(self, blocks, events=None):
+    `id` — не украшение: по нему ответы правок называют проект («Изменения
+    внесены в: … (id=7)», issue #18), и подделка обязана моделировать то,
+    что код читает.
+    """
+
+    def __init__(self, blocks, events=None, project_id=7):
         self.page = _FakePage(blocks)
         self.closed = False
         self._events = events
         self.repaints = 0
+        self.id = project_id
 
     def get_main_page(self):
         return self.page
@@ -345,6 +351,8 @@ class _FakeProject:
     def __init__(self, blocks):
         self._page = _FakePage(blocks)
         self.repaints = 0
+        # id читают ответы правок («Изменения внесены в: … (id=7)», #18).
+        self.id = 7
 
     def get_main_page(self):
         return self._page
@@ -363,15 +371,17 @@ def _install_fake_project(monkeypatch, blocks):
 class _FakeProjectWithCreate:
     def __init__(self):
         self.page = _FakePage({})
+        self.id = 7  # ответы правок называют проект (issue #18)
 
     def get_main_page(self):
         return self.page
 
 
 class _ClosableProject:
-    def __init__(self, raises=False):
+    def __init__(self, raises=False, project_id=7):
         self.closed = False
         self._raises = raises
+        self.id = project_id
 
     def close(self):
         if self._raises:
@@ -418,6 +428,7 @@ class _FakeSimulation:
 class _SimProject:
     def __init__(self, sim):
         self._sim = sim
+        self.id = 7  # ответы правок называют проект (issue #18)
 
     def simulation(self):
         return self._sim

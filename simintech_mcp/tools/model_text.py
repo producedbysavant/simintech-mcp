@@ -155,7 +155,7 @@ def export_model_text() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def import_model_text(model_text: str) -> str:
     """Собрать объекты модели из декларативного текста.
 

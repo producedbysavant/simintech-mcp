@@ -66,6 +66,31 @@ def _denied_names(text: str) -> set[str]:
     return denied
 
 
+#: Инструменты, чей вызов меняет проект: их ответы обязаны называть, куда
+#: внесены изменения (`mutates_project=True`). Список — контракт поверхности:
+#: пропавший флаг вернёт слепые ответы (issue #18 — импорт ушёл не в тот
+#: проект), лишний — соврёт о правке у инструмента чтения.
+_MUTATING_TOOLS = {
+    "add_block", "connect", "set_block_param", "layout_place",
+    "import_model_text", "set_page_script", "run_page_script",
+    "inject_submodel_script", "set_signal", "set_calc_time",
+    "set_project_config",
+}
+
+
+@pytest.mark.anyio
+async def test_mutating_tools_are_marked():
+    """Правки помечены флагом — метку ставит только `runtime`."""
+
+    tools = await mcp.list_tools()
+    marked = {t.name for t in tools
+              if getattr(t.fn, runtime.MUTATES_PROJECT_MARK, False)}
+
+    assert marked == _MUTATING_TOOLS, (
+        f"без метки: {sorted(_MUTATING_TOOLS - marked)}; "
+        f"лишняя метка: {sorted(marked - _MUTATING_TOOLS)}")
+
+
 @pytest.mark.anyio
 async def test_all_tools_registered():
     """Зарегистрированы все ожидаемые инструменты."""

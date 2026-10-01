@@ -16,7 +16,7 @@ from ..app import mcp
 # ─── Утилиты ──────────────────────────────────────────────────────
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def layout_place(block_ids: str, connections: str) -> str:
     """Расставить блоки по слоям без наложений — **с применением** координат.
 

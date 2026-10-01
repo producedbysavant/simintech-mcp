@@ -60,7 +60,7 @@ MAX_BLOCK_IN_PORTS = 64
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def add_block(class_name: str, name_hint: str = "",
               x: float = 0.0, y: float = 0.0,
               props: str = "", in_ports: int = 0,
@@ -181,7 +181,7 @@ def add_block(class_name: str, name_hint: str = "",
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def connect(src: str, dst: str,
             out_index: int = 0, in_index: int = 0) -> str:
     """Соединить выход блока src с входом блока dst линией связи.
@@ -331,7 +331,7 @@ def get_block_params(block: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime._com_threaded(mutates_project=True)
 def set_block_param(block: str, param: str, value: str,
                     allow_unknown: bool = False) -> str:
     """Установить параметр блока и переинициализировать блок.
