@@ -87,6 +87,27 @@ def test_resolve_tag_prefers_commit_of_annotated_tag():
     assert resolve_tag("https://github.com/o/r", "v0.10.1", run=run) == "b" * 40
 
 
+def test_resolve_tag_asks_for_peeled_ref():
+    """В команде спрашиваются обе ссылки — иначе аннотированный тег не развернуть.
+
+    Живой прогон 01.10.2026: `ls-remote` с одним паттерном отдаёт только
+    tag-объект, без строки `^{}`; резолвер возвращал id обёртки, и гейт
+    объявил «переставленным» только что поставленный тег. Исходная подделка
+    повторяла ожидание кода, а не поведение git, — поэтому здесь проверяется
+    сама команда.
+    """
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    resolve_tag("https://github.com/o/r", "v0.10.1", run=run)
+
+    assert calls, "ls-remote не вызывался"
+    assert "refs/tags/v0.10.1^{}" in calls[0], calls[0]
+
+
 def test_resolve_tag_returns_none_when_missing():
     """Пустой ответ ls-remote — выпуска нет, и это отказ, а не успех."""
     def run(cmd, **kwargs):
