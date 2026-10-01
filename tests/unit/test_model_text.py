@@ -85,7 +85,12 @@ class _BridgeRunsContour:
         # Артефакт пишет только тело выгрузки. У тела сборки пути нет, а первый
         # строковый литерал — имя блока («Ступенька»): запись по нему создавала
         # файл в текущем каталоге, и так он однажды попал в коммит ветки.
-        if type(self).outcome.kind == OUTCOME_OK and "savemodeltofile(" in body:
+        # «Тело исполнилось» — это оба исхода, `ok` и `model-not-running`:
+        # `savemodeltofile` идёт из `initialization`, и файл есть даже на
+        # стоящем расчёте (живое наблюдение 01.10.2026) — раньше подделка
+        # писала файл только при `ok` и тем повторяла допущение кода.
+        ran = (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING)
+        if type(self).outcome.kind in ran and "savemodeltofile(" in body:
             Path(_dump_path_from_body(body)).write_text(
                 "﻿" + type(self).payload, encoding="utf-8")
         return PageRunResult(outcome=type(self).outcome,
@@ -162,6 +167,28 @@ async def test_export_model_text_clears_stale_dump(monkeypatch, tmp_path):
 
     assert "не удалась" in message
     assert not stale.exists(), "устаревшая выгрузка осталась на месте"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_names_non_running_model(monkeypatch, tmp_path):
+    """Несчитающая модель: выгрузка есть, и состояние названо (живое 01.10.2026).
+
+    `savemodeltofile` исполняется в секции `initialization`, поэтому текст
+    приходит полным и расчёт при этом не идёт. Молчать нельзя: агент решает
+    по ответу, что делать дальше, а отказ здесь — только у тела, которое не
+    отработало вовсе.
+    """
+
+    class _BridgeStuck(_BridgeRunsContour):
+        outcome = ContourOutcome(kind=OUTCOME_MODEL_NOT_RUNNING, lines=[])
+
+    _install(monkeypatch, tmp_path, _BridgeStuck)
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert _BridgeRunsContour.payload in result
+    assert "модель не считает" in result
+    assert "initialization" in result, "причина полноты текста не названа"
 
 
 @pytest.mark.anyio
