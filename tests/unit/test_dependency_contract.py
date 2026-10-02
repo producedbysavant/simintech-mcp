@@ -19,6 +19,7 @@ import pytest
 #: (модуль, атрибут) — используется сервером.
 REQUIRED = [
     ("simintech_api", "COMClient"),
+    ("simintech_api", "SessionOwnership"),
     ("simintech_api", "Project"),
     ("simintech_api", "Wire"),
     ("simintech_api", "ComCallError"),
@@ -42,6 +43,8 @@ REQUIRED = [
     ("simintech_api.exceptions", "SimInTechError"),
     ("simintech_api.utils.xprt_signals", "XprtSignalReader"),
     ("simintech_api.utils.converters", "value_to_prop_string"),
+    # Проверка исчезновения процесса в disconnect («завершён» — по факту).
+    ("simintech_api.utils.processes", "wait_for_pid_exit"),
     # Контур языкового слоя: исходы, страница и тела операций.
     ("simintech_api", "PageRunResult"),
     ("simintech_api", "classify_page_result"),
@@ -69,9 +72,9 @@ PROJECT_METHODS = [
 ]
 
 #: Методы, вызываемые сервером у `COMClient` напрямую (пакетный путь идёт
-#: мимо `Project`).
+#: мимо `Project`; `shutdown` — управляемое завершение в `disconnect`).
 CLIENT_METHODS = [
-    "open_pack", "get_opened_file_name", "get_process_id",
+    "open_pack", "get_opened_file_name", "get_process_id", "shutdown",
 ]
 
 #: Методы, вызываемые сервером у `Pack` (tools/pack.py).
@@ -102,6 +105,19 @@ def test_com_client_has_method(method):
 
     assert callable(getattr(COMClient, method, None)), \
         f"COMClient.{method} отсутствует"
+
+
+#: Свойства `COMClient`, которые читает сервер (гейт владения и адрес
+#: процесса в ответах инструментов). Не методы: `callable(...)` их не поймает.
+CLIENT_PROPERTIES = ["session_pid", "ownership"]
+
+
+@pytest.mark.parametrize("attr", CLIENT_PROPERTIES)
+def test_com_client_has_property(attr):
+    """`COMClient` отдаёт свойства, на которые опирается гейт владения."""
+    from simintech_api import COMClient
+
+    assert hasattr(COMClient, attr), f"COMClient.{attr} отсутствует"
 
 
 @pytest.mark.parametrize("method", PACK_METHODS)

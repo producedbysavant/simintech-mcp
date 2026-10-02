@@ -46,6 +46,41 @@ async def _error(tool: str, arguments: dict) -> str:
     return str(excinfo.value)
 
 
+class _OwnedClientStub:
+    """Клиент, моделирующий библиотечный `COMClient` (v0.11.0).
+
+    Несёт то, чем пользуется сервер: владение (`ownership`), PID сессии
+    (`session_pid`), пробу живучести (`get_process_id`), отпускание ссылки
+    (`disconnect`) и управляемое завершение (`shutdown`). Подделка обязана
+    моделировать весь этот набор: гейт владения читает `ownership`, а
+    инструмент `disconnect` — `session_pid` и `shutdown`.
+    """
+
+    connected = True
+
+    def __init__(self, ownership=None, pid=4242):
+        from simintech_api import SessionOwnership
+        self.ownership = ownership or SessionOwnership.OWNED
+        self.session_pid = pid
+        self.probes = 0
+        self.disconnected = False
+        self.shutdown_called = False
+
+    def connect(self):
+        return self
+
+    def get_process_id(self):
+        self.probes += 1
+        return self.session_pid
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def shutdown(self, kill_pids=None):
+        self.shutdown_called = True
+        self.connected = False
+
+
 _XPRT_FIXTURE = """<?xml version="1.0" encoding="utf-8"?>
 <project>
   <object>

@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import pytest
 from fastmcp.exceptions import ToolError
-from simintech_api import ComConnectionError
+from simintech_api import ComConnectionError, SessionOwnership
 
 from simintech_mcp.server import mcp
 
 from simintech_mcp import session
+from simintech_mcp.tools import project as project_tools
 
 from _support import (
     _ClosableProject,
     _ConnectingBlock,
     _FakeWire,
+    _OwnedClientStub,
     _WireProject,
     _error,
     _install_wire_project,
@@ -182,32 +184,54 @@ def test_mutation_note_without_project_is_empty():
 
 @pytest.mark.anyio
 async def test_disconnect_resets_project_and_client(monkeypatch):
-    """disconnect() сбрасывает и проект: иначе остаётся мёртвый ProjectId."""
+    """disconnect() сбрасывает и проект: иначе остаётся мёртвый ProjectId.
+
+    Процесс сессии при этом снимается **управляемо** (`shutdown`), а не
+    только отпускается COM-ссылка: иначе он остался бы жить сиротой —
+    отпускание последней ссылки завершает сервер лишь иногда (замеры
+    02.10.2026). Ответ называет снятый PID.
+    """
 
     project = _ClosableProject()
-
-    class _Client:
-        connected = True
-
-        def __init__(self):
-            self.disconnected = False
-
-        def disconnect(self):
-            self.disconnected = True
-
-    client = _Client()
+    client = _OwnedClientStub(pid=777)
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "_project_path", None)
     monkeypatch.setattr(session, "_client", client)
+    # «Завершён» называется по проверке исчезновения процесса: подделка
+    # сообщает «ушёл», чтобы утверждение опиралось на факт, а не на веру.
+    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
+                        lambda pid, timeout=3.0: True)
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
     assert project.closed
-    assert client.disconnected
+    assert client.shutdown_called
     assert session._project is None
     assert session._client is None
     assert "Сессия завершена" in text
     assert "id=7" in text, "завершение сессии обязано назвать закрытый проект"
+    assert "PID 777" in text, "ответ обязан назвать снятый процесс"
+
+
+@pytest.mark.anyio
+async def test_disconnect_warns_when_process_stays_alive(monkeypatch):
+    """«Завершён» — по проверке: живой процесс называется предупреждением.
+
+    `shutdown` библиотеки об исчерпании попыток не сообщает (его завершение —
+    best-effort), поэтому безусловная формулировка выдавала бы недоказанное
+    за факт (ревью #41). Проверка делает ветку «всё ещё жив» живой.
+    """
+
+    client = _OwnedClientStub(pid=777)
+    monkeypatch.setattr(session, "_project", None)
+    monkeypatch.setattr(session, "_client", client)
+    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
+                        lambda pid, timeout=3.0: False)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert "всё ещё жив" in text
+    assert "PID 777) завершён" not in text
 
 
 @pytest.mark.anyio
@@ -265,7 +289,9 @@ async def test_disconnect_reports_failed_close(monkeypatch):
     """disconnect сбрасывает состояние, но сообщает о неудачном закрытии."""
 
     class _Client:
-        def disconnect(self):
+        session_pid = None
+
+        def shutdown(self, kill_pids=None):
             pass
 
     monkeypatch.setattr(session, "_project",
@@ -316,26 +342,28 @@ class _DeadClient:
         return self.call("GetProcessID")
 
 
-class _FreshClient:
-    connected = True
+class _FreshClient(_OwnedClientStub):
+    """Живой клиент своей сессии; считает пробы живучести."""
 
-    def __init__(self):
+    def __init__(self, ownership=None):
+        super().__init__(ownership=ownership)
         self.probed = 0
-
-    def connect(self):
-        return self
 
     def get_process_id(self):
         self.probed += 1
-        return 4242
+        return self.session_pid
 
 
-def _install_client_factory(monkeypatch):
-    """Подменить конструктор клиента, записав созданные экземпляры."""
+def _install_client_factory(monkeypatch, ownership=None):
+    """Подменить конструктор клиента, записав созданные экземпляры.
+
+    `ownership` — владение, которое «увидит» созданный клиент: по умолчанию
+    свой (OWNED); EXTERNAL/UNKNOWN — для кейсов отказа гейта владения.
+    """
     made = []
 
     def factory(silent_mode=True):
-        client = _FreshClient()
+        client = _FreshClient(ownership=ownership)
         made.append(client)
         return client
 
@@ -416,3 +444,50 @@ async def test_ensure_project_reports_dead_com(monkeypatch):
     assert session._WIRES == [], "линии мёртвого проекта сбрасываются с ним"
     with pytest.raises(ToolError, match="Нет открытого проекта"):
         session._ensure_project()
+
+
+def test_ensure_client_refuses_external_session(monkeypatch):
+    """Чужой (EXTERNAL) экземпляр — отказ, кандидат отпущен, процесс не тронут.
+
+    `CreateObject` умеет подключаться к уже запущенному SimInTech — в том
+    числе открытому человеком (замеры 02.10.2026, simintech-code v0.11.0).
+    Инструменты сервера создают и закрывают проекты, переключают страницы —
+    в чужой сессии это разрушило бы работу пользователя. Поэтому владение
+    проверяется до всякой работы, и EXTERNAL — отказ.
+    """
+
+    monkeypatch.setattr(session, "_client", None)
+    monkeypatch.setattr(session, "_project", None)
+    made = _install_client_factory(monkeypatch,
+                                   ownership=SessionOwnership.EXTERNAL)
+
+    with pytest.raises(ToolError) as excinfo:
+        session._ensure_client()
+
+    text = str(excinfo.value)
+    assert "ownership=external" in text, "отказ обязан назвать владение"
+    assert "не наша" in text
+    assert "Закройте SimInTech" in text, "нужен исполнимый рецепт"
+    assert made and made[0].disconnected, "кандидата обязаны отпустить"
+    assert session._client is None, "чужой клиент не должен осесть в сессии"
+
+
+def test_ensure_client_refuses_unknown_session(monkeypatch):
+    """Неподтверждённое владение (UNKNOWN) — тот же отказ: не разрешение."""
+
+    monkeypatch.setattr(session, "_client", None)
+    monkeypatch.setattr(session, "_project", None)
+    made = _install_client_factory(monkeypatch,
+                                   ownership=SessionOwnership.UNKNOWN)
+
+    with pytest.raises(ToolError) as excinfo:
+        session._ensure_client()
+
+    text = str(excinfo.value)
+    assert "ownership=unknown" in text
+    assert "подтвердить не удалось" in text
+    assert "повторите" in text, "рецепт при сбое снимка — повтор, не закрытие"
+    assert "Закройте SimInTech" not in text, (
+        "рецепт EXTERNAL на UNKNOWN — тупик (ревью #41)")
+    assert made and made[0].disconnected
+    assert session._client is None
