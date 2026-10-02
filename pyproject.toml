@@ -45,8 +45,13 @@ dependencies = [
     # exact PID и точечное завершение только своей сессии; запущенный вручную
     # (GUI) экземпляр распознаётся как EXTERNAL. На этом контракте стоит гейт
     # владения сервера (`session._require_owned`).
-    # sha: 069d3a7a10398dec6a1ae394ab3eb6c80452fa6a
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.11.0",
+    # v0.12.0 — релизный тег simintech-code (библиотека 0.12.0): job-объект
+    # (`KILL_ON_JOB_CLOSE`) над процессом OWNED-сессии — смерть процесса-
+    # клиента снимает mmain силами ядра (`job_handle`/`job_error`), плюс
+    # перепроверка снимка процессов (ложный UNKNOWN при классификации
+    # владения исключён); squash-коммиты PR #31 `0436b88` и PR #33 `6fc7e63`.
+    # sha: 6fc7e63ed32b9755a9f67df14851b43e9591cbbd
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.12.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
