@@ -454,39 +454,41 @@ def _port_signal_count(target) -> Optional[int]:
     return len(names) or None
 
 
-def _port_height_refusal(name: str, target, height: float) -> Optional[str]:
-    """Отказ, если высота порт-блока нарушает правило 16 px на строку.
+def _port_required_height(name: str, target) -> Optional[int]:
+    """Обязательная высота порт-блока (`PORT_ROW_HEIGHT` × число строк).
 
-    Проверка читается **до** записи: испортить отображение записью — ровно
-    то, что инструмент не должен уметь, а правило полностью вычислимо, и
-    текст отказа называет правильную высоту. Классы, к которым правило не
-    относится (и класс, который не прочитался), пропускаются как раньше.
+    `None` — класс, к правилу не относящийся. «Не знаю» записью не
+    открывается: нечитаемый класс блока (пустой или сбой чтения) и
+    нечитаемый список сигналов — отказ (`ToolError`), а не пропуск проверки
+    (находка ревью: fail-open на сбое чтения класса записывал бы ломающую
+    высоту «с успехом»).
     """
     try:
         class_name = target.class_name
-    except Exception:                                             # noqa: BLE001
-        return None
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"Высоту блока '{name}' задать нельзя: класс блока не читается "
+            f"({type(exc).__name__}: {exc}), а у классов «Порт входа»/«Порт "
+            f"выхода» высота подчиняется правилу {PORT_ROW_HEIGHT} px на "
+            f"строку сигнала — к правилу ли этот блок, проверить нечем."
+        ) from exc
+    if not str(class_name).strip():
+        raise ToolError(
+            f"Высоту блока '{name}' задать нельзя: имя класса прочиталось "
+            f"пустым, а у классов «Порт входа»/«Порт выхода» высота "
+            f"подчиняется правилу {PORT_ROW_HEIGHT} px на строку сигнала — "
+            f"к правилу ли этот блок, проверить нечем.")
     if class_name not in _PORT_HEIGHT_CLASSES:
         return None
     count = _port_signal_count(target)
     if count is None:
-        return (
+        raise ToolError(
             f"Высоту порт-блока '{name}' задать нельзя: у класса "
             f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
             f"на строку сигнала, а список сигналов (`PortNames`) не читается "
             f"— проверить высоту нечем, и запись наугад могла бы испортить "
             f"отображение.")
-    required = PORT_ROW_HEIGHT * count
-    if height != required:
-        return (
-            f"Высоту порт-блока '{name}' задать нельзя: у класса "
-            f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
-            f"на строку сигнала — у этого блока строк {count} (`PortNames`), "
-            f"значит высота — {required} px, а запрошено "
-            f"{_size_value(height)}. Среда габарит сама не подгоняет (замер "
-            f"01.10.2026: порт с двумя именами остаётся 64×16), и другая "
-            f"высота ломает отображение строк; ширина при этом свободна.")
-    return None
+    return PORT_ROW_HEIGHT * count
 
 
 @mcp.tool()
@@ -497,11 +499,13 @@ def set_block_size(block: str, width: float, height: float) -> str:
     Размер — **графическое** свойство: пишется через `SetGraphBlockProp`
     (`Width`/`Height`), а обычный `SetBlockProp` (и `set_block_param`) эти
     имена молча игнорирует — в каталоге параметров их поэтому нет. Живой
-    замер 01.10.2026 (поставка 2.26.6.23): «Усилитель» 32×32 → 140×80, «Порт
-    входа» 64×16 → 360×120; нечётные и дробные значения принимаются
-    (141×79 применились и удержались) — сетки 2 px у этого пути нет, а
-    прежнее «среда нечётные не принимает» относилось к записи через контур
-    страницы (`setprop` в скрипте), у которой своя судьба значения.
+    замер 01.10.2026 (поставка 2.26.6.23): «Усилитель» 32×32 → 140×80; у
+    «Порта входа» тем же методом гналась и высота (64×16 → 360×120) — ровно
+    тот случай, который теперь отвергается правилом ниже: у однозначного
+    порта высота 16, и 120 ломает строки. Нечётные и дробные значения
+    принимаются (141×79 применились и удержались) — сетки 2 px у этого пути
+    нет, а прежнее «среда нечётные не принимает» относилось к записи через
+    контур страницы (`setprop` в скрипте), у которой своя судьба значения.
 
     Заданный размер **переживает инициализацию**: после `ProjectStart`
     прочитанные габариты не изменились (замер там же) — заново среда блок не
@@ -516,8 +520,9 @@ def set_block_size(block: str, width: float, height: float) -> str:
     или импортом — замер 01.10.2026), а среда габарит сама не подгоняет:
     порт с двумя именами остаётся 64×16, и строки ломаются. Поэтому другая
     высота — отказ с названным правильным значением, а нечитаемый список
-    сигналов — тоже отказ (проверить правило нечем). Ширина задаётся
-    свободно.
+    сигналов — тоже отказ (проверить правило нечем). Принятую средой высоту
+    вне правила инструмент тоже отвергает, а не выдаёт за успех с
+    примечанием. Ширина задаётся свободно.
 
     Ответ печатает **перечитанный** размер. Принятое средой значение с
     отличием от запрошенного — примечание; вовсе не изменившийся размер —
@@ -539,10 +544,26 @@ def set_block_size(block: str, width: float, height: float) -> str:
     target = page.find_block(block)
     if target is None:
         return _missing_block(block)
-    refusal = _port_height_refusal(block, target, float(height))
-    if refusal is not None:
-        raise ToolError(refusal)
+    required = _port_required_height(block, target)
+    if required is not None and float(height) != float(required):
+        height_text = (f"{height:g}" if float(height).is_integer()
+                       else repr(float(height)))
+        unsat = ""
+        if required > MAX_BLOCK_SIZE:
+            unsat = (f" Правило даёт {required} px, а предел размера — "
+                     f"{MAX_BLOCK_SIZE}: этому блоку высоту этим инструментом "
+                     f"задать нельзя вовсе.")
+        raise ToolError(
+            f"Высоту порт-блока '{block}' задать нельзя: у «Порта входа»/"
+            f"«Порта выхода» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
+            f"на строку сигнала — у этого блока строк "
+            f"{required // PORT_ROW_HEIGHT} (`PortNames`), значит высота — "
+            f"{required} px, а запрошено {height_text}. Среда габарит сама не "
+            f"подгоняет (замер 01.10.2026: порт с двумя именами остаётся "
+            f"64×16), и другая высота ломает отображение строк; ширина при "
+            f"этом свободна." + unsat)
     before = target.get_size()
+    requested = (float(width), float(height))
     try:
         target.set_graph_prop("Width", _size_value(width))
         target.set_graph_prop("Height", _size_value(height))
@@ -555,7 +576,17 @@ def set_block_size(block: str, width: float, height: float) -> str:
         # `normalize()` безопасен и на линии, созданной не этой сессией.
         wire.normalize()
     after = target.get_size()
-    requested = (float(width), float(height))
+    if required is not None and float(after[1]) != float(required):
+        # Среда могла преобразовать запись (как `_EvenOnlyBlock` в тестах):
+        # «успех с примечанием» здесь оставил бы порт со сломанным
+        # отображением и отчитался успехом (находка ревью).
+        raise ToolError(
+            f"Размер блока '{block}' записан, но среда приняла высоту "
+            f"{_size_text(after)}: у порт-блока она обязана быть {required} px "
+            f"({PORT_ROW_HEIGHT} на строку, строк "
+            f"{required // PORT_ROW_HEIGHT}) — отображение строк испорчено. "
+            f"Это отступление от замера 01.10.2026; повторите вызов, а если "
+            f"повтор не помогает — сообщите среду и версию.")
     if after == before and after != requested:
         raise ToolError(
             f"Размер блока '{block}' не изменился: было и осталось "
