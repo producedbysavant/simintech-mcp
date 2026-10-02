@@ -7,23 +7,62 @@
 
 from __future__ import annotations
 
+import re
+
 from fastmcp.exceptions import ToolError
 
 from .. import runtime, session
 from ..app import mcp
 
 
-# ─── Утилиты ──────────────────────────────────────────────────────
+#: Сколько пар наложений перечислять в ответе: список — для человека, длинный
+#: хвост обрезается (счётчик остаётся).
+MAX_REPORTED_OVERLAPS = 10
+
+
+def _rect_of(points_text: str) -> "tuple[float, float, float, float] | None":
+    """Габаритный прямоугольник блока из строки свойства `Points`.
+
+    `Points` — полилиния контура в формате `[(x , y), ...]`; для наложения
+    достаточно габарита (min/max). `None` — свойство пусто или не разбирается:
+    проверка обязана назвать такой блок, а не молча счесть его непересекающимся.
+    """
+    pairs = re.findall(r"\(([-\d.]+)\s*,\s*([-\d.]+)\)", points_text or "")
+    if not pairs:
+        return None
+    xs = [float(x) for x, _ in pairs]
+    ys = [float(y) for _, y in pairs]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _overlaps(rect_a: "tuple[float, float, float, float]",
+              rect_b: "tuple[float, float, float, float]") -> bool:
+    """Пересекаются ли прямоугольники (строго, касание — не наложение)."""
+    return (rect_a[0] < rect_b[2] and rect_b[0] < rect_a[2]
+            and rect_a[1] < rect_b[3] and rect_b[1] < rect_a[3])
+
 
 @mcp.tool()
 @runtime._com_threaded(mutates_project=True)
-def layout_place(block_ids: str, connections: str) -> str:
+def layout_place(block_ids: str = "", connections: str = "") -> str:
     """Расставить блоки по слоям без наложений — **с применением** координат.
 
     Координаты считает `LayeredPlacer`, и они тут же применяются к блокам
     (`set_center`). Раньше инструмент только возвращал координаты текстом, а
     блоки не двигал: агент получал подтверждение расстановки, которой не было.
     Позиция задаётся до расчёта — она влияет только на вид схемы.
+
+    **Вызов без аргументов — «всё, что известно»**: берутся все блоки главной
+    страницы, а связями становятся все пары, запомненные `connect` в этой
+    сессии. Это рекомендуемая форма: частичный список оставляет неперечисленные
+    блоки в (0,0) друг на друге — «кучей», которую инструмент при этом
+    подтверждал как расставленную (живой случай 02.10.2026). Явные аргументы
+    остаются для выборочной расстановки и разбираются строго, как раньше.
+
+    **Проверка наложений.** После расстановки габариты блоков читаются из
+    свойства `Points`, и пересекающиеся пары называются в ответе: контракт
+    «без наложений» виден фактом, а не предполагается. Пары считаются только
+    с участием расставленных блоков — чужие наложения не наша правка.
 
     Размеры блоков не задаются: `set_center` сохраняет родной размер каждого
     блока (он задан правилами разработки SimInTech, и подменять его нельзя), а
@@ -51,9 +90,12 @@ def layout_place(block_ids: str, connections: str) -> str:
 
     Args:
         block_ids: блоки через запятую — имена (`k_0`, `kx_0`, `ToFile_0`; их
-            даёт `list_blocks`) или числовые id.
+            даёт `list_blocks`) или числовые id. Пусто — все блоки главной
+            страницы.
         connections: пары `src->dst` через запятую, напр. `k_0->kx_0`. Оба конца
-            должны быть перечислены в `block_ids`.
+            должны быть перечислены в `block_ids`. Пусто при пустых `block_ids`
+            — все связи сессии (их запомнил `connect`); пусто при явных
+            `block_ids` — расстановка без учёта связей.
     """
     from simintech_api.layout import LayeredPlacer
 
@@ -68,8 +110,17 @@ def layout_place(block_ids: str, connections: str) -> str:
             continue
 
     tokens = [t.strip() for t in block_ids.split(",") if t.strip()]
+    bare_call = not tokens and not connections.strip()
     if not tokens:
-        raise ToolError("Не указаны блоки: передайте block_ids через запятую")
+        # Пусто — не ошибка, а «все блоки страницы»: частичный список оставлял
+        # неперечисленные блоки в (0,0) друг на друге, и «куча» выглядела
+        # успешно расставленной. Имя, которого COM не отдал, заменяется
+        # числовым id — блок всё равно должен быть расставлен.
+        for block in page.get_blocks():
+            try:
+                tokens.append(block.get_name())
+            except Exception:                                 # noqa: BLE001
+                tokens.append(str(block.id))
     missing = [t for t in tokens if t not in available]
     if missing:
         raise ToolError(
@@ -89,6 +140,23 @@ def layout_place(block_ids: str, connections: str) -> str:
             aliases.setdefault(block.get_name(), token)
         except Exception:                                     # noqa: BLE001
             continue
+
+    if bare_call:
+        # «Все связи сессии»: концы чужих линий через COM не читаются, поэтому
+        # честный максимум — реестр `connect`. Пары, чьи блоки не попали в
+        # расстановку, отбрасываются: в реестре могли остаться концы прежней
+        # страницы, и строгий отказ по ним сорвал бы вызов «расставь всё».
+        by_name: dict[str, str] = {}
+        for token in tokens:
+            try:
+                by_name.setdefault(available[token].get_name(), token)
+            except Exception:                                 # noqa: BLE001
+                continue
+        known_pairs = dict.fromkeys(
+            (src, dst) for _wire, src, _out, dst, _in in session._WIRES)
+        connections = ",".join(
+            f"{by_name[src]}->{by_name[dst]}"
+            for src, dst in known_pairs if src in by_name and dst in by_name)
 
     links = []
     for pair in connections.split(","):
@@ -201,4 +269,49 @@ def layout_place(block_ids: str, connections: str) -> str:
     if unaligned:
         routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
                    f"связей: {', '.join(unaligned)}")
+
+    # Наложения: контракт «без наложений» проверяется фактом — по габаритам из
+    # `Points` всех блоков страницы, прочитанным после перерисовки. Пары — с
+    # участием расставленных блоков: чужие наложения не наша правка, но
+    # расставленный поверх чужого обязан быть виден.
+    placed = set()
+    for token in tokens:
+        try:
+            placed.add(available[token].get_name())
+        except Exception:                                     # noqa: BLE001
+            placed.add(str(available[token].id))
+    rects = []
+    no_geometry = []
+    for block in page.get_blocks():
+        try:
+            name = block.get_name()
+        except Exception:                                     # noqa: BLE001
+            name = str(block.id)
+        try:
+            rect = _rect_of(block.get_points())
+        except Exception:                                     # noqa: BLE001
+            rect = None
+        if rect is None:
+            no_geometry.append(name)
+        else:
+            rects.append((name, rect))
+    overlaps = []
+    for index, (name_a, rect_a) in enumerate(rects):
+        if name_a not in placed:
+            continue
+        for name_b, rect_b in rects[index + 1:]:
+            if _overlaps(rect_a, rect_b):
+                overlaps.append((name_a, name_b))
+    if overlaps:
+        shown = ", ".join(f"{a}—{b}"
+                          for a, b in overlaps[:MAX_REPORTED_OVERLAPS])
+        more = (f" (и ещё {len(overlaps) - MAX_REPORTED_OVERLAPS})"
+                if len(overlaps) > MAX_REPORTED_OVERLAPS else "")
+        routes += (f"\nВНИМАНИЕ: наложения блоков (нет свободного буфера): "
+                   f"{shown}{more}")
+    else:
+        routes += "\nНаложений блоков нет."
+    if no_geometry:
+        routes += (f"\nГеометрию прочитать не удалось у {len(no_geometry)} "
+                   f"блоков: {', '.join(no_geometry[:MAX_REPORTED_OVERLAPS])}")
     return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes

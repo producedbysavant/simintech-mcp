@@ -252,3 +252,61 @@ async def test_layout_place_reports_no_wires(monkeypatch):
         {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"}))
 
     assert "Линий связи на странице нет" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_without_arguments_places_every_block(monkeypatch):
+    """Пустой вызов — «все блоки страницы и все связи сессии».
+
+    Частичный список оставлял неперечисленные блоки в (0,0) друг на друге:
+    модель собиралась «кучей», а инструмент при этом подтверждал расстановку
+    (живой случай 02.10.2026).
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    lone = _PlacedBlock("k_1", 3)
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst, "k_1": lone})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert "Расставлено блоков: 3" in text, "не все блоки страницы расставлены"
+    assert lone.center is not None, "блок без связей остался в куче"
+    assert dst.center[0] > src.center[0], \
+        "связь сессии не учтена: блоки встали в один слой"
+    assert "Наложений блоков нет" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_bare_ignores_stale_wires(monkeypatch):
+    """Связь с блоком вне страницы не срывает вызов «расставь всё».
+
+    В реестре сессии могли остаться концы прежней страницы; строгий отказ по
+    ним («вне block_ids») сорвал бы честный вызов без аргументов.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    _install_wire_project(monkeypatch, {"k_0": src})
+    session._WIRES.append((None, "k_0", 0, "исчез_0", 0))
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert "Расставлено блоков: 1" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_reports_overlap_with_foreign_block(monkeypatch):
+    """Наложение расставленного блока на чужой названо в ответе.
+
+    Контракт «без наложений» обязан быть виден фактом: габариты читаются из
+    `Points`, и пересечение попадает в ответ, а не в глаза пользователя.
+    """
+    placed = _PlacedBlock("k_0", 1)
+    obstacle = _PlacedBlock("t_0", 2)
+    obstacle.SIZE = (400.0, 300.0)
+    _install_fake_project(monkeypatch, {"k_0": placed, "t_0": obstacle})
+
+    text = _text(await mcp.call_tool(
+        "layout_place", {"block_ids": "k_0", "connections": ""}))
+
+    assert "ВНИМАНИЕ: наложения блоков" in text
+    assert "k_0" in text and "t_0" in text, "пара наложения названа не полностью"

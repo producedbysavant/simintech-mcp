@@ -111,6 +111,18 @@ class _PlacedBlock:
         self.size_reads += 1
         return self.SIZE
 
+    def get_points(self):
+        """Строка `Points` — прямоугольник вокруг текущего центра.
+
+        Формат как у среды: `[(x , y), ...]`. Нужна проверке наложений:
+        она читает габариты блоков, а не центры.
+        """
+        cx, cy = self.center if self.center is not None else (0.0, 0.0)
+        w, h = self.SIZE
+        x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+        return (f"[({x1:g} , {y1:g}), ({x2:g} , {y1:g}), "
+                f"({x2:g} , {y2:g}), ({x1:g} , {y2:g})]")
+
     def set_center(self, cx, cy):
         self.center = (cx, cy)
         return self
@@ -179,6 +191,14 @@ class _ConnectingBlock:
 
     def get_size(self):
         return (60.0, 40.0)
+
+    def get_points(self):
+        """Строка `Points` — прямоугольник вокруг текущего центра."""
+        cx, cy = self.center if self.center is not None else (0.0, 0.0)
+        w, h = self.get_size()
+        x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+        return (f"[({x1:g} , {y1:g}), ({x2:g} , {y1:g}), "
+                f"({x2:g} , {y2:g}), ({x1:g} , {y2:g})]")
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)
