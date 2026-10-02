@@ -1007,3 +1007,23 @@ async def test_set_block_size_port_refuses_unsatisfiable_rule(monkeypatch):
 
     assert "задать нельзя вовсе" in text
     assert block.graph_writes == []
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_unsat_also_at_bounds(monkeypatch):
+    """Тупик назван и на непредельной ветке: высота правила — сама за пределом.
+
+    Запрос ровно правила (11200 при 700 строках) не доходит до отказов
+    правила и упирается в предел размера — и тот обязан объяснить, что
+    задать нельзя вовсе (находка ревью: предельная проверка стояла выше
+    правила и молчала об этом пути).
+    """
+    names = "\r\n".join(f"sig{i}" for i in range(700)) + "\r\n"
+    block = _PortBlock(names=names)
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 11200})
+
+    assert "нельзя вовсе" in text
+    assert block.graph_writes == []

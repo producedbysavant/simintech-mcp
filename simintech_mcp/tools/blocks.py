@@ -533,12 +533,11 @@ def set_block_size(block: str, width: float, height: float) -> str:
         width: ширина в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
         height: высота в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
     """
-    if not 0 < width <= MAX_BLOCK_SIZE or not 0 < height <= MAX_BLOCK_SIZE:
+    if not 0 < width <= MAX_BLOCK_SIZE:
         raise ToolError(
-            f"Размер {_size_text((width, height))} вне пределов: ширина и "
-            f"высота — в пикселях, больше 0 и не больше {MAX_BLOCK_SIZE} "
-            f"(отсечка ошибок единиц измерения: настоящий размер блока — "
-            f"десятки-сотни пикселей).")
+            f"Ширина {_size_value(width)} вне пределов: ширина — в пикселях, "
+            f"больше 0 и не больше {MAX_BLOCK_SIZE} (отсечка ошибок единиц "
+            f"измерения: настоящий размер блока — десятки-сотни пикселей).")
     project = session._ensure_project()
     page = project.get_main_page()
     target = page.find_block(block)
@@ -562,6 +561,20 @@ def set_block_size(block: str, width: float, height: float) -> str:
             f"подгоняет (замер 01.10.2026: порт с двумя именами остаётся "
             f"64×16), и другая высота ломает отображение строк; ширина при "
             f"этом свободна." + unsat)
+    if not 0 < height <= MAX_BLOCK_SIZE:
+        # Предельная проверка высоты стоит ПОСЛЕ правила: запрос ровно
+        # правила (11200 при 700 строках) иначе упирался бы в предел, не
+        # услышав, что тупик неразрешим (находка ревью).
+        unsat = ""
+        if required is not None and required > MAX_BLOCK_SIZE:
+            unsat = (f" Учтите: правило {PORT_ROW_HEIGHT} px на строку требует "
+                     f"для этого блока {required} px — этим инструментом "
+                     f"высоту ему задать нельзя вовсе.")
+        raise ToolError(
+            f"Высота {_size_value(height)} вне пределов: высота — в пикселях, "
+            f"больше 0 и не больше {MAX_BLOCK_SIZE} (отсечка ошибок единиц "
+            f"измерения: настоящий размер блока — десятки-сотни пикселей)."
+            + unsat)
     before = target.get_size()
     requested = (float(width), float(height))
     try:
