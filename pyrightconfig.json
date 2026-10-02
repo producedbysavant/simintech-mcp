@@ -1,0 +1,6 @@
+{
+  "include": ["simintech_mcp"],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.11",
+  "extraPaths": ["../simintech-code"]
+}
