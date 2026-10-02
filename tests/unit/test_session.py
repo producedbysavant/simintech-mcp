@@ -9,6 +9,7 @@ from simintech_api import ComConnectionError, SessionOwnership
 from simintech_mcp.server import mcp
 
 from simintech_mcp import session
+from simintech_mcp.tools import project as project_tools
 
 from _support import (
     _ClosableProject,
@@ -196,6 +197,10 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "_project_path", None)
     monkeypatch.setattr(session, "_client", client)
+    # «Завершён» называется по проверке исчезновения процесса: подделка
+    # сообщает «ушёл», чтобы утверждение опиралось на факт, а не на веру.
+    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
+                        lambda pid, timeout=3.0: True)
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
@@ -206,6 +211,27 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
     assert "Сессия завершена" in text
     assert "id=7" in text, "завершение сессии обязано назвать закрытый проект"
     assert "PID 777" in text, "ответ обязан назвать снятый процесс"
+
+
+@pytest.mark.anyio
+async def test_disconnect_warns_when_process_stays_alive(monkeypatch):
+    """«Завершён» — по проверке: живой процесс называется предупреждением.
+
+    `shutdown` библиотеки об исчерпании попыток не сообщает (его завершение —
+    best-effort), поэтому безусловная формулировка выдавала бы недоказанное
+    за факт (ревью #41). Проверка делает ветку «всё ещё жив» живой.
+    """
+
+    client = _OwnedClientStub(pid=777)
+    monkeypatch.setattr(session, "_project", None)
+    monkeypatch.setattr(session, "_client", client)
+    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
+                        lambda pid, timeout=3.0: False)
+
+    text = _text(await mcp.call_tool("disconnect", {}))
+
+    assert "всё ещё жив" in text
+    assert "PID 777) завершён" not in text
 
 
 @pytest.mark.anyio
@@ -460,5 +486,8 @@ def test_ensure_client_refuses_unknown_session(monkeypatch):
     text = str(excinfo.value)
     assert "ownership=unknown" in text
     assert "подтвердить не удалось" in text
+    assert "повторите" in text, "рецепт при сбое снимка — повтор, не закрытие"
+    assert "Закройте SimInTech" not in text, (
+        "рецепт EXTERNAL на UNKNOWN — тупик (ревью #41)")
     assert made and made[0].disconnected
     assert session._client is None

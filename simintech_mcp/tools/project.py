@@ -13,6 +13,7 @@ from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Project
+from simintech_api.utils.processes import wait_for_pid_exit
 
 from .. import runtime, session
 from ..app import mcp
@@ -66,7 +67,9 @@ def disconnect() -> str:
     (замеры 02.10.2026), поэтому сессия ждёт уход процесса сессии и при
     необходимости завершает ровно его PID. Это процесс, поднятый самим
     сервером: подключение к чужому экземпляру отсекается гейтом владения
-    ещё на `_ensure_client`.
+    ещё на `_ensure_client`. Ответ называет процесс «завершённым» только
+    после проверки, что он действительно исчез; иначе — предупреждение:
+    `shutdown` библиотеки не сигнализирует об исчерпании попыток.
     """
     if (session._client is None and session._project is None
             and session._pack is None):
@@ -124,12 +127,23 @@ def disconnect() -> str:
         # simintech-code v0.11.0).
         try:
             client.shutdown()
-            if pid:
-                closed.append(f"процесс mmain.exe (PID {pid}) завершён")
         except Exception as exc:                              # noqa: BLE001
             failed += (f" ВНИМАНИЕ: процесс mmain.exe (PID {pid}) завершить "
                        f"не удалось ({type(exc).__name__}: {exc}) — он мог "
                        f"остаться работать.")
+        else:
+            # «Завершён» называется по факту исчезновения процесса: kill
+            # внутри `shutdown` — best-effort и об исчерпании попыток не
+            # сообщает, поэтому безусловная формулировка выдавала бы
+            # недоказанное за факт (ревью #41). Проверка — тем же ожиданием
+            # exact PID, что и в библиотеке.
+            if pid:
+                if wait_for_pid_exit(pid, timeout=3.0):
+                    closed.append(f"процесс mmain.exe (PID {pid}) завершён")
+                else:
+                    failed += (f" ВНИМАНИЕ: процесс mmain.exe (PID {pid}) "
+                               f"после shutdown всё ещё жив — завершить не "
+                               f"удалось; он мог остаться работать.")
     summary = ", ".join(closed)
     done = (f"Сессия завершена: {summary}, соединение разорвано"
             if summary else "Сессия завершена: соединение разорвано")

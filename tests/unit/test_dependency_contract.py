@@ -43,6 +43,8 @@ REQUIRED = [
     ("simintech_api.exceptions", "SimInTechError"),
     ("simintech_api.utils.xprt_signals", "XprtSignalReader"),
     ("simintech_api.utils.converters", "value_to_prop_string"),
+    # Проверка исчезновения процесса в disconnect («завершён» — по факту).
+    ("simintech_api.utils.processes", "wait_for_pid_exit"),
     # Контур языкового слоя: исходы, страница и тела операций.
     ("simintech_api", "PageRunResult"),
     ("simintech_api", "classify_page_result"),
