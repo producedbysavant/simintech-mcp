@@ -117,6 +117,24 @@ def _marker_path() -> Path:
     return Path(os.path.join(sandbox.output_root(), _fresh_name(MARKER_FILE)))
 
 
+#: Пути контурных файлов **предыдущего** вызова этой сессии. Имена уникальны
+#: на вызов, и без уборки каждый вызов оставлял бы в песочнице два новых
+#: файла без предела (находка ревью #42). Убираются только свои же прошлые
+#: файлы — чужие не трогаются; запертый (обрыв) снять не даст, `OSError`
+#: пропускается, освободится при выходе mmain.
+_PREVIOUS_PATHS: List[Path] = []
+
+
+def _sweep_previous() -> None:
+    """Убрать контурные файлы предыдущего вызова (best-effort)."""
+    for stale in _PREVIOUS_PATHS:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    _PREVIOUS_PATHS.clear()
+
+
 def _read_port_names(block: Block) -> Optional[List[str]]:
     """Имена сигналов из `PortNames`; `None` — прочитать не удалось.
 
@@ -317,12 +335,16 @@ def check_model_layout() -> str:
             f"перечислить линии страницы не удалось: {type(exc).__name__}: "
             f"{exc}. Без списка линий проверка концов невозможна.") from exc
 
-    # Имя отчёта уникально на вызов — чистить прошлый файл нечего (в #40 этот
-    # же приём убрал класс WinError 32: запертый файл не мешает новому имени).
+    # Имена уникальны на вызов — прошлый файл не мешает (в #40 этот приём убрал
+    # класс WinError 32); свои же файлы предыдущего вызова убираем, чтобы
+    # песочница не копила по два на вызов (находка ревью #42).
+    _sweep_previous()
     report_path = _rect_path()
+    marker_path = _marker_path()
+    _PREVIOUS_PATHS.extend((report_path, marker_path))
     script = _check_script(report_path, port_blocks, wire_ids)
     try:
-        run = _bridge().run_page_script(script, _marker_path())
+        run = _bridge().run_page_script(script, marker_path)
     except ScriptBridgeError as exc:
         raise ToolError(
             f"контур проверки не отработал: {exc}. Проверка портов и концов "

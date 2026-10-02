@@ -482,7 +482,8 @@ async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
 
     Запертый прошлым обрывом файл (WinError 32) новому вызову не мешает: ни
     отчёт, ни маркер не переиспользуют общее имя — тот же приём, что у
-    `page_script`/`model_text` в #40.
+    `page_script`/`model_text` в #40. Файлы собственного прошлого вызова при
+    этом убираются, чтобы песочница не копила по два на вызов (ревью #42).
     """
     blocks = [_CheckBlock("k_0", center=(0, 0))]
     _BridgeWritesReport.seen_reports = []
@@ -499,3 +500,6 @@ async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
     marker = _BridgeWritesReport.seen_markers[0]
     assert Path(marker).name != cm.MARKER_FILE, "маркер под общим именем"
     assert Path(marker).name != Path(first).name
+    # Файлы прошлого вызова убираются: уникальные имена не должны копить
+    # песочницу (находка ревью #42).
+    assert not Path(first).exists(), "файл отчёта прошлого вызова остался"
