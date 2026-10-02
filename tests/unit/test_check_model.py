@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -496,7 +497,10 @@ async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
     first, second = _BridgeWritesReport.seen_reports
     assert first != second, "имя отчёта переиспользовано между вызовами"
     assert Path(first).name != cm.REPORT_FILE
-    assert Path(first).parent == tmp_path
+    # `sandbox.output_root()` — это realpath каталога результатов: сравнение с
+    # `tmp_path` напрямую падало бы под симлинкованным корнем (macOS /tmp →
+    # /private/tmp) — находка ревью #42.
+    assert Path(first).parent == Path(os.path.realpath(str(tmp_path)))
     marker = _BridgeWritesReport.seen_markers[0]
     assert Path(marker).name != cm.MARKER_FILE, "маркер под общим именем"
     assert Path(marker).name != Path(first).name
