@@ -756,6 +756,32 @@ class _EvenOnlyBlock(_SizeBlock):
         return self
 
 
+class _PortBlock(_SizeBlock):
+    """Порт-блок: класс «Порт входа», список сигналов читается из PortNames.
+
+    Подделка моделирует замер 01.10.2026: имена приходят строкой с `\\r\\n`
+    (`'in\\r\\n'` у однозначного порта, `'a1\\r\\na2\\r\\n'` у двухзначного).
+    """
+
+    def __init__(self, names="in\r\n", name="InputPort_0", size=(64.0, 16.0)):
+        super().__init__(name=name, size=size)
+        self.class_name = "Порт входа"
+        self._port_names = names
+
+    def get_property(self, prop):
+        if prop == "PortNames":
+            return self._port_names
+        raise AssertionError(
+            f"подделка читает только PortNames, а спрошено {prop!r}")
+
+
+class _UnreadableNamesPort(_PortBlock):
+    """Порт-блок, у которого список сигналов не читается (отказ COM)."""
+
+    def get_property(self, prop):
+        raise OSError("COM недоступен")
+
+
 @pytest.mark.anyio
 async def test_set_block_size_applies_and_repaints(monkeypatch):
     """Размер пишется через SetGraphBlockProp, перечитывается, схема обновляется."""
@@ -833,3 +859,171 @@ async def test_set_block_size_missing_block(monkeypatch):
                         {"block": "нетакого", "width": 10, "height": 10})
 
     assert "не найден" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_accepts_rule_height(monkeypatch):
+    """Порт из двух сигналов: высота 32 (16 px × 2 строки) принимается.
+
+    Правило владельца 01.10.2026: высота «Порта входа»/«Порта выхода» —
+    16 px на строку сигнала; число строк читается из `PortNames`.
+    Ширина правилом не ограничена.
+    """
+    block = _PortBlock(names="a\r\nb\r\n")
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "InputPort_0", "width": 200, "height": 32}))
+
+    assert block.get_size() == (200.0, 32.0)
+    assert "64x16 → 200x32" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("height", [16, 20, 48])
+async def test_set_block_size_port_refuses_other_height(monkeypatch, height):
+    """Высота не 16×N — отказ до записи: такой записью отображение ломается.
+
+    Среда габарит сама не подгоняет (замер 01.10.2026: порт с двумя именами
+    остаётся 64×16), поэтому и 16, и 48 при двух сигналах неверны, и в блок
+    не уходит ни одной записи.
+    """
+    block = _PortBlock(names="a\r\nb\r\n")
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": height})
+
+    assert "16 px" in text and "строк 2" in text and "32 px" in text
+    assert block.graph_writes == [], "нарушающая правило высота записана в блок"
+
+
+@pytest.mark.anyio
+async def test_set_block_size_single_signal_port_accepts_16(monkeypatch):
+    """Однозначный порт: правильная высота — 16, и она принимается."""
+    block = _PortBlock(names="in\r\n")
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "InputPort_0", "width": 120, "height": 16}))
+
+    assert block.get_size() == (120.0, 16.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_refuses_when_names_unreadable(monkeypatch):
+    """Список сигналов не читается — высота не задаётся: проверить нечем."""
+    block = _UnreadableNamesPort()
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 32})
+
+    assert "PortNames" in text
+    assert block.graph_writes == []
+
+
+class _BlankClassNamePort(_PortBlock):
+    """Порт-блок, у которого имя класса прочиталось пустым."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.class_name = ""
+
+
+class _RaisingClassNamePort(_PortBlock):
+    """Порт-блок, у которого чтение класса падает (отказ COM)."""
+
+    @property
+    def class_name(self):
+        raise OSError("COM недоступен")
+
+    @class_name.setter
+    def class_name(self, value):
+        pass
+
+
+class _HeightSnappingPort(_PortBlock):
+    """Порт-блок, «преобразующий» высоту при записи (как `_EvenOnlyBlock`)."""
+
+    def set_graph_prop(self, name, value):
+        self.graph_writes.append((name, value))
+        if name == "Height":
+            self._size[1] = float(value) - 1
+        else:
+            self._size[0] = float(value)
+        return self
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "block", [_BlankClassNamePort(), _RaisingClassNamePort()],
+    ids=["пустой класс", "сбой чтения класса"])
+async def test_set_block_size_refuses_when_class_unreadable(monkeypatch, block):
+    """Класс блока не читается — высота не задаётся: правило нечем проверить.
+
+    Fail-open здесь был бы дырой: блок-порт с нечитаемым классом обошёл бы
+    правило, и ломающая высота записалась бы «с успехом» (находка ревью).
+    """
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 32})
+
+    assert "не читается" in text or "пустым" in text
+    assert block.graph_writes == []
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_refuses_height_transformed_by_env(
+        monkeypatch):
+    """Среда «преобразовала» высоту — отказ, а не успех с примечанием.
+
+    Принять её значило бы оставить порт со сломанным отображением строк и
+    отчитаться успехом (находка ревью).
+    """
+    block = _HeightSnappingPort(names="a\r\nb\r\n")
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 32})
+
+    assert "испорчено" in text and "32 px" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_refuses_unsatisfiable_rule(monkeypatch):
+    """Столько строк, что правило превышает предел размера, — сказано прямо.
+
+    Иначе отказ правила и отказ «вне пределов» выглядели бы по отдельности
+    капризами, а вместе — тупиком без объяснения (находка ревью).
+    """
+    names = "\r\n".join(f"sig{i}" for i in range(700)) + "\r\n"
+    block = _PortBlock(names=names)
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 5000})
+
+    assert "задать нельзя вовсе" in text
+    assert block.graph_writes == []
+
+
+@pytest.mark.anyio
+async def test_set_block_size_port_unsat_also_at_bounds(monkeypatch):
+    """Тупик назван и на непредельной ветке: высота правила — сама за пределом.
+
+    Запрос ровно правила (11200 при 700 строках) не доходит до отказов
+    правила и упирается в предел размера — и тот обязан объяснить, что
+    задать нельзя вовсе (находка ревью: предельная проверка стояла выше
+    правила и молчала об этом пути).
+    """
+    names = "\r\n".join(f"sig{i}" for i in range(700)) + "\r\n"
+    block = _PortBlock(names=names)
+    monkeypatch.setattr(session, "_project", _FakeProject({"InputPort_0": block}))
+
+    text = await _error("set_block_size",
+                        {"block": "InputPort_0", "width": 200, "height": 11200})
+
+    assert "нельзя вовсе" in text
+    assert block.graph_writes == []

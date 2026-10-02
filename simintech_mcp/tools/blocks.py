@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastmcp.exceptions import ToolError
 from simintech_api.constants import standard_block_size
@@ -425,6 +425,72 @@ def _size_text(sizes) -> str:
     return f"{_size_value(width)}x{_size_value(height)}"
 
 
+#: Классы порт-блоков: у них высота не свободна, а задана жёстким правилом
+#: 16 px на строку сигнала (правило передано владельцем, 01.10.2026; его
+#: отсутствие «сильно ломает отображение»). Замер того же дня (поставка
+#: 2.26.6.23): список сигналов **читается через COM** — `PortNames` отдаётся
+#: строкой с разделителем `\r\n` (`'in\r\n'` у однозначного порта,
+#: `'a1\r\na2\r\n'` у двухзначного), — а среда габарит сама **не** подгоняет:
+#: порт с двумя именами остаётся 64×16.
+_PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")
+
+#: Высота одной строки сигнала порт-блока в пикселях: 1 сигнал — 16, 2 — 32
+#: и так далее. Правило жёсткое: любая другая высота ломает отображение.
+PORT_ROW_HEIGHT = 16
+
+
+def _port_signal_count(target) -> Optional[int]:
+    """Число сигналов порт-блока по `PortNames`; `None` — прочитать не удалось.
+
+    Пустой список — тот же `None`, а не ноль сигналов: у порт-блока имя есть
+    всегда (замер: `'in\r\n'` сразу после создания), поэтому «пусто» здесь
+    означает отказ чтения, а не измеренное состояние.
+    """
+    try:
+        value = target.get_property("PortNames")
+    except Exception:                                             # noqa: BLE001
+        return None
+    names = [line for line in str(value).splitlines() if line.strip()]
+    return len(names) or None
+
+
+def _port_required_height(name: str, target) -> Optional[int]:
+    """Обязательная высота порт-блока (`PORT_ROW_HEIGHT` × число строк).
+
+    `None` — класс, к правилу не относящийся. «Не знаю» записью не
+    открывается: нечитаемый класс блока (пустой или сбой чтения) и
+    нечитаемый список сигналов — отказ (`ToolError`), а не пропуск проверки
+    (находка ревью: fail-open на сбое чтения класса записывал бы ломающую
+    высоту «с успехом»).
+    """
+    try:
+        class_name = target.class_name
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"Высоту блока '{name}' задать нельзя: класс блока не читается "
+            f"({type(exc).__name__}: {exc}), а у классов «Порт входа»/«Порт "
+            f"выхода» высота подчиняется правилу {PORT_ROW_HEIGHT} px на "
+            f"строку сигнала — к правилу ли этот блок, проверить нечем."
+        ) from exc
+    if not str(class_name).strip():
+        raise ToolError(
+            f"Высоту блока '{name}' задать нельзя: имя класса прочиталось "
+            f"пустым, а у классов «Порт входа»/«Порт выхода» высота "
+            f"подчиняется правилу {PORT_ROW_HEIGHT} px на строку сигнала — "
+            f"к правилу ли этот блок, проверить нечем.")
+    if class_name not in _PORT_HEIGHT_CLASSES:
+        return None
+    count = _port_signal_count(target)
+    if count is None:
+        raise ToolError(
+            f"Высоту порт-блока '{name}' задать нельзя: у класса "
+            f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
+            f"на строку сигнала, а список сигналов (`PortNames`) не читается "
+            f"— проверить высоту нечем, и запись наугад могла бы испортить "
+            f"отображение.")
+    return PORT_ROW_HEIGHT * count
+
+
 @mcp.tool()
 @runtime._com_threaded(mutates_project=True)
 def set_block_size(block: str, width: float, height: float) -> str:
@@ -433,17 +499,30 @@ def set_block_size(block: str, width: float, height: float) -> str:
     Размер — **графическое** свойство: пишется через `SetGraphBlockProp`
     (`Width`/`Height`), а обычный `SetBlockProp` (и `set_block_param`) эти
     имена молча игнорирует — в каталоге параметров их поэтому нет. Живой
-    замер 01.10.2026 (поставка 2.26.6.23): «Усилитель» 32×32 → 140×80, «Порт
-    входа» 64×16 → 360×120; нечётные и дробные значения принимаются
-    (141×79 применились и удержались) — сетки 2 px у этого пути нет, а
-    прежнее «среда нечётные не принимает» относилось к записи через контур
-    страницы (`setprop` в скрипте), у которой своя судьба значения.
+    замер 01.10.2026 (поставка 2.26.6.23): «Усилитель» 32×32 → 140×80; у
+    «Порта входа» тем же методом гналась и высота (64×16 → 360×120) — ровно
+    тот случай, который теперь отвергается правилом ниже: у однозначного
+    порта высота 16, и 120 ломает строки. Нечётные и дробные значения
+    принимаются (141×79 применились и удержались) — сетки 2 px у этого пути
+    нет, а прежнее «среда нечётные не принимает» относилось к записи через
+    контур страницы (`setprop` в скрипте), у которой своя судьба значения.
 
     Заданный размер **переживает инициализацию**: после `ProjectStart`
     прочитанные габариты не изменились (замер там же) — заново среда блок не
     ужимает. После записи схема перерисовывается, и линии страницы
     перетрассировуются (`NormalizeWire`): координаты портов после смены
     размера сместились, как при перемещении блока.
+
+    **У порт-блоков высота не свободна.** Классы «Порт входа»/«Порт выхода»
+    подчиняются жёсткому правилу: `PORT_ROW_HEIGHT` px на строку сигнала — у
+    блока из двух сигналов высота 32. Число строк читается из `PortNames`
+    (COM отдаёт имена построчно: `'a1\r\na2\r\n'`; задаются они скриптом
+    или импортом — замер 01.10.2026), а среда габарит сама не подгоняет:
+    порт с двумя именами остаётся 64×16, и строки ломаются. Поэтому другая
+    высота — отказ с названным правильным значением, а нечитаемый список
+    сигналов — тоже отказ (проверить правило нечем). Принятую средой высоту
+    вне правила инструмент тоже отвергает, а не выдаёт за успех с
+    примечанием. Ширина задаётся свободно.
 
     Ответ печатает **перечитанный** размер. Принятое средой значение с
     отличием от запрошенного — примечание; вовсе не изменившийся размер —
@@ -454,18 +533,50 @@ def set_block_size(block: str, width: float, height: float) -> str:
         width: ширина в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
         height: высота в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
     """
-    if not 0 < width <= MAX_BLOCK_SIZE or not 0 < height <= MAX_BLOCK_SIZE:
+    if not 0 < width <= MAX_BLOCK_SIZE:
         raise ToolError(
-            f"Размер {_size_text((width, height))} вне пределов: ширина и "
-            f"высота — в пикселях, больше 0 и не больше {MAX_BLOCK_SIZE} "
-            f"(отсечка ошибок единиц измерения: настоящий размер блока — "
-            f"десятки-сотни пикселей).")
+            f"Ширина {_size_value(width)} вне пределов: ширина — в пикселях, "
+            f"больше 0 и не больше {MAX_BLOCK_SIZE} (отсечка ошибок единиц "
+            f"измерения: настоящий размер блока — десятки-сотни пикселей).")
     project = session._ensure_project()
     page = project.get_main_page()
     target = page.find_block(block)
     if target is None:
         return _missing_block(block)
+    required = _port_required_height(block, target)
+    if required is not None and float(height) != float(required):
+        height_text = (f"{height:g}" if float(height).is_integer()
+                       else repr(float(height)))
+        unsat = ""
+        if required > MAX_BLOCK_SIZE:
+            unsat = (f" Правило даёт {required} px, а предел размера — "
+                     f"{MAX_BLOCK_SIZE}: этому блоку высоту этим инструментом "
+                     f"задать нельзя вовсе.")
+        raise ToolError(
+            f"Высоту порт-блока '{block}' задать нельзя: у «Порта входа»/"
+            f"«Порта выхода» высота подчиняется правилу {PORT_ROW_HEIGHT} px "
+            f"на строку сигнала — у этого блока строк "
+            f"{required // PORT_ROW_HEIGHT} (`PortNames`), значит высота — "
+            f"{required} px, а запрошено {height_text}. Среда габарит сама не "
+            f"подгоняет (замер 01.10.2026: порт с двумя именами остаётся "
+            f"64×16), и другая высота ломает отображение строк; ширина при "
+            f"этом свободна." + unsat)
+    if not 0 < height <= MAX_BLOCK_SIZE:
+        # Предельная проверка высоты стоит ПОСЛЕ правила: запрос ровно
+        # правила (11200 при 700 строках) иначе упирался бы в предел, не
+        # услышав, что тупик неразрешим (находка ревью).
+        unsat = ""
+        if required is not None and required > MAX_BLOCK_SIZE:
+            unsat = (f" Учтите: правило {PORT_ROW_HEIGHT} px на строку требует "
+                     f"для этого блока {required} px — этим инструментом "
+                     f"высоту ему задать нельзя вовсе.")
+        raise ToolError(
+            f"Высота {_size_value(height)} вне пределов: высота — в пикселях, "
+            f"больше 0 и не больше {MAX_BLOCK_SIZE} (отсечка ошибок единиц "
+            f"измерения: настоящий размер блока — десятки-сотни пикселей)."
+            + unsat)
     before = target.get_size()
+    requested = (float(width), float(height))
     try:
         target.set_graph_prop("Width", _size_value(width))
         target.set_graph_prop("Height", _size_value(height))
@@ -478,7 +589,17 @@ def set_block_size(block: str, width: float, height: float) -> str:
         # `normalize()` безопасен и на линии, созданной не этой сессией.
         wire.normalize()
     after = target.get_size()
-    requested = (float(width), float(height))
+    if required is not None and float(after[1]) != float(required):
+        # Среда могла преобразовать запись (как `_EvenOnlyBlock` в тестах):
+        # «успех с примечанием» здесь оставил бы порт со сломанным
+        # отображением и отчитался успехом (находка ревью).
+        raise ToolError(
+            f"Размер блока '{block}' записан, но среда приняла высоту "
+            f"{_size_text(after)}: у порт-блока она обязана быть {required} px "
+            f"({PORT_ROW_HEIGHT} на строку, строк "
+            f"{required // PORT_ROW_HEIGHT}) — отображение строк испорчено. "
+            f"Это отступление от замера 01.10.2026; повторите вызов, а если "
+            f"повтор не помогает — сообщите среду и версию.")
     if after == before and after != requested:
         raise ToolError(
             f"Размер блока '{block}' не изменился: было и осталось "
