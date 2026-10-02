@@ -391,6 +391,13 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
         except Exception:                                     # noqa: BLE001
             name = str(block.id)
         try:
+            if block.class_name in LABEL_CLASSES:
+                # Подпись «следует» за своим блоком и её карточка 60×40
+                # накрывает его край — это не наложение (замер 02.10.2026).
+                continue
+        except Exception:                                     # noqa: BLE001
+            pass
+        try:
             size = block.get_size()
         except Exception:                                     # noqa: BLE001
             size = None

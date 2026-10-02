@@ -357,6 +357,8 @@ async def test_layout_place_skips_label_objects(monkeypatch):
     assert "Расставлено блоков: 1" in text
     assert label.center is None, "подпись подвинули как блок"
     assert "Подписи (не блоки) не расставляются: 1" in text
+    assert "k_0—TextLabel3" not in text, \
+        "карточка подписи принята за наложение"
 
 
 @pytest.mark.anyio
