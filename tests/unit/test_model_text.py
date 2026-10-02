@@ -275,13 +275,45 @@ async def test_import_model_text_reports_model_stuck(monkeypatch, tmp_path):
     assert "не считает" in result
 
 
+class _BridgeAddsWires(_BridgeRunsContour):
+    """Мост-подделка: тело сборки добавило линии.
+
+    Подделка моделирует **переход**: счётчик линий в подсказке — это прирост
+    (до/после контура), и подделка, возвращающая одно и то же число, не могла
+    бы его проверить.
+    """
+
+    def run_page_script(self, body, result_path):
+        if "createmodel(" in body:
+            session._ensure_project()._wires.extend([object(), object()])
+        return super().run_page_script(body, result_path)
+
+
 @pytest.mark.anyio
 async def test_import_model_text_warns_lines_not_traced(monkeypatch, tmp_path):
-    """Импорт напоминает: линии не трассированы — нужен `layout_place`.
+    """Импорт добавил линии — ответ напоминает: не трассированы, нужен `layout_place`.
 
     В кейсе #24 сразу после импорта провода шли диагоналями через всю схему,
     и модель выглядела нечитаемой; подсказка в ответе снимает лишний круг
     «почему косо» (issue #24, п.3).
+    """
+    _install(monkeypatch, tmp_path, _BridgeAddsWires)
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "Линии связи: +2" in result
+    assert "не пересчитана" in result
+    assert "layout_place" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_does_not_blame_existing_wires(
+        monkeypatch, tmp_path):
+    """Без прироста линии импорту не приписываются (находка ревью).
+
+    Прежде по одному счётчику ответ утверждал «после импорта они не
+    трассированы» про все линии страницы — в том числе уже проложенные.
     """
     _install(monkeypatch, tmp_path, _BridgeRunsContour,
              wires=[object(), object()])
@@ -289,8 +321,8 @@ async def test_import_model_text_warns_lines_not_traced(monkeypatch, tmp_path):
     result = _text(await mcp.call_tool(
         "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
 
-    assert "не трассированы" in result
-    assert "layout_place" in result
+    assert "новых импорт не добавил" in result
+    assert "не пересчитана" not in result
 
 
 @pytest.mark.anyio
