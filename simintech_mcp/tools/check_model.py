@@ -44,13 +44,17 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import overlaps, rect_of
+from .page_script import _fresh_name
 
-#: Отчёт контура — свой файл, как в живых пробах: дескриптор моста телу
-#: недоступен по имени (он назван случайной частью метки), поэтому тело
-#: открывает файл само, а контур пишет маркеры в свой.
+#: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
+#: пробах: дескриптор моста телу недоступен по имени (он назван случайной
+#: частью метки), поэтому тело открывает файл само, а контур пишет маркеры в
+#: свой. Полные имена уникальны на вызов (`page_script._fresh_name`, тот же
+#: приём, что в #40): запертый прошлым обрывом файл (WinError 32) новому
+#: вызову не мешает и не может быть выдан за отчёт этого вызова.
 REPORT_FILE = "check-model-report.txt"
 
-#: Файл маркеров контура (исход классифицирует библиотека, не мы).
+#: База имени файла маркеров контура (исход классифицирует библиотека, не мы).
 MARKER_FILE = "check-model-contour.txt"
 
 #: Сколько записей каждого вида перечислять в ответе; счётчики — всегда полные.
@@ -106,11 +110,11 @@ def _bridge() -> ScriptBridge:
 
 
 def _rect_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), REPORT_FILE))
+    return Path(os.path.join(sandbox.output_root(), _fresh_name(REPORT_FILE)))
 
 
 def _marker_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), MARKER_FILE))
+    return Path(os.path.join(sandbox.output_root(), _fresh_name(MARKER_FILE)))
 
 
 def _read_port_names(block: Block) -> Optional[List[str]]:
@@ -313,11 +317,9 @@ def check_model_layout() -> str:
             f"перечислить линии страницы не удалось: {type(exc).__name__}: "
             f"{exc}. Без списка линий проверка концов невозможна.") from exc
 
+    # Имя отчёта уникально на вызов — чистить прошлый файл нечего (в #40 этот
+    # же приём убрал класс WinError 32: запертый файл не мешает новому имени).
     report_path = _rect_path()
-    try:
-        report_path.unlink(missing_ok=True)
-    except OSError:
-        pass
     script = _check_script(report_path, port_blocks, wire_ids)
     try:
         run = _bridge().run_page_script(script, _marker_path())
