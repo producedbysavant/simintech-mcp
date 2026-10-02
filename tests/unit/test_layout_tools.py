@@ -341,6 +341,25 @@ async def test_layout_place_stacks_port_blocks_flush(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_skips_label_objects(monkeypatch):
+    """Подписи (`constLabel`) — не блоки: не двигаются и не считаются.
+
+    Их `Points` — якорь текста, а `size` — типовая карточка 60×40; живой
+    случай 02.10.2026: расставленная «как блок» подпись уезжает от своего
+    блока и даёт ложные наложения.
+    """
+    block = _PlacedBlock("k_0", 1)
+    label = _PlacedBlock("TextLabel3", 2, class_name="constLabel")
+    _install_wire_project(monkeypatch, {"k_0": block, "TextLabel3": label})
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert "Расставлено блоков: 1" in text
+    assert label.center is None, "подпись подвинули как блок"
+    assert "Подписи (не блоки) не расставляются: 1" in text
+
+
+@pytest.mark.anyio
 async def test_layout_place_snaps_centers_to_grid(monkeypatch):
     """Центры блоков — на разметку 8 px (стандарт: 1 квадратик = 8×8).
 

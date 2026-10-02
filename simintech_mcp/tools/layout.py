@@ -28,6 +28,13 @@ GRID_STEP = 8.0
 #: колонкой без зазоров»).
 PORT_STACK_CLASSES = ("Порт входа", "Порт выхода")
 
+#: Классы-«подписи»: это не блоки. Их `Points` — якорь текста, а `size` —
+#: типовая карточка (60×40), а не габарит (замер 02.10.2026: `constLabel`,
+#: `Points=[(0, −18)]`, портов нет). Расстановке и метрике не подлежат:
+#: расставленная «как блок» подпись уезжает от своего блока и даёт ложные
+#: наложения.
+LABEL_CLASSES = ("constLabel",)
+
 
 def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
                        available: dict) -> int:
@@ -127,6 +134,11 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     одного слоя стыкуются стопкой вплотную — единой колонкой без зазоров
     (вертикальные зазоры между прочими блоками в стандарте — 8…32 px).
 
+    **Подписи не расставляются.** Объекты-подписи (`constLabel`) — не блоки:
+    их `Points` — якорь текста, `size` — типовая карточка, и «расставленная»
+    подпись уезжает от своего блока (живой случай 02.10.2026). Они
+    исключаются из расстановки и, как следствие, из метрики наложений.
+
     Размеры блоков не задаются: `set_center` сохраняет родной размер каждого
     блока (он задан правилами разработки SimInTech, и подменять его нельзя), а
     расстановка считается по фактическим габаритам из `get_size`.
@@ -190,6 +202,22 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
             f"Блоки не найдены на странице: {', '.join(missing)}. "
             f"Актуальные имена и id даёт list_blocks."
         )
+
+    # Подписи — не блоки: их «габарит» (якорь текста + типовая карточка)
+    # расстановке не подлежит, иначе подпись уезжает от своего блока.
+    dropped_labels = []
+    kept = []
+    for token in tokens:
+        try:
+            cls = available[token].class_name
+        except Exception:                                     # noqa: BLE001
+            kept.append(token)
+            continue
+        if cls in LABEL_CLASSES:
+            dropped_labels.append(token)
+        else:
+            kept.append(token)
+    tokens = kept
 
     # `connect` запоминает концы линий именами блоков (`_WIRES`), а блоки здесь
     # разрешено адресовать числовыми id (`block_ids='1,2'`). Без перевода имён в
@@ -338,6 +366,9 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     if flushed:
         routes += (f"\nСтопки порт-блоков: сомкнуто вплотную {flushed} — "
                    f"единой колонкой без зазоров")
+    if dropped_labels:
+        routes += (f"\nПодписи (не блоки) не расставляются: "
+                   f"{len(dropped_labels)} шт.")
     if unaligned:
         routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
                    f"связей: {', '.join(unaligned)}")
