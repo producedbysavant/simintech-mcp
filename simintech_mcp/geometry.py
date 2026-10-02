@@ -14,19 +14,24 @@ import re
 _POINT_RE = re.compile(r"\(([-\d.]+)\s*,\s*([-\d.]+)\)")
 
 
-def rect_of(points_text: str) -> "tuple[float, float, float, float] | None":
-    """Габаритный прямоугольник блока из строки свойства `Points`.
+def rect_of(points_text: str,
+            size: "tuple[float, float]") -> "tuple[float, float, float, float] | None":
+    """Габарит блока: центр из `Points` ± половина размера.
 
-    `Points` — полилиния контура в формате `[(x , y), ...]`; для наложения
-    достаточно габарита (min/max). `None` — свойство пусто или не разбирается:
-    вызывающий обязан назвать такой блок, а не молча счесть его подходящим.
+    Живой замер 02.10.2026: `Points` — **не контур блока**, и min/max его
+    точек габаритом не является («Константа» 32×16 даёт полилинию 16×32).
+    Первая точка полилинии — центр блока (совпадает с `set_center` до
+    десятых, а при создании — с «левый верхний + половина размера»), вторая —
+    выходной порт (центр + (16, 0)). Поэтому габарит строится из центра и
+    `get_size`, а не из размаха точек. `None` — свойство пусто/не разбирается
+    или размер недоступен: вызывающий обязан назвать такой блок.
     """
     pairs = _POINT_RE.findall(points_text or "")
     if not pairs:
         return None
-    xs = [float(x) for x, _ in pairs]
-    ys = [float(y) for _, y in pairs]
-    return (min(xs), min(ys), max(xs), max(ys))
+    cx, cy = float(pairs[0][0]), float(pairs[0][1])
+    w, h = size
+    return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
 
 
 def overlaps(rect_a: "tuple[float, float, float, float]",

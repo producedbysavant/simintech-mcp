@@ -28,11 +28,6 @@ from simintech_mcp.server import mcp
 from _support import _error, _text
 
 
-def _rect(x1, y1, x2, y2):
-    return f"[({x1:g} , {y1:g}), ({x2:g} , {y1:g}), ({x2:g} , {y2:g}), " \
-           f"({x1:g} , {y2:g})]"
-
-
 class _FakeClient:
     """COM-клиент: сессии достаточно пробного вызова `GetProcessID`."""
 
@@ -41,14 +36,22 @@ class _FakeClient:
 
 
 class _CheckBlock:
-    """Блок с габаритом, подписями и числом портов — как их читает проверка."""
+    """Блок с габаритом, подписями и числом портов — как их читает проверка.
 
-    def __init__(self, name, rect=None, portnames="", ports=2, width=32.0):
+    `Points` повторяет живую форму (замер 02.10.2026): первая точка — **центр**
+    блока, вторая — выходной порт (центр + (16, 0)), дальше точки полилинии.
+    Габарит проверка строит из центра и размера — min/max подделки был бы
+    неверен ровно так же, как был неверен код.
+    """
+
+    def __init__(self, name, center=None, portnames="", ports=2,
+                 width=32.0, height=16.0):
         self._name = name
-        self._rect = rect
+        self._center = center
         self._portnames = portnames
         self._ports = ports
         self._width = width
+        self._height = height
 
     @property
     def id(self):
@@ -58,10 +61,15 @@ class _CheckBlock:
         return self._name
 
     def get_size(self):
-        return (self._width, 16.0)
+        return (self._width, self._height)
 
     def get_points(self):
-        return self._rect or ""
+        if self._center is None:
+            return ""
+        cx, cy = self._center
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - self._height / 2:g}), "
+                f"({cx:g} , {cy + 24:g})]")
 
     def get_property(self, name):
         assert name == "PortNames"
@@ -135,8 +143,8 @@ def _install(monkeypatch, tmp_path, blocks, wires=(),
 async def test_check_reports_clean_model(monkeypatch, tmp_path):
     """Чистая модель: без наложений, подписи в рамках, порты не пусты."""
     blocks = [
-        _CheckBlock("k_0", rect=_rect(0, 0, 32, 16)),
-        _CheckBlock("kx_0", rect=_rect(200, 0, 232, 16)),
+        _CheckBlock("k_0", center=(0, 0)),
+        _CheckBlock("kx_0", center=(200, 0)),
     ]
     _install(monkeypatch, tmp_path, blocks)
 
@@ -149,10 +157,13 @@ async def test_check_reports_clean_model(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_check_reports_overlaps(monkeypatch, tmp_path):
-    """Наложение габаритов названо парой — метрика из #24, п.4."""
+    """Наложение габаритов названо парой — метрика из #24, п.4.
+
+    Габарит — центр ± размер: центры (0,0) и (8,8) при 32×16 пересекаются.
+    """
     blocks = [
-        _CheckBlock("k_0", rect=_rect(0, 0, 32, 16)),
-        _CheckBlock("kx_0", rect=_rect(16, 8, 48, 24)),
+        _CheckBlock("k_0", center=(0, 0)),
+        _CheckBlock("kx_0", center=(8, 8)),
     ]
     _install(monkeypatch, tmp_path, blocks)
 
@@ -162,9 +173,28 @@ async def test_check_reports_overlaps(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_check_uses_center_based_bounds(monkeypatch, tmp_path):
+    """Габарит — центр(Points) ± size, а не min/max полилинии.
+
+    Живой замер 02.10.2026: у «Константы» 32×16 полилиния даёт размах 16×32 —
+    min/max габаритом не является. Здесь блоки стоят так, что min/max-габарит
+    дал бы ложное наложение, а центр-габарит — нет.
+    """
+    blocks = [
+        _CheckBlock("k_0", center=(0, 0)),
+        _CheckBlock("k_1", center=(40, 0)),
+    ]
+    _install(monkeypatch, tmp_path, blocks)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Наложения габаритов: нет" in text
+
+
+@pytest.mark.anyio
 async def test_check_reports_empty_ports_from_contour(monkeypatch, tmp_path):
     """Пустой порт приходит из отчёта контура и попадает в вердикт."""
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16))]
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
     _install(monkeypatch, tmp_path, blocks, payload="EMPTY|k_0|1\n")
 
     text = _text(await mcp.call_tool("check_model_layout", {}))
@@ -175,7 +205,7 @@ async def test_check_reports_empty_ports_from_contour(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_check_classifies_wires(monkeypatch, tmp_path):
     """Связь по концам: совпал один ряд — прямая, разошлись оба — с изломом."""
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16))]
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
     wires = [_FakeWire(1), _FakeWire(2)]
     payload = ("W|1|(0+0i)|(100+0i)\n"
                "W|2|(0-56i)|(100+8i)\n")
@@ -191,7 +221,7 @@ async def test_check_classifies_wires(monkeypatch, tmp_path):
 async def test_check_reports_wide_label(monkeypatch, tmp_path):
     """Длинная подпись порт-блока шире рамки — предупреждение с числами."""
     blocks = [
-        _CheckBlock("t_0", rect=_rect(0, 0, 32, 16),
+        _CheckBlock("t_0", center=(0, 0),
                     portnames="CoolTT_C_CoolSt_WorkSt\n"),
     ]
     _install(monkeypatch, tmp_path, blocks)
@@ -205,7 +235,7 @@ async def test_check_reports_wide_label(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_check_script_queries_ports_and_wire_ends(monkeypatch, tmp_path):
     """Тело контура: пустота портов — `getportwireid`, концы — `getwire*coord`."""
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16), ports=2)]
+    blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
     wires = [_FakeWire(3)]
     _install(monkeypatch, tmp_path, blocks, wires=wires)
 
@@ -229,7 +259,7 @@ async def test_check_names_not_compiled_contour(monkeypatch, tmp_path):
             return PageRunResult(outcome=type(self).outcome,
                                  restored_script="")
 
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16))]
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
     _install(monkeypatch, tmp_path, blocks, bridge=_Broken)
 
     text = _text(await mcp.call_tool("check_model_layout", {}))
@@ -244,7 +274,7 @@ async def test_check_reads_report_on_model_not_running(monkeypatch, tmp_path):
     class _Stuck(_BridgeWritesReport):
         outcome = ContourOutcome(kind=OUTCOME_MODEL_NOT_RUNNING, lines=[])
 
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16))]
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
     _install(monkeypatch, tmp_path, blocks, bridge=_Stuck,
              payload="EMPTY|k_0|0\n")
 
@@ -257,7 +287,7 @@ async def test_check_reads_report_on_model_not_running(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_check_refuses_when_bridge_fails(monkeypatch, tmp_path):
     """Отказ моста — отказ инструмента: состояние проекта неопределённо."""
-    blocks = [_CheckBlock("k_0", rect=_rect(0, 0, 32, 16))]
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
     _install(monkeypatch, tmp_path, blocks, bridge=_BridgeFails)
 
     message = await _error("check_model_layout", {})
@@ -269,8 +299,8 @@ async def test_check_refuses_when_bridge_fails(monkeypatch, tmp_path):
 async def test_check_names_unreadable_geometry(monkeypatch, tmp_path):
     """Габарит не прочитался — блок назван, а не молча пропущен."""
     blocks = [
-        _CheckBlock("k_0", rect=None),
-        _CheckBlock("kx_0", rect=_rect(200, 0, 232, 16)),
+        _CheckBlock("k_0", center=None),
+        _CheckBlock("kx_0", center=(200, 0)),
     ]
     _install(monkeypatch, tmp_path, blocks)
 
@@ -289,8 +319,8 @@ async def test_check_skips_unsafe_block_name(monkeypatch, tmp_path):
     теле не должно остаться ни одной его части.
     """
     blocks = [
-        _CheckBlock('k_0); bad(); (', rect=_rect(0, 0, 32, 16)),
-        _CheckBlock("k_1", rect=_rect(100, 0, 132, 16)),
+        _CheckBlock('k_0); bad(); (', center=(0, 0)),
+        _CheckBlock("k_1", center=(100, 0)),
     ]
     _install(monkeypatch, tmp_path, blocks)
 

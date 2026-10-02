@@ -205,18 +205,21 @@ def check_model_layout() -> str:
             name = block.get_name()
         except Exception:                                      # noqa: BLE001
             name = str(block.id)
+        # Размер читается ДО габарита: габарит строится как центр(Points) ±
+        # size/2 (замер 02.10.2026 — min/max полилинии габаритом не является).
         try:
-            rect = rect_of(block.get_points())
+            size = block.get_size()
+        except Exception:                                      # noqa: BLE001
+            size = None
+        try:
+            rect = rect_of(block.get_points(), size) if size else None
         except Exception:                                      # noqa: BLE001
             rect = None
         if rect is None:
             no_geometry.append(name)
         else:
             geometry.append((name, rect))
-        try:
-            width, _height = block.get_size()
-        except Exception:                                      # noqa: BLE001
-            width = None
+        width = size[0] if size else None
         names = _read_port_names(block)
         if width and names:
             longest = max(names, key=len)
