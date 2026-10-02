@@ -211,6 +211,26 @@ async def test_save_project_refuses_untouched_existing_file(
     assert "#21" in text
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("name,binary", [("m.prt", False), ("m.xprt", True)])
+async def test_save_project_refuses_format_extension_mismatch(
+        monkeypatch, tmp_path, name, binary):
+    """Имя обещает не тот формат, которым пишем, — отказ до всякой работы.
+
+    Среда выбирает формат по расширению: XML, записанный в файл `.prt`, GUI
+    показал «Ошибка загрузки страницы проекта: data error» (живой случай
+    02.10.2026 — тот же текст под именем `.xprt` открылся). Проверка обязана
+    стоять до COM-вызовов: ни формы, ни записи.
+    """
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project",
+                        {"path": str(tmp_path / name), "binary": binary})
+
+    assert ".xprt" in text and ".prt" in text
+    assert project.calls == [], "проверка формата прошла после COM-работы"
+
+
 def test_status_refuses_when_com_unavailable(monkeypatch):
     """`status` отказывает, если подключиться не удалось.
 
