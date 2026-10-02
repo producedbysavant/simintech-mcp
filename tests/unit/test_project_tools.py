@@ -224,9 +224,14 @@ class _CoarseTimestampProject(_SavableProject):
     """
 
     def save_xml(self, path: str) -> None:
+        # Порядок как у базовой подделки (`_record`): запись в журнал →
+        # ручка raises → ручка writes → файл. Переопределение не смеет
+        # оставлять ручки молча нерабочими (находка ревью).
+        self.calls.append(("xml", path))
         if self._raises:
             raise RuntimeError("диск переполнен")
-        self.calls.append(("xml", path))
+        if not self._writes:
+            return
         old = os.stat(path)
         Path(path).write_bytes(b"<new!>")
         os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
@@ -236,9 +241,11 @@ class _IdenticalRewriteProject(_SavableProject):
     """Перезапись идентичным содержимым с той же меткой (грубая ФС)."""
 
     def save_xml(self, path: str) -> None:
+        self.calls.append(("xml", path))
         if self._raises:
             raise RuntimeError("диск переполнен")
-        self.calls.append(("xml", path))
+        if not self._writes:
+            return
         old = os.stat(path)
         raw = Path(path).read_bytes()
         Path(path).write_bytes(raw)
