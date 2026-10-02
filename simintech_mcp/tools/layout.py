@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from fastmcp.exceptions import ToolError
+from simintech_api.catalog import NON_BLOCK_CLASSES
 
 from .. import runtime, session
 from ..app import mcp
@@ -28,12 +29,15 @@ GRID_STEP = 8.0
 #: колонкой без зазоров»).
 PORT_STACK_CLASSES = ("Порт входа", "Порт выхода")
 
-#: Классы-«подписи»: это не блоки. Их `Points` — якорь текста, а `size` —
-#: типовая карточка (60×40), а не габарит (замер 02.10.2026: `constLabel`,
-#: `Points=[(0, −18)]`, портов нет). Расстановке и метрике не подлежат:
-#: расставленная «как блок» подпись уезжает от своего блока и даёт ложные
-#: наложения.
-LABEL_CLASSES = ("constLabel",)
+#: Классы-«оформление»: это не блоки. Набор — библиотечный
+#: (`simintech_api.catalog.NON_BLOCK_CLASSES`: `TextLabel`, `RotatedText`,
+#: «Комментарий», `Rectangle` и т. п.): живой замер 02.10.2026 вскрыл
+#: `constLabel` (`Points` — якорь текста, `size` — типовая карточка 60×40,
+#: портов нет), но подпись в GUI может быть и `TextLabel`, и прямоугольником —
+#: своя константа из одного имени пропускала их в расстановку (находка ревью
+#: 02.10.2026). Расстановке и метрике не подлежат: расставленный «как блок»
+#: объект оформления уезжает от того, что помечает, и даёт ложные наложения.
+LABEL_CLASSES = NON_BLOCK_CLASSES
 
 
 def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
@@ -41,27 +45,33 @@ def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
     """Стыковать порт-блоки одного класса в слое вплотную.
 
     Стандарт оформления (#24, п.2): блоки одного вида — стопкой без зазоров,
-    «входные порты единой колонкой». Работает по фактическим высотам:
-    следующий центр — предыдущий + (h1 + h2)/2, стопка садится точно. Блоки
-    без читаемого класса не трогаются; возвращается число сдвинутых.
+    «входные порты единой колонкой». Стыкуются только **соседние** в колонке
+    блоки одного класса: если между порт-блоками стоит чужой блок, «стопку»
+    через него собирать нельзя — сдвиг насадил бы порты на него (находка
+    ревью 02.10.2026: вызов «расставь всё» печатал «сомкнуто вплотную» и тут
+    же — наложение, которое сам создал). Считается по фактическим высотам:
+    следующий центр — предыдущий + (h1 + h2)/2. Блоки без читаемого класса не
+    трогаются; возвращается число сдвинутых.
     """
     layers: dict = {}
     for token in tokens:
         layers.setdefault(centers[token][0], []).append(token)
     moved = 0
     for column in layers.values():
-        groups: dict = {}
-        for token in column:
+        ordered = sorted(column, key=lambda t: centers[t][1])
+        runs: list = []
+        for token in ordered:
             try:
                 cls = available[token].class_name
             except Exception:                                     # noqa: BLE001
+                cls = None
+            if cls is not None and runs and runs[-1][0] == cls:
+                runs[-1][1].append(token)
+            else:
+                runs.append((cls, [token]))
+        for cls, members in runs:
+            if cls not in PORT_STACK_CLASSES or len(members) < 2:
                 continue
-            if cls in PORT_STACK_CLASSES:
-                groups.setdefault(cls, []).append(token)
-        for members in groups.values():
-            if len(members) < 2:
-                continue
-            members.sort(key=lambda t: centers[t][1])
             for prev, token in zip(members, members[1:]):
                 cy = centers[prev][1] + (sizes[prev][1] + sizes[token][1]) / 2
                 centers[token] = (centers[token][0], cy)
@@ -72,8 +82,13 @@ def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
 def _snap_centers(centers: dict) -> None:
     """Поставить центры блоков на разметку 8 px (и порты — тоже на сетку).
 
-    Выравнивание по портам после этого сетку сохраняет: смещение вход→выход
-    — разность кратных 8 координат (порты в `cx±16, cy` и четверть-высоты).
+    Выравнивание по портам после этого сетку сохраняет **не всегда**: смещение
+    вход→выход — разность координат портов; у блоков высотой 16/32 она кратна
+    8 (порты в `cx±16, cy` и на четвертях высоты — по 8 px), а у трёхвходового
+    «Сумматора» (32×48) четверть — 12 px, и выровненный приёмник сходит с
+    сетки на 4 (находка ревью 02.10.2026). Выравнивание — последний шаг: у
+    неподвинутых блоков сетка соблюдена, а сдвинутые назовёт проверка разметки
+    `check_model_layout`.
     """
     for token, (cx, cy) in centers.items():
         centers[token] = (round(cx / GRID_STEP) * GRID_STEP,
@@ -122,6 +137,9 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     блоки в (0,0) друг на друге — «кучей», которую инструмент при этом
     подтверждал как расставленную (живой случай 02.10.2026). Явные аргументы
     остаются для выборочной расстановки и разбираются строго, как раньше.
+    Концы чужих линий через COM не читаются: если реестр `connect` пуст
+    (проект открыт из файла), расстановка идёт без связей — ответ об этом
+    скажет, а не умолчит.
 
     **Проверка наложений.** После расстановки габариты блоков читаются из
     свойства `Points`, и пересекающиеся пары называются в ответе: контракт
@@ -131,11 +149,14 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     **Сетка 8 px и стопки порт-блоков** (стандарт оформления владельца,
     02.10.2026): 1 квадратик разметки — 8×8; центры ставятся на сетку,
     поэтому и порты на ней (порты — `cx±16, cy`); «Порт входа»/«Порт выхода»
-    одного слоя стыкуются стопкой вплотную — единой колонкой без зазоров
-    (вертикальные зазоры между прочими блоками в стандарте — 8…32 px).
+    одного класса, соседние в колонке, стыкуются стопкой вплотную — единой
+    колонкой без зазоров (вертикальные зазоры между прочими блоками в
+    стандарте — 8…32 px). Приёмники-порт-блоки выравнивание по портам не
+    двигает: стопка важнее прямого участка к ним.
 
-    **Подписи не расставляются.** Объекты-подписи (`constLabel`) — не блоки:
-    их `Points` — якорь текста, `size` — типовая карточка, и «расставленная»
+    **Подписи не расставляются.** Объекты оформления (`constLabel`, `TextLabel`,
+    «Комментарий» и прочий `NON_BLOCK_CLASSES` библиотеки) — не блоки: их
+    `Points` — якорь текста, `size` — типовая карточка, и «расставленная»
     подпись уезжает от своего блока (живой случай 02.10.2026). Они
     исключаются из расстановки и, как следствие, из метрики наложений.
 
@@ -237,41 +258,51 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
         # честный максимум — реестр `connect`. Пары, чьи блоки не попали в
         # расстановку, отбрасываются: в реестре могли остаться концы прежней
         # страницы, и строгий отказ по ним сорвал бы вызов «расставь всё».
+        # Список собирается напрямую, а не строкой `src->dst` с обратным
+        # разбором: имя, переименованное в GUI, могло содержать запятую или
+        # «->», и разбор строки сломал бы рекомендуемый вызов (находка ревью
+        # 02.10.2026).
         by_name: dict[str, str] = {}
         for token in tokens:
             try:
                 by_name.setdefault(available[token].get_name(), token)
             except Exception:                                 # noqa: BLE001
                 continue
-        known_pairs = dict.fromkeys(
-            (src, dst) for _wire, src, _out, dst, _in in session._WIRES)
-        connections = ",".join(
-            f"{by_name[src]}->{by_name[dst]}"
-            for src, dst in known_pairs if src in by_name and dst in by_name)
-
-    links = []
-    for pair in connections.split(","):
-        pair = pair.strip()
-        if not pair:
-            continue
-        if "->" not in pair:
-            # Молчаливый пропуск здесь — ложный успех: связь не учитывается,
-            # блоки встают в один слой, а клиент видит подтверждение
-            # расстановки. Отказ называет сам токен, поэтому опечатку
-            # (например, типографскую стрелку) видно сразу.
-            raise ToolError(
-                f"Не разобрана связь «{pair}»: ожидается пара "
-                f"«источник->приёмник», например `k_0->kx_0`"
-            )
-        src, _, dst = pair.partition("->")
-        src, dst = src.strip(), dst.strip()
-        unknown = [t for t in (src, dst) if t not in tokens]
-        if unknown:
-            raise ToolError(
-                f"В connections упомянуты блоки вне block_ids: "
-                f"{', '.join(unknown)} — расстановка невозможна"
-            )
-        links.append((src, dst))
+        links = []
+        seen_pairs: set = set()
+        for _wire, src, _out, dst, _in in session._WIRES:
+            src_token = by_name.get(src)
+            dst_token = by_name.get(dst)
+            if src_token is None or dst_token is None:
+                continue
+            if (src_token, dst_token) in seen_pairs:
+                continue
+            seen_pairs.add((src_token, dst_token))
+            links.append((src_token, dst_token))
+    else:
+        links = []
+        for pair in connections.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if "->" not in pair:
+                # Молчаливый пропуск здесь — ложный успех: связь не
+                # учитывается, блоки встают в один слой, а клиент видит
+                # подтверждение расстановки. Отказ называет сам токен, поэтому
+                # опечатку (например, типографскую стрелку) видно сразу.
+                raise ToolError(
+                    f"Не разобрана связь «{pair}»: ожидается пара "
+                    f"«источник->приёмник», например `k_0->kx_0`"
+                )
+            src, _, dst = pair.partition("->")
+            src, dst = src.strip(), dst.strip()
+            unknown = [t for t in (src, dst) if t not in tokens]
+            if unknown:
+                raise ToolError(
+                    f"В connections упомянуты блоки вне block_ids: "
+                    f"{', '.join(unknown)} — расстановка невозможна"
+                )
+            links.append((src, dst))
 
     # Размеры берём у самих блоков, а не подставляем свои: размер задан
     # правилами разработки SimInTech, и `set_center` не должен его менять.
@@ -279,12 +310,17 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     positions = LayeredPlacer().place(tokens, links, sizes=sizes)
 
     centers = {token: positions[token] for token in tokens}
-    # Стопки и сетка — до `set_center` и до выравнивания: выравнивание по
-    # портам потом сохраняет сетку (порты стоят в cx±16, cy, смещения
-    # вход→выход кратны 8), а стопки успевают развести порт-блоки до того,
-    # как источники начнут тянуть за собой приёмники.
-    flushed = _flush_port_stacks(tokens, centers, sizes, available)
+    # Порядок обязателен: **сначала сетка, затем стопки**. Обратный порядок
+    # ломал стопку: `_snap_centers` округляет каждый центр сам, и соседи
+    # разъезжались (20/60/100 → 16/64/96 — зазор и наложение вместо смыкания;
+    # находка при разборе ревью 02.10.2026). Шаг стопки при высотах
+    # порт-блоков 16×N кратен 8 ((16k₁+16k₂)/2 = 8(k₁+k₂)), поэтому от центра,
+    # стоящего на сетке, вся стопка остаётся на сетке. Выравнивание по портам
+    # идёт последним и порт-блоки не трогает (см. ниже); у остальных
+    # приёмников смещение может увести центр с сетки (четверти трёхвходового
+    # «Сумматора» — 12 px) — это назовёт проверка разметки.
     _snap_centers(centers)
+    flushed = _flush_port_stacks(tokens, centers, sizes, available)
     for token in tokens:
         available[token].set_center(*centers[token])
 
@@ -328,6 +364,17 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
             continue
         src_token = aliases.get(src_name, src_name)
         dst_token = aliases.get(dst_name, dst_name)
+        # Приёмник-порт-блок не двигается: стопка вплотную — стандарт
+        # оформления, и выравнивание вытянуло бы его из стопки, а ответ
+        # продолжал бы утверждать «сомкнуто вплотную» (находка ревью
+        # 02.10.2026: стопка 72/88 разъезжалась на 16/144). Линия к нему
+        # может пойти с изломом — это плата за стопку.
+        try:
+            dst_class = available[dst_token].class_name
+        except Exception:                                     # noqa: BLE001
+            dst_class = None
+        if dst_class in PORT_STACK_CLASSES:
+            continue
         out_key = (src_token, out_index, True)
         in_key = (dst_token, in_index, False)
         if out_key not in offsets or in_key not in offsets:
@@ -363,6 +410,10 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     routes = (f"\nЛинии связи: нормализовано {len(wires)} линий страницы — "
               f"участки ортогональные" if wires
               else "\nЛиний связи на странице нет — трассировать нечего")
+    if bare_call and not links:
+        routes += ("\nСвязи: ни одной пары не известно (реестр `connect` пуст)"
+                   " — связи не учтены, блоки встали одной колонкой; концы"
+                   " линий открытого проекта через COM не читаются.")
     if flushed:
         routes += (f"\nСтопки порт-блоков: сомкнуто вплотную {flushed} — "
                    f"единой колонкой без зазоров")
@@ -375,8 +426,10 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
 
     # Наложения: контракт «без наложений» проверяется фактом — по габаритам из
     # `Points` всех блоков страницы, прочитанным после перерисовки. Пары — с
-    # участием расставленных блоков: чужие наложения не наша правка, но
-    # расставленный поверх чужого обязан быть виден.
+    # участием расставленных блоков (любой из двух): чужой блок, перечисленный
+    # раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
+    # наложения — не наша правка, но расставленный поверх чужого обязан быть
+    # виден.
     placed = set()
     for token in tokens:
         try:
@@ -411,10 +464,9 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
             rects.append((name, rect))
     overlaps = []
     for index, (name_a, rect_a) in enumerate(rects):
-        if name_a not in placed:
-            continue
         for name_b, rect_b in rects[index + 1:]:
-            if _overlaps(rect_a, rect_b):
+            if (name_a in placed or name_b in placed) \
+                    and _overlaps(rect_a, rect_b):
                 overlaps.append((name_a, name_b))
     if overlaps:
         shown = ", ".join(f"{a}—{b}"
