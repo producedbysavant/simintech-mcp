@@ -19,6 +19,59 @@ from ..app import mcp
 #: хвост обрезается (счётчик остаётся).
 MAX_REPORTED_OVERLAPS = 10
 
+#: Шаг разметки схемы: 1 квадратик = 8×8 px (стандарт оформления владельца:
+#: блоки «сигнал»/«порт»/«константа» — 16 высоты, «Ступенька» — 32; порты
+#: стоят в `cx±16, cy`, поэтому кратность 8 у центров даёт сетку и портам).
+GRID_STEP = 8.0
+
+#: Классы, стыкующиеся стопкой вплотную (стандарт: «входные порты единой
+#: колонкой без зазоров»).
+PORT_STACK_CLASSES = ("Порт входа", "Порт выхода")
+
+
+def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
+                       available: dict) -> int:
+    """Стыковать порт-блоки одного класса в слое вплотную.
+
+    Стандарт оформления (#24, п.2): блоки одного вида — стопкой без зазоров,
+    «входные порты единой колонкой». Работает по фактическим высотам:
+    следующий центр — предыдущий + (h1 + h2)/2, стопка садится точно. Блоки
+    без читаемого класса не трогаются; возвращается число сдвинутых.
+    """
+    layers: dict = {}
+    for token in tokens:
+        layers.setdefault(centers[token][0], []).append(token)
+    moved = 0
+    for column in layers.values():
+        groups: dict = {}
+        for token in column:
+            try:
+                cls = available[token].class_name
+            except Exception:                                     # noqa: BLE001
+                continue
+            if cls in PORT_STACK_CLASSES:
+                groups.setdefault(cls, []).append(token)
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            members.sort(key=lambda t: centers[t][1])
+            for prev, token in zip(members, members[1:]):
+                cy = centers[prev][1] + (sizes[prev][1] + sizes[token][1]) / 2
+                centers[token] = (centers[token][0], cy)
+                moved += 1
+    return moved
+
+
+def _snap_centers(centers: dict) -> None:
+    """Поставить центры блоков на разметку 8 px (и порты — тоже на сетку).
+
+    Выравнивание по портам после этого сетку сохраняет: смещение вход→выход
+    — разность кратных 8 координат (порты в `cx±16, cy` и четверть-высоты).
+    """
+    for token, (cx, cy) in centers.items():
+        centers[token] = (round(cx / GRID_STEP) * GRID_STEP,
+                          round(cy / GRID_STEP) * GRID_STEP)
+
 
 def _rect_of(points_text: str, size: "tuple[float, float]") -> \
         "tuple[float, float, float, float] | None":
@@ -67,6 +120,12 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     свойства `Points`, и пересекающиеся пары называются в ответе: контракт
     «без наложений» виден фактом, а не предполагается. Пары считаются только
     с участием расставленных блоков — чужие наложения не наша правка.
+
+    **Сетка 8 px и стопки порт-блоков** (стандарт оформления владельца,
+    02.10.2026): 1 квадратик разметки — 8×8; центры ставятся на сетку,
+    поэтому и порты на ней (порты — `cx±16, cy`); «Порт входа»/«Порт выхода»
+    одного слоя стыкуются стопкой вплотную — единой колонкой без зазоров
+    (вертикальные зазоры между прочими блоками в стандарте — 8…32 px).
 
     Размеры блоков не задаются: `set_center` сохраняет родной размер каждого
     блока (он задан правилами разработки SimInTech, и подменять его нельзя), а
@@ -192,6 +251,12 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     positions = LayeredPlacer().place(tokens, links, sizes=sizes)
 
     centers = {token: positions[token] for token in tokens}
+    # Стопки и сетка — до `set_center` и до выравнивания: выравнивание по
+    # портам потом сохраняет сетку (порты стоят в cx±16, cy, смещения
+    # вход→выход кратны 8), а стопки успевают развести порт-блоки до того,
+    # как источники начнут тянуть за собой приёмники.
+    flushed = _flush_port_stacks(tokens, centers, sizes, available)
+    _snap_centers(centers)
     for token in tokens:
         available[token].set_center(*centers[token])
 
@@ -270,6 +335,9 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     routes = (f"\nЛинии связи: нормализовано {len(wires)} линий страницы — "
               f"участки ортогональные" if wires
               else "\nЛиний связи на странице нет — трассировать нечего")
+    if flushed:
+        routes += (f"\nСтопки порт-блоков: сомкнуто вплотную {flushed} — "
+                   f"единой колонкой без зазоров")
     if unaligned:
         routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
                    f"связей: {', '.join(unaligned)}")

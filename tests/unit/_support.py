@@ -94,9 +94,11 @@ class _PlacedBlock:
     #: Размер, который «отдаёт» блок: у SimInTech он свой у каждого класса.
     SIZE = (60.0, 40.0)
 
-    def __init__(self, name, block_id):
+    def __init__(self, name, block_id, class_name=""):
         self._name = name
         self._id = block_id
+        #: Класс: по нему layout_place смыкает стопки порт-блоков.
+        self.class_name = class_name
         self.center = None
         self.size_reads = 0
 

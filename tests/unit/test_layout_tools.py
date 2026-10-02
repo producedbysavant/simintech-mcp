@@ -313,3 +313,50 @@ async def test_layout_place_reports_overlap_with_foreign_block(monkeypatch):
 
     assert "ВНИМАНИЕ: наложения блоков" in text
     assert "k_0" in text and "t_0" in text, "пара наложения названа не полностью"
+
+
+@pytest.mark.anyio
+async def test_layout_place_stacks_port_blocks_flush(monkeypatch):
+    """Порт-блоки одного класса стыкуются стопкой вплотную (#24, п.2).
+
+    Стандарт оформления: «входные порты единой колонкой без зазоров»; шаг
+    стопки — высота блока (16 px у порт-блока с одним сигналом).
+    """
+    first = _PlacedBlock("In_0", 1, class_name="Порт входа")
+    second = _PlacedBlock("In_1", 2, class_name="Порт входа")
+    third = _PlacedBlock("In_2", 3, class_name="Порт входа")
+    for block in (first, second, third):
+        block.SIZE = (64.0, 16.0)
+    _install_wire_project(monkeypatch, {"In_0": first, "In_1": second,
+                                        "In_2": third})
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    ys = sorted(block.center[1] for block in (first, second, third))
+    assert ys[1] - ys[0] == 16.0 and ys[2] - ys[1] == 16.0, \
+        "стопка не вплотную: зазор между порт-блоками"
+    xs = {first.center[0], second.center[0], third.center[0]}
+    assert len(xs) == 1, "порт-блоки не в одной колонке"
+    assert "Стопки порт-блоков" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_snaps_centers_to_grid(monkeypatch):
+    """Центры блоков — на разметку 8 px (стандарт: 1 квадратик = 8×8).
+
+    Стек 28+80=108 px даёт координату, не кратную 8, — постановка на сетку
+    обязана её поправить (порты при этом тоже на сетке: они в cx±16, cy).
+    """
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("k_1", 2)
+    first.SIZE = (60.0, 28.0)
+    second.SIZE = (60.0, 28.0)
+    _install_wire_project(monkeypatch, {"k_0": first, "k_1": second})
+
+    await mcp.call_tool("layout_place",
+                        {"block_ids": "k_0,k_1", "connections": ""})
+
+    for block in (first, second):
+        cx, cy = block.center
+        assert cx % 8 == 0 and cy % 8 == 0, \
+            f"центр {block.get_name()} вне сетки 8: ({cx}, {cy})"
