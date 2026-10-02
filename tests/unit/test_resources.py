@@ -257,3 +257,19 @@ async def test_resource_language_function_missing_name_is_an_answer():
 
     assert "нет в реестре" in text
     assert "ERROR" not in text
+
+
+@pytest.mark.anyio
+async def test_resource_model_checklist_covers_key_rules():
+    """Чек-лист оформления: ключевые правила и границы машинной проверки.
+
+    Список существует затем, чтобы агент проверял себя сам (#24, п.1); без
+    имён инструментов и честной границы «что глазами» он читался бы как
+    «всё проверено машинно».
+    """
+    text = await _resource_text("simintech://model/checklist")
+
+    assert "layout_place" in text
+    assert "check_model_layout" in text
+    assert "16 px" in text
+    assert "GUI" in text  # непроверяемое машинно названо

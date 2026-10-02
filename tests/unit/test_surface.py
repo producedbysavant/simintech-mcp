@@ -108,7 +108,7 @@ async def test_all_tools_registered():
         "run", "step", "stop", "get_time",
         "list_signals", "get_signal", "set_signal", "export_signal_db",
         "read_output_file", "summarize_output_file", "inspect_project_file",
-        "layout_place", "help_text",
+        "layout_place", "check_model_layout", "help_text",
         "export_model_text", "import_model_text",
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",
