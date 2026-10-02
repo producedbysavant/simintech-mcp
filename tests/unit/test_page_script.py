@@ -208,19 +208,26 @@ class _BridgeRefuses(_BridgeRuns):
 class _BridgeCollects(_BridgeRuns):
     """Мост-подделка: во время «прогона» пишет строки в файл сбора.
 
-    Подделка моделирует **переход**: инструмент очищает файл сбора перед
-    прогоном, поэтому тест, пишущий файл заранее, проверял бы не то — данные
-    должны появиться в ходе прогона, как их пишет присвоенный скрипт.
+    Подделка моделирует **переход**: инструмент создаёт пустой файл сбора
+    перед прогоном (имя уникально на вызов), поэтому тест, пишущий файл
+    заранее, проверял бы не то — данные должны появиться в ходе прогона, как
+    их пишет присвоенный скрипт.
     """
 
     collected = "STEP 1\nSTEP 2\n"
 
     def run_page_script(self, body: str, result_path: Path):
-        # Путь берём из песочницы, а не из тела: внутри тела он разбит на
-        # склейки с `chr(34)`, и поиск «первого литерала» нашёл бы мусор.
+        # Файл сбора инструмент создаёт заранее, под уникальным на вызов именем
+        # (суффикс знает только он), — подделка пишет в него, как присвоенный
+        # скрипт. Имя ищем по базе в песочнице, а не в теле: внутри тела путь
+        # разбит на склейки с `chr(34)`, и поиск «первого литерала» нашёл бы
+        # мусор.
         if type(self).collected is not None:
-            path = Path(os.environ["SIMINTECH_OUTPUT_DIR"]) / page_script.COLLECT_FILE
-            path.write_text(type(self).collected, encoding="utf-8")
+            base = Path(page_script.COLLECT_FILE)
+            created = list(Path(os.environ["SIMINTECH_OUTPUT_DIR"]).glob(
+                f"{base.stem}-*{base.suffix}"))
+            assert len(created) == 1, "инструмент не создал файл сбора"
+            created[0].write_text(type(self).collected, encoding="utf-8")
         return super().run_page_script(body, result_path)
 
 
@@ -352,6 +359,42 @@ async def test_run_page_script_refuses_abort_with_last_line(monkeypatch, tmp_pat
 
     assert "aborted" in text
     assert "УСПЕЛО" in text, "строка, до которой дошло тело, не показана"
+
+
+@pytest.mark.anyio
+async def test_run_page_script_uses_fresh_result_path_per_call(
+        monkeypatch, tmp_path):
+    """Имя файла результата уникально на вызов — запертый файл не мешает.
+
+    Прежде имя было общим для всех вызовов, и файл, оставшийся залоченным
+    после обрыва тела (`freeobject` не исполнен), валил следующий вызов на
+    `result_path.unlink` в мосте — WinError 32 (живое наблюдение 02.10.2026).
+    Здесь подделан только мост; настоящая блокировка проверяется живым
+    прогоном, а контракт инструмента — что он не переиспользует имя и не
+    трогает чужой файл — проверяется тут.
+    """
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Ok(_BridgeRuns):
+        outcome = _outcome(OUTCOME_OK)
+
+    _install(monkeypatch, tmp_path, _Ok, project=_FakeProject())
+    # След прошлого обрыва: файл под прежним общим именем.
+    leftover = tmp_path / page_script.RESULT_FILE
+    leftover.write_text("запертый результат прошлого вызова", encoding="utf-8")
+
+    await mcp.call_tool("run_page_script", {"script": "x();"})
+    first = _Ok.result_path
+    await mcp.call_tool("run_page_script", {"script": "x();"})
+    second = _Ok.result_path
+
+    assert first is not None and second is not None
+    assert first.parent == tmp_path
+    assert first.name != second.name, "имя результата переиспользовано"
+    assert first.name.startswith(f"{Path(page_script.RESULT_FILE).stem}-"), \
+        "имя потеряло узнаваемую базу"
+    assert first.name.endswith(Path(page_script.RESULT_FILE).suffix)
+    assert leftover.exists(), "файл с прежним именем тронут"
 
 
 # ─── inject_submodel_script ──────────────────────────────────────────────────

@@ -43,10 +43,18 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from .page_script import RESULT_FILE, _change_report, _describe_outcome, _object_names
+from .page_script import (
+    RESULT_FILE,
+    _change_report,
+    _describe_outcome,
+    _fresh_name,
+    _object_names,
+)
 
-#: Имена файлов внутри каталога результатов. Клиенту они не нужны: путь
+#: Базы имён файлов внутри каталога результатов. Клиенту они не нужны: путь
 #: возвращается в ответе, а каталог — тот же, что у остальных инструментов.
+#: Полные имена уникальны на вызов (`page_script._fresh_name`): прошлый
+#: запертый обрывом файл не мешает, а прошлые артефакты не затираются.
 MODEL_TEXT_FILE = "model-text.txt"
 PROBE_RESULT_FILE = RESULT_FILE
 
@@ -77,8 +85,13 @@ def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
 
 
 def _result_path() -> Path:
-    """Путь файла результата внутри каталога результатов (песочница)."""
-    return Path(os.path.join(sandbox.output_root(), PROBE_RESULT_FILE))
+    """Путь файла результата внутри каталога результатов (песочница).
+
+    Имя уникально на вызов (`_fresh_name`): прежде оно совпадало с именем
+    результата `run_page_script`, и запертый тем вызовом файл валил и выгрузку.
+    """
+    return Path(os.path.join(sandbox.output_root(),
+                             _fresh_name(PROBE_RESULT_FILE)))
 
 
 def _refuse_on_bad_outcome(outcome, *, action: str) -> None:
@@ -121,16 +134,14 @@ def export_model_text() -> str:
     (прежний возвращается на место после прогона).
     """
     root = sandbox.output_root()
-    text_path = os.path.join(root, MODEL_TEXT_FILE)
-    probe_path = Path(os.path.join(root, PROBE_RESULT_FILE))
-    # Прежние файлы удаляем: иначе оборвавшийся прогон отдал бы прошлую
-    # выгрузку как нынешнюю — ровно тот класс ошибки, который здесь дороже
-    # всего (агент правит модель по устаревшему тексту).
-    for stale in (text_path, str(probe_path)):
-        try:
-            os.remove(stale)
-        except OSError:
-            pass
+    text_path = os.path.join(root, _fresh_name(MODEL_TEXT_FILE))
+    # Прежняя защита от устаревшего текста — удаление файла прошлого прогона —
+    # не переживала блокировку: запертый файл удалить не даёт (WinError 32,
+    # живое наблюдение 02.10.2026), и тогда оборвавшийся прогон отдал бы
+    # прошлую выгрузку как нынешнюю — ровно тот класс ошибки, который здесь
+    # дороже всего (агент правит модель по устаревшему тексту). Теперь имя
+    # уникально на вызов, и путь, который читает инструмент, создаёт только
+    # этот прогон.
 
     outcome, _restored = _run_contour(
         build_export_model_text_body(text_path),
