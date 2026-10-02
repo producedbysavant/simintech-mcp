@@ -45,13 +45,14 @@ class _CheckBlock:
     """
 
     def __init__(self, name, center=None, portnames="", ports=2,
-                 width=32.0, height=16.0):
+                 width=32.0, height=16.0, class_name=""):
         self._name = name
         self._center = center
         self._portnames = portnames
         self._ports = ports
         self._width = width
         self._height = height
+        self.class_name = class_name
 
     @property
     def id(self):
@@ -169,6 +170,25 @@ async def test_check_reports_off_grid_centers(monkeypatch, tmp_path):
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
     assert "ВНИМАНИЕ: центры вне разметки 8 px: k_0" in text
+
+
+@pytest.mark.anyio
+async def test_check_ignores_label_objects(monkeypatch, tmp_path):
+    """Подписи (`constLabel`) — не блоки: в габаритах и разметке не участвуют.
+
+    Их `Points` — якорь текста, `size` — типовая карточка: без исключения
+    они дают ложные «наложения» и «вне сетки» (живой случай 02.10.2026).
+    """
+    blocks = [
+        _CheckBlock("k_0", center=(0, 0)),
+        _CheckBlock("TextLabel3", center=(3, 5), class_name="constLabel"),
+    ]
+    _install(monkeypatch, tmp_path, blocks)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Разметка 8 px: центры на сетке" in text
+    assert "TextLabel3" not in text, "подпись попала в проверку габаритов"
 
 
 @pytest.mark.anyio

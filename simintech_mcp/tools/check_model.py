@@ -59,6 +59,12 @@ MAX_REPORTED = 10
 #: 02.10.2026: блоки 16/32 высоты, порты в `cx±16, cy` — всё кратно 8).
 GRID_STEP = 8.0
 
+#: Классы-«подписи»: не блоки — `Points` это якорь текста (один), `size` —
+#: типовая карточка 60×40, а не габарит (замер 02.10.2026: `constLabel`).
+#: В проверках габаритов и разметки не участвуют: иначе дают ложные
+#: «наложения» и «вне сетки».
+LABEL_CLASSES = ("constLabel",)
+
 
 def _off_grid(rect: "tuple[float, float, float, float]") -> bool:
     """Вне ли центр габарита разметки 8 px.
@@ -226,6 +232,11 @@ def check_model_layout() -> str:
             name = block.get_name()
         except Exception:                                      # noqa: BLE001
             name = str(block.id)
+        try:
+            if block.class_name in LABEL_CLASSES:
+                continue
+        except Exception:                                      # noqa: BLE001
+            pass
         # Размер читается ДО габарита: габарит строится как центр(Points) ±
         # size/2 (замер 02.10.2026 — min/max полилинии габаритом не является).
         try:
