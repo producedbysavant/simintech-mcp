@@ -44,13 +44,17 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import overlaps, rect_of
+from .page_script import _fresh_name
 
-#: Отчёт контура — свой файл, как в живых пробах: дескриптор моста телу
-#: недоступен по имени (он назван случайной частью метки), поэтому тело
-#: открывает файл само, а контур пишет маркеры в свой.
+#: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
+#: пробах: дескриптор моста телу недоступен по имени (он назван случайной
+#: частью метки), поэтому тело открывает файл само, а контур пишет маркеры в
+#: свой. Полные имена уникальны на вызов (`page_script._fresh_name`, тот же
+#: приём, что в #40): запертый прошлым обрывом файл (WinError 32) новому
+#: вызову не мешает и не может быть выдан за отчёт этого вызова.
 REPORT_FILE = "check-model-report.txt"
 
-#: Файл маркеров контура (исход классифицирует библиотека, не мы).
+#: База имени файла маркеров контура (исход классифицирует библиотека, не мы).
 MARKER_FILE = "check-model-contour.txt"
 
 #: Сколько записей каждого вида перечислять в ответе; счётчики — всегда полные.
@@ -106,11 +110,29 @@ def _bridge() -> ScriptBridge:
 
 
 def _rect_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), REPORT_FILE))
+    return Path(os.path.join(sandbox.output_root(), _fresh_name(REPORT_FILE)))
 
 
 def _marker_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), MARKER_FILE))
+    return Path(os.path.join(sandbox.output_root(), _fresh_name(MARKER_FILE)))
+
+
+#: Пути контурных файлов **предыдущего** вызова этой сессии. Имена уникальны
+#: на вызов, и без уборки каждый вызов оставлял бы в песочнице два новых
+#: файла без предела (находка ревью #42). Убираются только свои же прошлые
+#: файлы — чужие не трогаются; запертый (обрыв) снять не даст, `OSError`
+#: пропускается, освободится при выходе mmain.
+_PREVIOUS_PATHS: List[Path] = []
+
+
+def _sweep_previous() -> None:
+    """Убрать контурные файлы предыдущего вызова (best-effort)."""
+    for stale in _PREVIOUS_PATHS:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    _PREVIOUS_PATHS.clear()
 
 
 def _read_port_names(block: Block) -> Optional[List[str]]:
@@ -313,14 +335,16 @@ def check_model_layout() -> str:
             f"перечислить линии страницы не удалось: {type(exc).__name__}: "
             f"{exc}. Без списка линий проверка концов невозможна.") from exc
 
+    # Имена уникальны на вызов — прошлый файл не мешает (в #40 этот приём убрал
+    # класс WinError 32); свои же файлы предыдущего вызова убираем, чтобы
+    # песочница не копила по два на вызов (находка ревью #42).
+    _sweep_previous()
     report_path = _rect_path()
-    try:
-        report_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    marker_path = _marker_path()
+    _PREVIOUS_PATHS.extend((report_path, marker_path))
     script = _check_script(report_path, port_blocks, wire_ids)
     try:
-        run = _bridge().run_page_script(script, _marker_path())
+        run = _bridge().run_page_script(script, marker_path)
     except ScriptBridgeError as exc:
         raise ToolError(
             f"контур проверки не отработал: {exc}. Проверка портов и концов "

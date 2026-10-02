@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -116,6 +117,10 @@ class _BridgeWritesReport:
     payload = ""
     outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
     body = ""
+    #: Пути отчёта и маркера, которые видел мост: по ним проверяется
+    #: уникальность имён на вызов (тот же приём, что в #40).
+    seen_reports: list = []
+    seen_markers: list = []
 
     def __init__(self, client, project_id: int):
         self.project_id = project_id
@@ -124,7 +129,10 @@ class _BridgeWritesReport:
         type(self).body = body
         start = body.index('"') + 1
         end = body.index('"', start)
-        Path(body[start:end]).write_text(type(self).payload, encoding="utf-8")
+        report = body[start:end]
+        type(self).seen_reports.append(report)
+        type(self).seen_markers.append(str(result_path))
+        Path(report).write_text(type(self).payload, encoding="utf-8")
         return PageRunResult(outcome=type(self).outcome, restored_script="")
 
 
@@ -467,3 +475,35 @@ async def test_check_counts_all_unparsed_ends(monkeypatch, tmp_path):
 
     assert "Концы не разобраны у 11 линий" in text
     assert "(и ещё 1)" in text
+
+
+@pytest.mark.anyio
+async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
+    """Имена контурных файлов проверки уникальны на вызов (хвост #40).
+
+    Запертый прошлым обрывом файл (WinError 32) новому вызову не мешает: ни
+    отчёт, ни маркер не переиспользуют общее имя — тот же приём, что у
+    `page_script`/`model_text` в #40. Файлы собственного прошлого вызова при
+    этом убираются, чтобы песочница не копила по два на вызов (ревью #42).
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
+    _BridgeWritesReport.seen_reports = []
+    _BridgeWritesReport.seen_markers = []
+    _install(monkeypatch, tmp_path, blocks, payload="DONE\n")
+
+    await mcp.call_tool("check_model_layout", {})
+    await mcp.call_tool("check_model_layout", {})
+
+    first, second = _BridgeWritesReport.seen_reports
+    assert first != second, "имя отчёта переиспользовано между вызовами"
+    assert Path(first).name != cm.REPORT_FILE
+    # `sandbox.output_root()` — это realpath каталога результатов: сравнение с
+    # `tmp_path` напрямую падало бы под симлинкованным корнем (macOS /tmp →
+    # /private/tmp) — находка ревью #42.
+    assert Path(first).parent == Path(os.path.realpath(str(tmp_path)))
+    marker = _BridgeWritesReport.seen_markers[0]
+    assert Path(marker).name != cm.MARKER_FILE, "маркер под общим именем"
+    assert Path(marker).name != Path(first).name
+    # Файлы прошлого вызова убираются: уникальные имена не должны копить
+    # песочницу (находка ревью #42).
+    assert not Path(first).exists(), "файл отчёта прошлого вызова остался"
