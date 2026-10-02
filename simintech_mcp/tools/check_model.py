@@ -100,9 +100,21 @@ def _read_port_names(block: Block) -> Optional[List[str]]:
     return [line.strip() for line in value.splitlines() if line.strip()]
 
 
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
 def _script_safe(name: str) -> bool:
-    """Годится ли имя блока в литерал встроенного языка без искажений."""
-    return '"' not in name and "\n" not in name and "\r" not in name
+    """Годится ли имя блока для вставки в текст скрипта.
+
+    Имя вставляется **без кавычек** — язык адресует блоки идентификаторами,
+    а не строками, — поэтому всё за пределами ASCII-идентификатора
+    (скобки, точки с запятой, пробелы, кавычки, не-ASCII) это потенциальная
+    инъекция в исполняемый текст: проект, пришедший извне, может содержать
+    имя вида `k); чужой вызов; (`. Такие блоки **пропускаются** с названной
+    причиной, а не экранируются: проверенного способа экранирования имени
+    блока у языка нет, а «починить и надеяться» — не защита.
+    """
+    return bool(_SAFE_NAME_RE.match(name))
 
 
 def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],

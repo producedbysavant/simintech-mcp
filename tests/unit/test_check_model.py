@@ -277,3 +277,26 @@ async def test_check_names_unreadable_geometry(monkeypatch, tmp_path):
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
     assert "Геометрию прочитать не удалось у: k_0" in text
+
+
+@pytest.mark.anyio
+async def test_check_skips_unsafe_block_name(monkeypatch, tmp_path):
+    """Имя вне ASCII-идентификатора в скрипт не вставляется.
+
+    Имя идёт в тело скрипта без кавычек (язык адресует блоки
+    идентификаторами): имя вида `k); чужой вызов; (` — это инъекция в
+    исполняемый текст. Такой блок пропускается с названной причиной, а в
+    теле не должно остаться ни одной его части.
+    """
+    blocks = [
+        _CheckBlock('k_0); bad(); (', rect=_rect(0, 0, 32, 16)),
+        _CheckBlock("k_1", rect=_rect(100, 0, 132, 16)),
+    ]
+    _install(monkeypatch, tmp_path, blocks)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    body = _BridgeWritesReport.body
+    assert "bad()" not in body, "подозрительное имя попало в тело скрипта"
+    assert "getblockportid(k_1, 0)" in body, "безопасный блок пропал"
+    assert "Порты пропущены" in text
