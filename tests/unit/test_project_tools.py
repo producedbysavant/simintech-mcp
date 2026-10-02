@@ -15,6 +15,7 @@ from simintech_mcp import session
 from simintech_mcp.tools import project as project_tools
 
 from _support import (
+    _OwnedClientStub,
     _SavableProject,
     _TemplateProject,
     _WireProject,
@@ -338,3 +339,20 @@ def test_status_refuses_when_com_unavailable(monkeypatch):
 
     with pytest.raises(ToolError, match="недоступен"):
         project_tools.status()
+
+
+def test_status_names_ownership(monkeypatch):
+    """`status` называет владение сессией: подключение только к своему.
+
+    Гейт владения пропускает лишь OWNED-процессы (`session._require_owned`),
+    и `status` это подтверждает явно — клиенту видно, что сервер работает со
+    своим экземпляром, а не с чужим.
+    """
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(session, "_ensure_client", lambda: _OwnedClientStub())
+
+    text = project_tools.status()
+
+    assert "PID=4242" in text
+    assert "ownership=owned" in text

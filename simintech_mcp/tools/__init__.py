@@ -5,11 +5,12 @@
 импортировал, молча не отдаст свои инструменты в `tools/list`.
 """
 
-from . import (blocks, files, help, layout, model_text, pack, page_script,
-               project, simulation)
+from . import (blocks, check_model, files, help, layout, model_text, pack,
+               page_script, project, simulation)
 
 __all__ = [
     "blocks",
+    "check_model",
     "files",
     "help",
     "layout",

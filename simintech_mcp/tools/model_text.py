@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
@@ -43,10 +43,18 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from .page_script import RESULT_FILE, _change_report, _describe_outcome, _object_names
+from .page_script import (
+    RESULT_FILE,
+    _change_report,
+    _describe_outcome,
+    _fresh_name,
+    _object_names,
+)
 
-#: Имена файлов внутри каталога результатов. Клиенту они не нужны: путь
+#: Базы имён файлов внутри каталога результатов. Клиенту они не нужны: путь
 #: возвращается в ответе, а каталог — тот же, что у остальных инструментов.
+#: Полные имена уникальны на вызов (`page_script._fresh_name`): прошлый
+#: запертый обрывом файл не мешает, а прошлые артефакты не затираются.
 MODEL_TEXT_FILE = "model-text.txt"
 PROBE_RESULT_FILE = RESULT_FILE
 
@@ -77,8 +85,13 @@ def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
 
 
 def _result_path() -> Path:
-    """Путь файла результата внутри каталога результатов (песочница)."""
-    return Path(os.path.join(sandbox.output_root(), PROBE_RESULT_FILE))
+    """Путь файла результата внутри каталога результатов (песочница).
+
+    Имя уникально на вызов (`_fresh_name`): прежде оно совпадало с именем
+    результата `run_page_script`, и запертый тем вызовом файл валил и выгрузку.
+    """
+    return Path(os.path.join(sandbox.output_root(),
+                             _fresh_name(PROBE_RESULT_FILE)))
 
 
 def _refuse_on_bad_outcome(outcome, *, action: str) -> None:
@@ -121,16 +134,14 @@ def export_model_text() -> str:
     (прежний возвращается на место после прогона).
     """
     root = sandbox.output_root()
-    text_path = os.path.join(root, MODEL_TEXT_FILE)
-    probe_path = Path(os.path.join(root, PROBE_RESULT_FILE))
-    # Прежние файлы удаляем: иначе оборвавшийся прогон отдал бы прошлую
-    # выгрузку как нынешнюю — ровно тот класс ошибки, который здесь дороже
-    # всего (агент правит модель по устаревшему тексту).
-    for stale in (text_path, str(probe_path)):
-        try:
-            os.remove(stale)
-        except OSError:
-            pass
+    text_path = os.path.join(root, _fresh_name(MODEL_TEXT_FILE))
+    # Прежняя защита от устаревшего текста — удаление файла прошлого прогона —
+    # не переживала блокировку: запертый файл удалить не даёт (WinError 32,
+    # живое наблюдение 02.10.2026), и тогда оборвавшийся прогон отдал бы
+    # прошлую выгрузку как нынешнюю — ровно тот класс ошибки, который здесь
+    # дороже всего (агент правит модель по устаревшему тексту). Теперь имя
+    # уникально на вызов, и путь, который читает инструмент, создаёт только
+    # этот прогон.
 
     outcome, _restored = _run_contour(
         build_export_model_text_body(text_path),
@@ -167,6 +178,44 @@ def export_model_text() -> str:
     return f"{head}Текст модели (файл {text_path}):\n{text}{note}"
 
 
+def _wire_count() -> Optional[int]:
+    """Число линий текущей страницы или `None`, если перечислить не удалось."""
+    try:
+        return len(session._ensure_project().get_current_page().get_wires())
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
+def _trace_note(before: Optional[int], after: Optional[int]) -> str:
+    """Напоминание о трассировке: импорт линии не прокладывает.
+
+    Провода приходят геометрией из текста (часто все точки в (0,0)) и не
+    трассированы; прокладывает их `layout_place` — он же и расставляет
+    блоки. Подсказка обязана быть в ответе: в кейсе #24 сразу после импорта
+    модель выглядела нечитаемой, и клиент шёл разбираться с диагоналями
+    вместо одного вызова.
+
+    Считается **прирост** линий (чтения до и после контура), а не общее
+    число: прежде по одному счётчику ответ утверждал «после импорта они не
+    трассированы» про все линии страницы, включая уже проложенные чужие
+    (находка ревью 02.10.2026). Ошибка чтения не превращается в отказ: модель
+    уже импортирована, и отказ после изменения состояния выглядел бы как
+    «импорт не удался».
+    """
+    if before is None or after is None:
+        return ("ВНИМАНИЕ: перечислить линии страницы не удалось — "
+                "ортогональность проверьте в GUI.")
+    added = after - before
+    if after == 0:
+        return "Линий связи на странице нет — трассировать нечего."
+    if added <= 0:
+        return (f"Линии связи: {after}; новых импорт не добавил — "
+                f"существующие линии не затронуты.")
+    return (f"Линии связи: +{added} (всего {after}). Геометрия добавленных "
+            f"не пересчитана — участки могут быть неортогональными; "
+            f"`layout_place` без аргументов расставит блоки и проложит линии.")
+
+
 @mcp.tool()
 @runtime._com_threaded(mutates_project=True)
 def import_model_text(model_text: str) -> str:
@@ -175,7 +224,10 @@ def import_model_text(model_text: str) -> str:
     Текст — того же формата, что возвращает `export_model_text`: записи
     `Имя: (type = "Класс", points = […], свойства)` и провода (`type = "wire"`
     с `src`/`dst`). Объекты добавляются в текущий контейнер; **старые не
-    трогаются** — `createmodel` дополняет модель (вендор подтвердил 2026-09-28).
+    трогаются** — `createmodel` дополняет модель (вендор подтвердил
+    2026-09-28): их координаты и ручная раскладка переживают повторные
+    импорты (контракт #24 п.6, наблюдение 01.10.2026 — правки после ручной
+    доводки её не сдвинули).
 
     **Текст — это код, а не данные.** Форма `const model : ( … );` — часть
     встроенного языка, и текст принимает компилятор SimInTech, а не сервер:
@@ -198,6 +250,13 @@ def import_model_text(model_text: str) -> str:
     кавычками при этом выглядит правдоподобно, объектов не создаёт и сообщений
     не оставляет — заметить это можно только по отчёту об изменениях.
 
+    **Добавленные линии не трассированы.** Провода приходят геометрией из
+    текста (часто все точки в (0,0)); если импорт добавил линии, ответ
+    напоминает вызвать `layout_place` без аргументов — он расставит блоки и
+    проложит линии ортогонально (в кейсе #24 схема сразу после импорта
+    выглядела нечитаемой). Прироста нет — ответ скажет и это, а не припишет
+    импорту чужие линии.
+
     **Порядок работы** как у выгрузки: тело идёт в секцию `initialization`,
     расчёт делает несколько шагов, прежний скрипт страницы возвращается на
     место, изменения модели живут в памяти до `save_project`.
@@ -210,14 +269,17 @@ def import_model_text(model_text: str) -> str:
             "текст модели пуст: собирать нечего. Пустой текст — не «ничего не "
             "сделает»: он означает, что на стороне клиента содержимое потеряно, "
             "и молчание здесь скрыло бы это.")
+    wires_before = _wire_count()
     before = _object_names()
     outcome, restored = _run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
     _refuse_on_bad_outcome(outcome, action="сборка модели")
     after = _object_names()
+    wires_after = _wire_count()
     return (
         f"Модель собрана из текста.\n"
         f"{_describe_outcome(outcome, what='Вердикт')}\n"
-        f"{_change_report(before, after, restored)}"
+        f"{_change_report(before, after, restored)}\n"
+        f"{_trace_note(wires_before, wires_after)}"
     )

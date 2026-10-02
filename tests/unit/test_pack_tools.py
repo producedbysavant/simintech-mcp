@@ -51,6 +51,10 @@ class _FakePackClient:
         self.calls = []
         self.closed_packs = []
         self.disconnected = False
+        self.shutdown_called = False
+        #: PID сессии: `disconnect`-инструмент читает его до `shutdown` и
+        #: называет в ответе («процесс mmain.exe (PID …) завершён»).
+        self.session_pid = 777
         self._next_pack = 900
 
     # ── COMClient-поверхность ─────────────────────────────────────
@@ -67,6 +71,11 @@ class _FakePackClient:
 
     def disconnect(self):
         self.disconnected = True
+
+    def shutdown(self, kill_pids=None):
+        #: Сессия закрывается управляемо (simintech-code v0.11.0): отпускание
+        #: ссылки и снятие своего процесса — подделка фиксирует вызов.
+        self.shutdown_called = True
 
     def get_opened_file_name(self, project_id):
         if project_id in self.name_raises_for:
@@ -682,7 +691,8 @@ async def test_disconnect_closes_pack_and_names_member(monkeypatch):
     assert client.closed_packs == [pack_id]
     assert project.closed is False, "участника закрывает пакет, не CloseProject"
     assert "закрыт вместе с пакетом" in text
-    assert client.disconnected
+    assert client.shutdown_called
+    assert "PID 777" in text, "ответ обязан назвать снятый процесс"
     assert session._pack is None and session._project is None
 
 

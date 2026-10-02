@@ -46,6 +46,41 @@ async def _error(tool: str, arguments: dict) -> str:
     return str(excinfo.value)
 
 
+class _OwnedClientStub:
+    """Клиент, моделирующий библиотечный `COMClient` (v0.11.0).
+
+    Несёт то, чем пользуется сервер: владение (`ownership`), PID сессии
+    (`session_pid`), пробу живучести (`get_process_id`), отпускание ссылки
+    (`disconnect`) и управляемое завершение (`shutdown`). Подделка обязана
+    моделировать весь этот набор: гейт владения читает `ownership`, а
+    инструмент `disconnect` — `session_pid` и `shutdown`.
+    """
+
+    connected = True
+
+    def __init__(self, ownership=None, pid=4242):
+        from simintech_api import SessionOwnership
+        self.ownership = ownership or SessionOwnership.OWNED
+        self.session_pid = pid
+        self.probes = 0
+        self.disconnected = False
+        self.shutdown_called = False
+
+    def connect(self):
+        return self
+
+    def get_process_id(self):
+        self.probes += 1
+        return self.session_pid
+
+    def disconnect(self):
+        self.disconnected = True
+
+    def shutdown(self, kill_pids=None):
+        self.shutdown_called = True
+        self.connected = False
+
+
 _XPRT_FIXTURE = """<?xml version="1.0" encoding="utf-8"?>
 <project>
   <object>
@@ -94,9 +129,11 @@ class _PlacedBlock:
     #: Размер, который «отдаёт» блок: у SimInTech он свой у каждого класса.
     SIZE = (60.0, 40.0)
 
-    def __init__(self, name, block_id):
+    def __init__(self, name, block_id, class_name=""):
         self._name = name
         self._id = block_id
+        #: Класс: по нему layout_place смыкает стопки порт-блоков.
+        self.class_name = class_name
         self.center = None
         self.size_reads = 0
 
@@ -110,6 +147,19 @@ class _PlacedBlock:
     def get_size(self):
         self.size_reads += 1
         return self.SIZE
+
+    def get_points(self):
+        """Строка `Points` — как у среды (замер 02.10.2026).
+
+        Первая точка — **центр** блока, вторая — выходной порт
+        (центр + (16, 0)), дальше точки полилинии. Проверка наложений
+        строит габарит из центра и размера — min/max полилинии габаритом
+        не является (у «Константы» 32×16 размах 16×32).
+        """
+        cx, cy = self.center if self.center is not None else (0.0, 0.0)
+        _w, h = self.SIZE
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - h / 2:g}), ({cx:g} , {cy + 24:g})]")
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)
@@ -179,6 +229,13 @@ class _ConnectingBlock:
 
     def get_size(self):
         return (60.0, 40.0)
+
+    def get_points(self):
+        """Строка `Points` — как у среды: первая точка — центр блока."""
+        cx, cy = self.center if self.center is not None else (0.0, 0.0)
+        _w, h = self.get_size()
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - h / 2:g}), ({cx:g} , {cy + 24:g})]")
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)

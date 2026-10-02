@@ -37,14 +37,16 @@ dependencies = [
     # `upload-pack: not our ref`) — тот класс отказа и породил CI-гейт. Прежние
     # ревизии: `b77f6594…` — 0.7.0 (`main` до контура), `eb6a754…` — временный
     # на вершине ветки PR #16, `30d0ab1…` — `main` до правки #19, `215c3b1…` —
-    # `main` до выпуска 0.10.1.
-    # v0.10.1 — релизный тег simintech-code (библиотека 0.10.1): контур
-    # языкового слоя влит squash-коммитами PR #15 (`8de8167`) и PR #16
-    # (`30d0ab1`); сбой очистки временного каталога моста (`_dump_records`,
-    # WinError 32) исправлен PR #19 (`215c3b1`), провенанс записи реестра —
-    # PR #20.
-    # sha: ab8ad85408b3e0e128176e1fa75fb7782709166c
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.10.1",
+    # `main` до выпуска 0.10.1, `ab8ad854…` — v0.10.1.
+    # v0.11.0 — релизный тег simintech-code (библиотека 0.11.0): ownership
+    # COM-сессии и managed shutdown (squash-коммит PR #29 `069d3a7`):
+    # `SessionOwnership`/`session_pid`/`ownership` выводятся снимками
+    # mmain.exe до и после `CreateObject`, `shutdown()` — release, ожидание
+    # exact PID и точечное завершение только своей сессии; запущенный вручную
+    # (GUI) экземпляр распознаётся как EXTERNAL. На этом контракте стоит гейт
+    # владения сервера (`session._require_owned`).
+    # sha: 069d3a7a10398dec6a1ae394ab3eb6c80452fa6a
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.11.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в

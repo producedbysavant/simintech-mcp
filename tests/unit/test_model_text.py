@@ -41,19 +41,26 @@ class _FakeClient:
 class _Page:
     """Страница без объектов: отчёту об изменениях нужен её список."""
 
-    @staticmethod
-    def get_blocks() -> list:
+    def __init__(self, wires=None):
+        #: Линии страницы: подсказка о трассировке считает их число.
+        self._wires = list(wires or [])
+
+    def get_blocks(self) -> list:
         return []
+
+    def get_wires(self) -> list:
+        return list(self._wires)
 
 
 class _FakeProject:
     """Открытый проект: мосту нужен идентификатор, отчёту — страница."""
 
-    def __init__(self, project_id: int = 7):
+    def __init__(self, project_id: int = 7, wires=None):
         self.id = project_id
+        self._wires = list(wires or [])
 
     def get_current_page(self):
-        return _Page()
+        return _Page(self._wires)
 
 
 def _dump_path_from_body(body: str) -> str:
@@ -113,10 +120,10 @@ class _BridgeSilent(_BridgeRunsContour):
                              restored_script=type(self).restored)
 
 
-def _install(monkeypatch, tmp_path: Path, bridge) -> None:
+def _install(monkeypatch, tmp_path: Path, bridge, wires=None) -> None:
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
-    monkeypatch.setattr(session, "_project", _FakeProject())
+    monkeypatch.setattr(session, "_project", _FakeProject(wires=wires))
     monkeypatch.setattr(mt, "ScriptBridge", bridge)
 
 
@@ -128,12 +135,15 @@ async def test_export_model_text_returns_dump_from_results_dir(monkeypatch, tmp_
     result = _text(await mcp.call_tool("export_model_text", {}))
 
     assert _BridgeRunsContour.payload in result
+    dump_path = Path(_dump_path_from_body(_BridgeRunsContour.body))
     # Путь выгрузки и файл результата контура — внутри каталога результатов:
     # инструмент, пишущий наружу, обходил бы песочницу чтения.
-    assert Path(_dump_path_from_body(_BridgeRunsContour.body)).parent == tmp_path
+    assert dump_path.parent == tmp_path
     assert _BridgeRunsContour.result_path is not None
     assert _BridgeRunsContour.result_path.parent == tmp_path
-    assert (tmp_path / MODEL_TEXT_FILE).exists()
+    assert dump_path.exists(), "выгрузка не записана"
+    assert dump_path.name != MODEL_TEXT_FILE, \
+        "выгрузка пишется под общим именем — прошлый прогон виден под тем же"
 
 
 @pytest.mark.anyio
@@ -153,20 +163,49 @@ async def test_export_model_text_strips_bom(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_export_model_text_clears_stale_dump(monkeypatch, tmp_path):
-    """Прежняя выгрузка удаляется до прогона: иначе оборвавшийся прогон отдал бы её.
+async def test_export_model_text_does_not_serve_stale_dump(monkeypatch, tmp_path):
+    """Старая выгрузка не выдаётся за новую — за счёт уникального имени.
 
-    Агент правит модель по этому тексту, поэтому устаревший текст в ответе —
-    ошибка дороже отказа.
+    Прежде от этого защищались удалением файла прошлого прогона, но запертый
+    файл удалить не даёт (WinError 32, живое наблюдение 02.10.2026), и защита
+    молча отказывала. Теперь имя уникально на вызов: путь, который читает
+    инструмент, создаёт только этот прогон — «тело отработало, файла нет»
+    остаётся отказом, даже когда под прежним именем лежит старая выгрузка.
     """
-    _install(monkeypatch, tmp_path, _BridgeFails)
     stale = tmp_path / MODEL_TEXT_FILE
     stale.write_text("СТАРАЯ ВЫГРУЗКА", encoding="utf-8")
+    _install(monkeypatch, tmp_path, _BridgeSilent)
 
     message = await _error("export_model_text", {})
 
-    assert "не удалась" in message
-    assert not stale.exists(), "устаревшая выгрузка осталась на месте"
+    assert "файла нет" in message
+    assert "СТАРАЯ ВЫГРУЗКА" not in message
+    assert stale.read_text(encoding="utf-8") == "СТАРАЯ ВЫГРУЗКА", \
+        "файл с прежним именем тронут — запертый снять всё равно нельзя"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_uses_fresh_names_per_call(monkeypatch, tmp_path):
+    """У каждого вызова свои имена выгрузки и результата контура.
+
+    Общее имя — тот же класс отказа, что WinError 32: обрыв оставляет файл
+    запертым, и следующий вызов упирается в него. Уникальные имена заодно
+    сохраняют прошлые артефакты читаемыми — их пути названы в ответах.
+    """
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+
+    await mcp.call_tool("export_model_text", {})
+    first = _dump_path_from_body(_BridgeRunsContour.body)
+    first_probe = _BridgeRunsContour.result_path
+    await mcp.call_tool("export_model_text", {})
+    second = _dump_path_from_body(_BridgeRunsContour.body)
+    second_probe = _BridgeRunsContour.result_path
+
+    assert first != second, "имя выгрузки переиспользовано между вызовами"
+    assert first_probe != second_probe, "имя результата контура переиспользовано"
+    assert first_probe.name != PROBE_RESULT_FILE
+    assert second_probe.name != PROBE_RESULT_FILE
+    assert Path(first).exists(), "прошлая выгрузка затёрта новым прогоном"
 
 
 @pytest.mark.anyio
@@ -266,3 +305,64 @@ async def test_import_model_text_reports_model_stuck(monkeypatch, tmp_path):
         "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
 
     assert "не считает" in result
+
+
+class _BridgeAddsWires(_BridgeRunsContour):
+    """Мост-подделка: тело сборки добавило линии.
+
+    Подделка моделирует **переход**: счётчик линий в подсказке — это прирост
+    (до/после контура), и подделка, возвращающая одно и то же число, не могла
+    бы его проверить.
+    """
+
+    def run_page_script(self, body, result_path):
+        if "createmodel(" in body:
+            session._ensure_project()._wires.extend([object(), object()])
+        return super().run_page_script(body, result_path)
+
+
+@pytest.mark.anyio
+async def test_import_model_text_warns_lines_not_traced(monkeypatch, tmp_path):
+    """Импорт добавил линии — ответ напоминает: не трассированы, нужен `layout_place`.
+
+    В кейсе #24 сразу после импорта провода шли диагоналями через всю схему,
+    и модель выглядела нечитаемой; подсказка в ответе снимает лишний круг
+    «почему косо» (issue #24, п.3).
+    """
+    _install(monkeypatch, tmp_path, _BridgeAddsWires)
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "Линии связи: +2" in result
+    assert "не пересчитана" in result
+    assert "layout_place" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_does_not_blame_existing_wires(
+        monkeypatch, tmp_path):
+    """Без прироста линии импорту не приписываются (находка ревью).
+
+    Прежде по одному счётчику ответ утверждал «после импорта они не
+    трассированы» про все линии страницы — в том числе уже проложенные.
+    """
+    _install(monkeypatch, tmp_path, _BridgeRunsContour,
+             wires=[object(), object()])
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "новых импорт не добавил" in result
+    assert "не пересчитана" not in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_reports_no_lines(monkeypatch, tmp_path):
+    """Линий нет — ответ говорит и это, а не молчит неопределённо."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "Линий связи на странице нет" in result
