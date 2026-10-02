@@ -153,6 +153,22 @@ async def test_check_reports_clean_model(monkeypatch, tmp_path):
     assert "Наложения габаритов: нет" in text
     assert "Пустые порты: нет" in text
     assert "Связи: линий на странице нет" in text
+    assert "Разметка 8 px: центры на сетке" in text
+
+
+@pytest.mark.anyio
+async def test_check_reports_off_grid_centers(monkeypatch, tmp_path):
+    """Центр блока вне разметки 8 px — предупреждение с именем.
+
+    Стандарт 02.10.2026: 1 квадратик = 8×8; координаты центра (3, 5) на неё
+    не ложатся.
+    """
+    blocks = [_CheckBlock("k_0", center=(3, 5))]
+    _install(monkeypatch, tmp_path, blocks)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "ВНИМАНИЕ: центры вне разметки 8 px: k_0" in text
 
 
 @pytest.mark.anyio
