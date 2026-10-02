@@ -212,21 +212,34 @@ async def test_save_project_refuses_untouched_existing_file(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("name,binary", [("m.prt", False), ("m.xprt", True)])
+@pytest.mark.parametrize("name,binary,distinct", [
+    ("m.prt", False, "сохраняем XML"),
+    ("m.xprt", True, "сохраняем нативный"),
+    # Win32 сам отбрасывает хвостовые точки/пробелы последнего компонента:
+    # «m.prt » на диске — это «m.prt», и проверка по сырой строке такое
+    # имя пропускала.
+    ("m.prt ", False, "сохраняем XML"),
+    ("m.xprt.", True, "сохраняем нативный"),
+])
 async def test_save_project_refuses_format_extension_mismatch(
-        monkeypatch, tmp_path, name, binary):
+        monkeypatch, tmp_path, name, binary, distinct):
     """Имя обещает не тот формат, которым пишем, — отказ до всякой работы.
 
     Среда выбирает формат по расширению: XML, записанный в файл `.prt`, GUI
     показал «Ошибка загрузки страницы проекта: data error» (живой случай
     02.10.2026 — тот же текст под именем `.xprt` открылся). Проверка обязана
     стоять до COM-вызовов: ни формы, ни записи.
+
+    `distinct` — фрагмент, которым направления отказа отличаются: общие
+    «.xprt»/«.prt» есть в обоих текстах, и перепутанные ветки на них не
+    видны.
     """
     project = _install_savable(monkeypatch)
 
     text = await _error("save_project",
                         {"path": str(tmp_path / name), "binary": binary})
 
+    assert distinct in text, "отказ обязан называть формат, которым пишем"
     assert ".xprt" in text and ".prt" in text
     assert project.calls == [], "проверка формата прошла после COM-работы"
 
