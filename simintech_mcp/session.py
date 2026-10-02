@@ -25,6 +25,7 @@ from simintech_api import (
     ComConnectionError,
     Pack,
     Project,
+    SessionOwnership,
     Wire,
 )
 
@@ -110,13 +111,56 @@ def _ensure_client() -> COMClient:
     (создаётся с ним в `from_template`/`open`), поэтому подмена только
     `session._client` оставила бы проект на мёртвом прокси, а его
     COM-идентификаторы после смены сервера всё равно недействительны.
+
+    Подключение принимается **только в свой процесс** (`_require_owned`):
+    `CreateObject` умеет подключаться к уже запущенному экземпляру — в том
+    числе открытому человеком, — а инструменты сервера закрывают проекты и
+    переключают страницы, и работать в чужой сессии нельзя.
     """
     global _client
     if _client is not None and not _client_is_alive(_client):
         _drop_dead_session()
     if _client is None:
-        _client = COMClient(silent_mode=True).connect()
+        candidate = COMClient(silent_mode=True).connect()
+        _require_owned(candidate)
+        _client = candidate
     return _client
+
+
+def _require_owned(client: COMClient) -> None:
+    """Отказать, если COM-сессия не наша; кандидата отпустить.
+
+    Владение определяет сама библиотека (`simintech-code` v0.11.0) снимками
+    `mmain.exe` до и после `CreateObject` (замеры 02.10.2026): запущенный
+    вручную (GUI) SimInTech принимает подключение, COM-экземпляры
+    (`-Embedding`) не переиспользуются. `EXTERNAL` — подключились к чужому
+    процессу: инструменты сервера закрывали бы проекты пользователя
+    (`_replace_project`) и завершали бы его процессы. `UNKNOWN` — владение
+    подтвердить не удалось; «неизвестно» — тоже не разрешение (fail closed).
+
+    В обоих случаях кандидат отпускается (`disconnect` — только наша ссылка;
+    чужой процесс не тронут и не перенастроен: session-wide флаги библиотека
+    ставит лишь OWNED-сессии), и сервер **отказывает**, а не поднимает
+    второй экземпляр втайне.
+    """
+    if client.ownership is SessionOwnership.OWNED:
+        return
+    pid = client.session_pid
+    ownership = client.ownership.value
+    if client.ownership is SessionOwnership.EXTERNAL:
+        why = ("CreateObject подключился к уже запущенному SimInTech — "
+               "вероятно, открытому человеком")
+    else:
+        why = ("владение процессом подтвердить не удалось (снимки не "
+               "показали его PID)")
+    client.disconnect()
+    raise ToolError(
+        f"COM-сессия не наша (ownership={ownership}, PID={pid}): {why}. "
+        f"MCP работает только со своим экземпляром SimInTech: его "
+        f"инструменты создают и закрывают проекты, а в чужой сессии это "
+        f"разрушило бы работу пользователя. Закройте SimInTech на этой "
+        f"машине и повторите — сервер поднимет собственный экземпляр. "
+        f"Чужой процесс не тронут.")
 
 
 def _ensure_project() -> Project:

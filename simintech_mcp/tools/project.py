@@ -23,13 +23,25 @@ from ..app import mcp
 @mcp.tool()
 @runtime._com_threaded
 def status() -> str:
-    """Проверить доступность COM-сервера SimInTech (Windows)."""
+    """Проверить доступность COM-сервера SimInTech (Windows).
+
+    Ответ называет и владение сессией: подключение принимается только к
+    собственному процессу (`simintech-code` v0.11.0), и `ownership=owned`
+    это подтверждает. Чужой (EXTERNAL) или неподтверждённый (UNKNOWN)
+    экземпляр — отказ с объяснением (`session._require_owned`), а не работа
+    в чужой сессии.
+    """
     if sys.platform != "win32":
         return "COM SimInTech доступен только на Windows"
     try:
         c = session._ensure_client()
         pid = c.get_process_id()
-        return f"SimInTech подключён (PID={pid})"
+        return (f"SimInTech подключён (PID={pid}, "
+                f"ownership={c.ownership.value})")
+    except ToolError:
+        # Отказ сессии (например, чужой экземпляр) уходит как есть: префикс
+        # «недоступен» исказил бы причину.
+        raise
     except Exception as exc:
         # Отказ, а не текст: клиент, доверяющий `isError`, иначе увидел бы
         # «успех» там, где подключиться не удалось.
@@ -39,7 +51,7 @@ def status() -> str:
 @mcp.tool()
 @runtime._com_threaded
 def disconnect() -> str:
-    """Завершить сессию: закрыть пакет, проект и отсоединиться от COM-сервера.
+    """Завершить сессию: закрыть пакет, проект и снять свой процесс.
 
     Сбрасывается **всё** состояние сессии. Раньше обнулялся только клиент, а
     текущий проект оставался в глобальной переменной: следующие вызовы шли с
@@ -48,6 +60,13 @@ def disconnect() -> str:
     Пакет закрывается первым: его участники закрываются вместе с ним (живой
     замер 01.10.2026), поэтому текущий проект-участник отдельно не
     закрывается — он уже закрыт вместе с пакетом.
+
+    Процесс снимается **управляемо** (`COMClient.shutdown`, simintech-code
+    v0.11.0): отпускание последней COM-ссылки завершает сервер лишь иногда
+    (замеры 02.10.2026), поэтому сессия ждёт уход процесса сессии и при
+    необходимости завершает ровно его PID. Это процесс, поднятый самим
+    сервером: подключение к чужому экземпляру отсекается гейтом владения
+    ещё на `_ensure_client`.
     """
     if (session._client is None and session._project is None
             and session._pack is None):
@@ -95,8 +114,22 @@ def disconnect() -> str:
             closed.append(f"проект {label} — участие в пакете не подтверждено "
                           f"(состав не читался)")
     if session._client is not None:
-        session._client.disconnect()
+        client = session._client
+        pid = client.session_pid
         session._client = None
+        # Не просто disconnect: отпускание последней COM-ссылки завершает
+        # сервер лишь иногда (замеры 02.10.2026 — чаще процесс остаётся
+        # жить), поэтому сессия закрывается управляемо — release, ожидание
+        # exact PID и точечное завершение своего процесса (shutdown из
+        # simintech-code v0.11.0).
+        try:
+            client.shutdown()
+            if pid:
+                closed.append(f"процесс mmain.exe (PID {pid}) завершён")
+        except Exception as exc:                              # noqa: BLE001
+            failed += (f" ВНИМАНИЕ: процесс mmain.exe (PID {pid}) завершить "
+                       f"не удалось ({type(exc).__name__}: {exc}) — он мог "
+                       f"остаться работать.")
     summary = ", ".join(closed)
     done = (f"Сессия завершена: {summary}, соединение разорвано"
             if summary else "Сессия завершена: соединение разорвано")
