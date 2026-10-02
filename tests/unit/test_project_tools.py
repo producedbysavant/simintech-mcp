@@ -224,6 +224,8 @@ class _CoarseTimestampProject(_SavableProject):
     """
 
     def save_xml(self, path: str) -> None:
+        if self._raises:
+            raise RuntimeError("диск переполнен")
         self.calls.append(("xml", path))
         old = os.stat(path)
         Path(path).write_bytes(b"<new!>")
@@ -234,6 +236,8 @@ class _IdenticalRewriteProject(_SavableProject):
     """Перезапись идентичным содержимым с той же меткой (грубая ФС)."""
 
     def save_xml(self, path: str) -> None:
+        if self._raises:
+            raise RuntimeError("диск переполнен")
         self.calls.append(("xml", path))
         old = os.stat(path)
         raw = Path(path).read_bytes()
