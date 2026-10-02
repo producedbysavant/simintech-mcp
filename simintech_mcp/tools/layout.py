@@ -20,19 +20,23 @@ from ..app import mcp
 MAX_REPORTED_OVERLAPS = 10
 
 
-def _rect_of(points_text: str) -> "tuple[float, float, float, float] | None":
-    """Габаритный прямоугольник блока из строки свойства `Points`.
+def _rect_of(points_text: str, size: "tuple[float, float]") -> \
+        "tuple[float, float, float, float] | None":
+    """Габарит блока: центр из `Points` ± половина размера.
 
-    `Points` — полилиния контура в формате `[(x , y), ...]`; для наложения
-    достаточно габарита (min/max). `None` — свойство пусто или не разбирается:
-    проверка обязана назвать такой блок, а не молча счесть его непересекающимся.
+    Живой замер 02.10.2026: `Points` — **не контур блока**, и min/max его
+    точек габаритом не является («Константа» 32×16 даёт полилинию 16×32).
+    Первая точка полилинии — центр блока (совпадает с `set_center` до
+    десятых), вторая — выходной порт. `None` — свойство пусто/не разбирается
+    или размер недоступен: проверка обязана назвать такой блок, а не молча
+    счесть его непересекающимся.
     """
     pairs = re.findall(r"\(([-\d.]+)\s*,\s*([-\d.]+)\)", points_text or "")
     if not pairs:
         return None
-    xs = [float(x) for x, _ in pairs]
-    ys = [float(y) for _, y in pairs]
-    return (min(xs), min(ys), max(xs), max(ys))
+    cx, cy = float(pairs[0][0]), float(pairs[0][1])
+    w, h = size
+    return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
 
 
 def _overlaps(rect_a: "tuple[float, float, float, float]",
@@ -288,7 +292,11 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
         except Exception:                                     # noqa: BLE001
             name = str(block.id)
         try:
-            rect = _rect_of(block.get_points())
+            size = block.get_size()
+        except Exception:                                     # noqa: BLE001
+            size = None
+        try:
+            rect = _rect_of(block.get_points(), size) if size else None
         except Exception:                                     # noqa: BLE001
             rect = None
         if rect is None:

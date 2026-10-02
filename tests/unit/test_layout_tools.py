@@ -55,8 +55,11 @@ async def test_layout_place_uses_block_sizes(monkeypatch):
     await mcp.call_tool("layout_place",
                         {"block_ids": "k_0,kx_0", "connections": "k_0->kx_0"})
 
-    assert first.size_reads == 1, "размер блока не запрошен"
-    assert second.size_reads == 1, "размер блока не запрошен"
+    # Размер читают двое: расстановка (габариты для слоёв) и метрика
+    # наложений (габарит = центр ± size/2, замер 02.10.2026) — «ровно один
+    # раз» тут не контракт, контракт — что размер берётся у самих блоков.
+    assert first.size_reads >= 1, "размер блока не запрошен"
+    assert second.size_reads >= 1, "размер блока не запрошен"
 
 
 @pytest.mark.anyio

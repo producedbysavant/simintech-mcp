@@ -112,16 +112,17 @@ class _PlacedBlock:
         return self.SIZE
 
     def get_points(self):
-        """Строка `Points` — прямоугольник вокруг текущего центра.
+        """Строка `Points` — как у среды (замер 02.10.2026).
 
-        Формат как у среды: `[(x , y), ...]`. Нужна проверке наложений:
-        она читает габариты блоков, а не центры.
+        Первая точка — **центр** блока, вторая — выходной порт
+        (центр + (16, 0)), дальше точки полилинии. Проверка наложений
+        строит габарит из центра и размера — min/max полилинии габаритом
+        не является (у «Константы» 32×16 размах 16×32).
         """
         cx, cy = self.center if self.center is not None else (0.0, 0.0)
-        w, h = self.SIZE
-        x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
-        return (f"[({x1:g} , {y1:g}), ({x2:g} , {y1:g}), "
-                f"({x2:g} , {y2:g}), ({x1:g} , {y2:g})]")
+        _w, h = self.SIZE
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - h / 2:g}), ({cx:g} , {cy + 24:g})]")
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)
@@ -193,12 +194,11 @@ class _ConnectingBlock:
         return (60.0, 40.0)
 
     def get_points(self):
-        """Строка `Points` — прямоугольник вокруг текущего центра."""
+        """Строка `Points` — как у среды: первая точка — центр блока."""
         cx, cy = self.center if self.center is not None else (0.0, 0.0)
-        w, h = self.get_size()
-        x1, y1, x2, y2 = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
-        return (f"[({x1:g} , {y1:g}), ({x2:g} , {y1:g}), "
-                f"({x2:g} , {y2:g}), ({x1:g} , {y2:g})]")
+        _w, h = self.get_size()
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - h / 2:g}), ({cx:g} , {cy + 24:g})]")
 
     def set_center(self, cx, cy):
         self.center = (cx, cy)
