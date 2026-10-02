@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
+from simintech_api.catalog import NON_BLOCK_CLASSES
 from simintech_api.core.block import Block
 from simintech_api.core.script_bridge import ScriptBridge
 from simintech_api.exceptions import ScriptBridgeError
@@ -59,11 +60,14 @@ MAX_REPORTED = 10
 #: 02.10.2026: блоки 16/32 высоты, порты в `cx±16, cy` — всё кратно 8).
 GRID_STEP = 8.0
 
-#: Классы-«подписи»: не блоки — `Points` это якорь текста (один), `size` —
+#: Классы-«оформление»: не блоки — `Points` это якорь текста (один), `size` —
 #: типовая карточка 60×40, а не габарит (замер 02.10.2026: `constLabel`).
-#: В проверках габаритов и разметки не участвуют: иначе дают ложные
-#: «наложения» и «вне сетки».
-LABEL_CLASSES = ("constLabel",)
+#: Набор — библиотечный (`simintech_api.catalog.NON_BLOCK_CLASSES`:
+#: `TextLabel`, `RotatedText`, «Комментарий», `Rectangle`…): подпись,
+#: нарисованная в GUI, — это не только `constLabel` (находка ревью
+#: 02.10.2026). В проверках габаритов и разметки не участвуют: иначе дают
+#: ложные «наложения» и «вне сетки».
+LABEL_CLASSES = NON_BLOCK_CLASSES
 
 
 def _off_grid(rect: "tuple[float, float, float, float]") -> bool:
@@ -138,7 +142,10 @@ def _script_safe(name: str) -> bool:
     причиной, а не экранируются: проверенного способа экранирования имени
     блока у языка нет, а «починить и надеяться» — не защита.
     """
-    return bool(_SAFE_NAME_RE.match(name))
+    # `fullmatch`, а не `match` с `$`: в Python `$` совпадает и перед хвостовым
+    # переводом строки — имя `k_0\n` прошло бы охрану и легло в текст скрипта
+    # без кавычек (находка ревью 02.10.2026).
+    return bool(_SAFE_NAME_RE.fullmatch(name))
 
 
 def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
@@ -148,6 +155,15 @@ def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
     Без циклов языка: всё развёрнуто по данным, известным снаружи (имена
     блоков, число портов, id линий) — цикл пришлось бы писать на языке, у
     которого синтаксис петель в этом контуре не проверен живьём.
+
+    **Своя секция — намеренно.** Тело отдаётся `run_page_script`, который
+    оборачивает его в свою `initialization` (дескриптор моста телу недоступен
+    по имени — он назван случайной частью метки, `build_page_script`), поэтому
+    своя секция с `var chk_f` оказывается вложенной. Живой прогон 02.10.2026
+    (демо-проект) подтвердил, что среда принимает эту форму: отчёт пришёл
+    полным — пустые порты и классификация трёх линий. Похожая вольность уже
+    работает у проб моста (`if firststep then begin var …`). Последняя строка
+    отчёта — `DONE`: по ней проверка отличает полный отчёт от оборванного.
     """
     literal = str(report_path).replace("\\", "/")
     lines = [
@@ -166,6 +182,10 @@ def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
                 f"  if getportwireid(getblockportid({name}, {index})) = 0 "
                 f'then begin writelnutf8(chk_f, "EMPTY|{name}|{index}"); '
                 f"end;")
+    # `DONE` — признак полного отчёта: по нему вердикты «все прямые» и
+    # «пустых портов нет» не выдаются по оборванному телу (находка ревью
+    # 02.10.2026).
+    lines.append('  writelnutf8(chk_f, "DONE");')
     lines.append("  freeobject(chk_f);")
     lines.append("end;")
     return "\n".join(lines) + "\n"
@@ -188,9 +208,9 @@ def _parse_point(text: str) -> Optional[Tuple[float, float]]:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime._com_threaded
 def check_model_layout() -> str:
-    """Проверить оформление модели: наложения, подписи, пустые порты, связи.
+    """Проверить оформление текущей страницы: наложения, подписи, порты, связи.
 
     Машинная версия чек-листа (issue #24, п.4). Проверяется по фактической
     геометрии: наложения — по габаритам (центр `Points` ± `size`); подписи —
@@ -202,7 +222,10 @@ def check_model_layout() -> str:
     **Проверка идёт контуром страницы и сдвигает модельное время** — как
     `step`: порты и концы линий через COM не читаются, их отдают функции
     языка. На остановленном проекте расчёт запускается и останавливается
-    самим контуром.
+    самим контуром. Проверяется **текущая** страница — та же, куда контур
+    ставит скрипт (`GetCurentPage`): прежде COM-чтения шли по главной, и на
+    субмодели половины одного вердикта описывали разные страницы (находка
+    ревью 02.10.2026).
 
     **Чего проверка не умеет** (граница названа, чтобы «не найдено» не
     читалось как «всё хорошо»):
@@ -218,7 +241,7 @@ def check_model_layout() -> str:
     (`run_page_script` — тот же механизм и та же гарантия).
     """
     project = session._ensure_project()
-    page = project.get_main_page()
+    page = project.get_current_page()
 
     # ── Слой COM: габариты, подписи ────────────────────────────────
     geometry: List[Tuple[str, Tuple[float, float, float, float]]] = []
@@ -310,6 +333,8 @@ def check_model_layout() -> str:
     straight = 0
     bent: List[str] = []
     unparsed: List[str] = []
+    unparsed_total = 0
+    done = False
     data, _truncated, error = sandbox._load_result_file(
         str(report_path), sandbox.MAX_OUTPUT_BYTES,
         sandbox._MISSING_RESULT_FILE)
@@ -326,6 +351,10 @@ def check_model_layout() -> str:
                 start = _parse_point(parts[2])
                 end = _parse_point(parts[3])
                 if start is None or end is None:
+                    # Счётчик — всегда полный: список ниже обрезается, но
+                    # «сколько всего» должно оставаться правдой (находка
+                    # ревью 02.10.2026).
+                    unparsed_total += 1
                     if len(unparsed) < MAX_REPORTED:
                         unparsed.append(f"{parts[1]} ({parts[2]} → {parts[3]})")
                     continue
@@ -333,6 +362,8 @@ def check_model_layout() -> str:
                     straight += 1
                 else:
                     bent.append(parts[1])
+            elif parts[0] == "DONE":
+                done = True
 
     # ── Ответ ──────────────────────────────────────────────────────
     lines = ["Проверка оформления модели.", ""]
@@ -368,22 +399,45 @@ def check_model_layout() -> str:
                     if len(empty_ports) > MAX_REPORTED else "")
             lines.append(f"ВНИМАНИЕ: пустые порты: {shown}{more}. Пустой "
                          f"вход останавливает расчёт всей модели.")
-        else:
+        elif done:
             lines.append("Пустые порты: нет.")
+        else:
+            lines.append("Пустые порты: не проверены — отчёт неполон "
+                         "(тело оборвалось до конца).")
         if wire_ids:
-            bent_text = (f"; с изломом: {', '.join(bent[:MAX_REPORTED])}"
-                         if bent else "; все прямые")
-            lines.append(f"Связи: {len(wire_ids)}, прямых {straight}{bent_text}.")
+            received = straight + len(bent) + unparsed_total
+            tail = []
+            if bent:
+                shown = ", ".join(bent[:MAX_REPORTED])
+                more = (f" (и ещё {len(bent) - MAX_REPORTED})"
+                        if len(bent) > MAX_REPORTED else "")
+                tail.append(f"с изломом: {shown}{more}")
+            elif received == len(wire_ids) and not unparsed_total:
+                # «Все прямые» — только когда концы получены у всех линий:
+                # пустой или оборванный отчёт не должен читаться как чистый
+                # вердикт (находка ревью 02.10.2026).
+                tail.append("все прямые")
+            if received < len(wire_ids):
+                tail.append(f"концы получены у {received} из {len(wire_ids)}"
+                            f" — отчёт неполон")
+            suffix = ("; " + "; ".join(tail)) if tail else ""
+            lines.append(f"Связи: {len(wire_ids)}, прямых {straight}{suffix}.")
         else:
             lines.append("Связи: линий на странице нет.")
         if unparsed:
-            lines.append(f"Концы не разобраны у {len(unparsed)} линий: "
-                         f"{', '.join(unparsed)}.")
+            more = (f" (и ещё {unparsed_total - MAX_REPORTED})"
+                    if unparsed_total > MAX_REPORTED else "")
+            lines.append(f"Концы не разобраны у {unparsed_total} линий: "
+                         f"{', '.join(unparsed)}{more}.")
     if no_geometry:
         shown = ", ".join(no_geometry[:MAX_REPORTED])
-        lines.append(f"Геометрию прочитать не удалось у: {shown}.")
+        more = (f" (и ещё {len(no_geometry) - MAX_REPORTED})"
+                if len(no_geometry) > MAX_REPORTED else "")
+        lines.append(f"Геометрию прочитать не удалось у: {shown}{more}.")
     if port_skipped:
         shown = ", ".join(port_skipped[:MAX_REPORTED])
+        more = (f" (и ещё {len(port_skipped) - MAX_REPORTED})"
+                if len(port_skipped) > MAX_REPORTED else "")
         lines.append(f"Порты пропущены (имя или число портов не прочитались): "
-                     f"{shown}.")
+                     f"{shown}{more}.")
     return "\n".join(lines)

@@ -106,6 +106,9 @@ class _FakeProject:
     def get_main_page(self):
         return self._page
 
+    def get_current_page(self):
+        return self._page
+
 
 class _BridgeWritesReport:
     """Мост-подделка: пишет отчёт по пути из тела и отдаёт заданный исход."""
@@ -147,7 +150,9 @@ async def test_check_reports_clean_model(monkeypatch, tmp_path):
         _CheckBlock("k_0", center=(0, 0)),
         _CheckBlock("kx_0", center=(200, 0)),
     ]
-    _install(monkeypatch, tmp_path, blocks)
+    # `DONE` в отчёте — признак, что тело дошло до конца: «пустых портов нет»
+    # проверка говорит только по полному отчёту.
+    _install(monkeypatch, tmp_path, blocks, payload="DONE\n")
 
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
@@ -366,3 +371,99 @@ async def test_check_skips_unsafe_block_name(monkeypatch, tmp_path):
     assert "bad()" not in body, "подозрительное имя попало в тело скрипта"
     assert "getblockportid(k_1, 0)" in body, "безопасный блок пропал"
     assert "Порты пропущены" in text
+
+
+@pytest.mark.anyio
+async def test_check_reads_the_current_page(monkeypatch, tmp_path):
+    """Чтения идут по текущей странице — той же, куда контур ставит скрипт.
+
+    Мост ставит скрипт в `GetCurentPage`; если COM-чтения идут по главной, на
+    субмодели половины одного вердикта описывают разные страницы (находка
+    ревью 02.10.2026).
+    """
+
+    class _TwoPages:
+        id = 7
+
+        def __init__(self):
+            self.main = _FakePage([_CheckBlock("main_0", center=(0, 0))], [])
+            self.current = _FakePage([_CheckBlock("cur_0", center=(3, 5))], [])
+
+        def get_main_page(self):
+            return self.main
+
+        def get_current_page(self):
+            return self.current
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_client", _FakeClient())
+    monkeypatch.setattr(session, "_project", _TwoPages())
+    monkeypatch.setattr(cm, "ScriptBridge", _BridgeWritesReport)
+    monkeypatch.setattr(_BridgeWritesReport, "payload", "DONE\n",
+                        raising=False)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "cur_0" in text, "проверена не текущая страница"
+    assert "main_0" not in text, "в вердикт попала главная страница"
+
+
+@pytest.mark.anyio
+async def test_check_skips_name_with_trailing_newline(monkeypatch, tmp_path):
+    """Имя с хвостовым переводом строки в скрипт не попадает (находка ревью).
+
+    `$` в Python совпадает и перед хвостовым переводом строки, поэтому имя
+    `k_0` плюс перевод строки проходило охрану `_SAFE_NAME_RE` и легло бы в
+    текст скрипта без кавычек.
+    """
+    blocks = [
+        _CheckBlock("k_0\n", center=(0, 0)),
+        _CheckBlock("kx_0", center=(100, 0)),
+    ]
+    _install(monkeypatch, tmp_path, blocks)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    body = _BridgeWritesReport.body
+    assert "getblockportid(k_0" not in body, \
+        "имя с переводом строки попало в тело скрипта"
+    assert "getblockportid(kx_0, 0)" in body, "безопасный блок пропал"
+    assert "Порты пропущены" in text
+
+
+@pytest.mark.anyio
+async def test_check_does_not_certify_incomplete_report(monkeypatch, tmp_path):
+    """Оборванный отчёт не читается как чистый вердикт (находка ревью).
+
+    Прежде при пустом списке изломов ответ печатал «все прямые», даже когда
+    концы получены не у всех линий, — рядом с «Концы не разобраны…».
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
+    wires = [_FakeWire(1), _FakeWire(2)]
+    # Тело успело записать только первую линию и оборвалось (нет DONE).
+    payload = "W|1|(0+0i)|(100+0i)\n"
+    _install(monkeypatch, tmp_path, blocks, wires=wires, payload=payload)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "все прямые" not in text, "оборванный отчёт выдан за чистый"
+    assert "концы получены у 1 из 2" in text
+
+
+@pytest.mark.anyio
+async def test_check_counts_all_unparsed_ends(monkeypatch, tmp_path):
+    """Счётчик неразобранных концов полный, список — с «и ещё» (находка ревью).
+
+    Прежде `len(unparsed)` печатался по обрезанному списку: 11 неразобранных
+    концов читались как 10.
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0))]
+    wires = [_FakeWire(index) for index in range(1, 12)]
+    payload = "".join(f"W|{index}|мусор|ещё мусор\n"
+                      for index in range(1, 12)) + "DONE\n"
+    _install(monkeypatch, tmp_path, blocks, wires=wires, payload=payload)
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Концы не разобраны у 11 линий" in text
+    assert "(и ещё 1)" in text
