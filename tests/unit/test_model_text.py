@@ -41,19 +41,26 @@ class _FakeClient:
 class _Page:
     """Страница без объектов: отчёту об изменениях нужен её список."""
 
-    @staticmethod
-    def get_blocks() -> list:
+    def __init__(self, wires=None):
+        #: Линии страницы: подсказка о трассировке считает их число.
+        self._wires = list(wires or [])
+
+    def get_blocks(self) -> list:
         return []
+
+    def get_wires(self) -> list:
+        return list(self._wires)
 
 
 class _FakeProject:
     """Открытый проект: мосту нужен идентификатор, отчёту — страница."""
 
-    def __init__(self, project_id: int = 7):
+    def __init__(self, project_id: int = 7, wires=None):
         self.id = project_id
+        self._wires = list(wires or [])
 
     def get_current_page(self):
-        return _Page()
+        return _Page(self._wires)
 
 
 def _dump_path_from_body(body: str) -> str:
@@ -113,10 +120,10 @@ class _BridgeSilent(_BridgeRunsContour):
                              restored_script=type(self).restored)
 
 
-def _install(monkeypatch, tmp_path: Path, bridge) -> None:
+def _install(monkeypatch, tmp_path: Path, bridge, wires=None) -> None:
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
-    monkeypatch.setattr(session, "_project", _FakeProject())
+    monkeypatch.setattr(session, "_project", _FakeProject(wires=wires))
     monkeypatch.setattr(mt, "ScriptBridge", bridge)
 
 
@@ -266,3 +273,32 @@ async def test_import_model_text_reports_model_stuck(monkeypatch, tmp_path):
         "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
 
     assert "не считает" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_warns_lines_not_traced(monkeypatch, tmp_path):
+    """Импорт напоминает: линии не трассированы — нужен `layout_place`.
+
+    В кейсе #24 сразу после импорта провода шли диагоналями через всю схему,
+    и модель выглядела нечитаемой; подсказка в ответе снимает лишний круг
+    «почему косо» (issue #24, п.3).
+    """
+    _install(monkeypatch, tmp_path, _BridgeRunsContour,
+             wires=[object(), object()])
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "не трассированы" in result
+    assert "layout_place" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_reports_no_lines(monkeypatch, tmp_path):
+    """Линий нет — ответ говорит и это, а не молчит неопределённо."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+
+    result = _text(await mcp.call_tool(
+        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+
+    assert "Линий связи на странице нет" in result
