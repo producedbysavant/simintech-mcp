@@ -604,6 +604,8 @@ def test_parse_drop_reply_reads_body_lines():
     assert _parse_drop_reply(["removed=5 pw=8"]).port_left == 8
     assert _parse_drop_reply(["err=other-src blk=9"]).block_id == 9
     assert _parse_drop_reply(["err=not-connected"]).kind == "not-connected"
+    assert _parse_drop_reply(["err=no-in-port"]).kind == "no-in-port"
+    assert _parse_drop_reply(["err=no-out-port"]).kind == "no-out-port"
     assert _parse_drop_reply(["мусор вместо ответа"]).kind == "unknown"
     assert _parse_drop_reply([]).kind == "unknown"
 
@@ -713,19 +715,20 @@ async def test_disconnect_wire_reports_leftover_line(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_disconnect_wire_warns_when_more_than_one_line_vanished(
-        monkeypatch, tmp_path):
-    """Удаление унесло больше одной линии — предупреждение, а не молчание.
+async def test_disconnect_wire_forgets_every_vanished_line(monkeypatch, tmp_path):
+    """Ушло больше одной линии — предупреждение, и реестр чистится по всем.
 
-    Замер 03.10.2026: среда допускает несколько линий в один вход, и удаление
-    одной может унести связку. Подделка моделирует это: со страницы исчезают
-    обе записи, счётчик честно показывает «2 → 0».
+    Среда допускает линии с несколькими концами: снятие может унести не одну
+    запись. Подделка моделирует переход «обе линии исчезли»; ответ обязан
+    предупредить, а реестр — потерять обе записи (запись о сестре иначе
+    осталась бы опорой `layout_place` для мёртвой связи).
     """
     src = _ConnectingBlock("k_0", 1)
     dst = _ConnectingBlock("Integrator_0", 2)
     first, second = _FakeWire(77), _FakeWire(78)
     src.wires.append((first, dst, 0, 0))
     dst.wires.append((second, src, 0, 0))
+    saved = list(session._WIRES)
 
     class _Bundle(_BridgeReplies):
         lines = ["removed=77 pw=0"]
@@ -737,13 +740,20 @@ async def test_disconnect_wire_warns_when_more_than_one_line_vanished(
 
     _Bundle.on_run = _Bundle.bundle
 
-    _install_disconnect(monkeypatch, tmp_path, _Bundle,
-                        {"k_0": src, "Integrator_0": dst})
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Bundle,
+                            {"k_0": src, "Integrator_0": dst})
+        session._WIRES.append((first, "k_0", 0, "Integrator_0", 0))
+        session._WIRES.append((second, "Integrator_0", 0, "k_0", 0))
 
-    text = _text(await mcp.call_tool(
-        "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
+        text = _text(await mcp.call_tool(
+            "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
 
-    assert "0" in text and "затронуло не одну линию" in text
+        assert "Линий связи на странице: 2 → 0" in text
+        assert "Исчезло больше одной линии" in text
+        assert session._WIRES == [], "реестр держит записи исчезнувших линий"
+    finally:
+        session._WIRES[:] = saved
 
 
 @pytest.mark.anyio
@@ -809,25 +819,182 @@ async def test_disconnect_wire_refuses_when_body_does_not_compile(
 @pytest.mark.anyio
 async def test_disconnect_wire_does_not_claim_success_after_abort(
         monkeypatch, tmp_path):
-    """Обрыв тела — «снятие не подтверждено», а не «снята» и не «не снята».
+    """Обрыв тела — «снятие не подтверждено»; ушедшая линия из реестра уходит.
 
-    Тело могло успеть удалить линию до обрыва записи, поэтому утверждать
-    «не снята» нельзя: ответ называет, чем проверить.
+    Тело могло успеть удалить линию до обрыва записи: утверждать «не снята»
+    нельзя, но и держать в реестре запись о реально исчезнувшей линии тоже —
+    реестр приводится по факту перечисления страницы.
     """
     src = _ConnectingBlock("k_0", 1)
     dst = _ConnectingBlock("Integrator_0", 2)
+    wire = _FakeWire(77)
+    src.wires.append((wire, dst, 0, 0))
+    saved = list(session._WIRES)
 
     class _Aborted(_BridgeReplies):
         kind = "aborted"
         lines = ["removed=77 pw=0"]
+        on_run = staticmethod(lambda: src.wires.clear())
 
-    _install_disconnect(monkeypatch, tmp_path, _Aborted,
-                        {"k_0": src, "Integrator_0": dst})
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Aborted,
+                            {"k_0": src, "Integrator_0": dst})
+        session._WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
+
+        message = await _error("disconnect_wire",
+                               {"src": "k_0", "dst": "Integrator_0"})
+
+        assert "не подтверждено" in message
+        assert "оборвалось" in message
+        assert "list_wires" in message, "отказ не говорит, чем проверить схему"
+        assert session._WIRES == [], \
+            "запись реально исчезнувшей линии осталась в реестре"
+    finally:
+        session._WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_refuses_when_environment_still_sees_the_line(
+        monkeypatch, tmp_path):
+    """Та же линия на входе — «снятие не подтверждено», а не «снята».
+
+    Тело сообщило «removed», но обратное чтение (`pw`) показывает ту же
+    линию: удаление не прошло. Строке тела репозиторий не верит на слово —
+    успех подтверждается фактом. Счётчик здесь **уменьшается** (уходит чужая
+    линия), чтобы отказ ловился именно проверкой `pw`, а не «число не
+    уменьшилось».
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+    other = _ConnectingBlock("kx_0", 3)
+    wire = _FakeWire(77)
+    src.wires.append((wire, dst, 0, 0))
+    spare = _FakeWire(99)
+    other.wires.append((spare, dst, 0, 1))
+
+    class _Stuck(_BridgeReplies):
+        lines = ["removed=77 pw=77"]
+        on_run = staticmethod(lambda: other.wires.clear())
+
+    _install_disconnect(monkeypatch, tmp_path, _Stuck,
+                        {"k_0": src, "kx_0": other, "Integrator_0": dst})
 
     message = await _error("disconnect_wire",
                            {"src": "k_0", "dst": "Integrator_0"})
 
     assert "не подтверждено" in message
-    assert "оборвалось" in message
-    assert "list_wires" in message, "отказ не говорит, чем проверить схему"
-    assert session._WIRES == [], "реестр тронут при неподтверждённом снятии"
+    assert "77" in message
+    assert src.wires, "линия исчезла, хотя среда её по-прежнему видит"
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_refuses_when_wire_count_did_not_drop(
+        monkeypatch, tmp_path):
+    """Число линий страницы не уменьшилось — «снятие не подтверждено»."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+    src.wires.append((_FakeWire(77), dst, 0, 0))
+
+    class _Still(_BridgeReplies):
+        lines = ["removed=77 pw=0"]
+
+    _install_disconnect(monkeypatch, tmp_path, _Still,
+                        {"k_0": src, "Integrator_0": dst})
+
+    message = await _error("disconnect_wire",
+                           {"src": "k_0", "dst": "Integrator_0"})
+
+    assert "не уменьшилось" in message
+    assert session._WIRES == [], "реестр тронут без подтверждения"
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_says_when_wire_list_is_unreadable(
+        monkeypatch, tmp_path):
+    """Сбой перечисления линий назван, а не проглочен (находка ревью)."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+
+    class _Ok(_BridgeReplies):
+        lines = ["removed=77 pw=0"]
+
+    _install_disconnect(monkeypatch, tmp_path, _Ok,
+                        {"k_0": src, "Integrator_0": dst})
+
+    def _boom():
+        raise RuntimeError("COM: перечисление объектов не прошло")
+
+    session._project.page.get_wires = _boom
+
+    text = _text(await mcp.call_tool(
+        "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
+
+    assert "снята (wire=77)" in text
+    assert "прочитать не удалось" in text, "сбой чтения числа линий умолчан"
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_refuses_when_body_reports_missing_port(
+        monkeypatch, tmp_path):
+    """Тело не нашло порт — отказ с редакцией «порт пересоздался»."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+
+    class _NoPort(_BridgeReplies):
+        lines = ["err=no-in-port"]
+
+    _install_disconnect(monkeypatch, tmp_path, _NoPort,
+                        {"k_0": src, "Integrator_0": dst})
+
+    message = await _error("disconnect_wire",
+                           {"src": "k_0", "dst": "Integrator_0"})
+
+    assert "не нашла входной порт" in message
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_refuses_unreadable_body_reply(monkeypatch, tmp_path):
+    """Неизвестный ответ тела — «снятие не подтверждено», не успех."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+
+    class _Mute(_BridgeReplies):
+        lines = ["нечто вместо ответа"]
+
+    _install_disconnect(monkeypatch, tmp_path, _Mute,
+                        {"k_0": src, "Integrator_0": dst})
+
+    message = await _error("disconnect_wire",
+                           {"src": "k_0", "dst": "Integrator_0"})
+
+    assert "не оставило ответа" in message
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_refuses_when_line_start_unreadable(
+        monkeypatch, tmp_path):
+    """Начало линии не читается (`findstartport` → 0) — снимать нечем."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+
+    class _NoStart(_BridgeReplies):
+        lines = ["err=other-src blk=0"]
+
+    _install_disconnect(monkeypatch, tmp_path, _NoStart,
+                        {"k_0": src, "Integrator_0": dst})
+
+    message = await _error("disconnect_wire",
+                           {"src": "k_0", "dst": "Integrator_0"})
+
+    assert "не назвала начало линии" in message
+
+
+def test_vanished_wires_compares_sets():
+    """Разница перечислений — чистая функция: пропавшие id и «не знаем»."""
+    from simintech_mcp.tools.blocks import _vanished_wires
+
+    assert _vanished_wires([1, 2, 3], [3, 4]) == [1, 2]
+    assert _vanished_wires([1], []) == [1]
+    assert _vanished_wires([1], [1]) == []
+    assert _vanished_wires(None, [1]) == [], "сбой чтения — не «ничего не ушло»"
+    assert _vanished_wires([1], None) == []
