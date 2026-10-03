@@ -143,6 +143,39 @@ async def test_open_project_requires_absolute_path(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_open_project_resolves_path_before_com(monkeypatch, tmp_path):
+    """В COM уходит полностью определённый путь (хвост находки ревью).
+
+    Windows-путь без диска (`\\foo\\m.prt`) абсолютен, но каждый процесс
+    раскрывает его от своего текущего диска — та же расходимость, что у
+    относительных путей. Путь нормализуется до проверки и подачи в COM:
+    что проверили, то и откроется.
+    """
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "model.prt"
+    target.write_text("", encoding="utf-8")
+    tricky = tmp_path / "sub" / ".." / "model.prt"
+    opened = _WireProject({}, project_id=5)
+    seen = {}
+
+    def fake_open(client, path):
+        seen["path"] = path
+        return opened
+
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(fake_open))
+    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    prev_project, prev_path = session._project, session._project_path
+    try:
+        _text(await mcp.call_tool("open_project", {"path": str(tricky)}))
+
+        assert seen["path"] == str(target)
+        assert session._project is opened
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_open_project_directory_gets_hint(tmp_path):
     """Каталог вместо файла — отказ с подсказкой.
 
