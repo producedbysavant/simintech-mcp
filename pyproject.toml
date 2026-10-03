@@ -61,8 +61,15 @@ dependencies = [
     # из выгрузки `.xprt` (обе конвенции кавычек, первая страница, отказ на
     # повреждённом снимке и неполном остатке; squash-коммит PR #41 `addbd0f`);
     # выпускной коммит `003f6b0`.
-    # sha: 003f6b0f97aba0956a041209ad0acb47fdc8fb3e
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.1",
+    # v0.13.2 — релизный тег simintech-code (библиотека 0.13.2): аннотации для
+    # строгого внешнего анализа — Signal под TYPE_CHECKING, calc_settings →
+    # Dict[str, str], типы параметров get_properties/set_graph_prop/shutdown
+    # (squash-коммит PR #44 `34c00f4`; с ними сняты пять pyright-заглушек
+    # сервера); контур — ранний выход ожидания по CTX_END: на модели, которая
+    # структурно не считает, исход возвращается за секунды, а не за минуту
+    # таймаута (squash-коммит PR #47 `cd50af5`); выпускной коммит `3439194`.
+    # sha: 34391942ccf1edbb842a43457b0ba5ec18de0852
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.2",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
