@@ -636,11 +636,17 @@ def _runtime_literal(text: str) -> str:
 
     `CLRF` здесь не годится: измерено 01.10.2026 — это константа
     декларативного текста, в рантайме её нет (скрипт с `clrf` не компилируется).
+
+    Вход нормализуется к LF **внутри**: перевод строки в куске литерала
+    недопустим, а собранный скрипт страницы прогоняется библиотечным
+    `build_page_script` через `splitlines()`, который режет и по сырому `\\r`
+    (находка ревью: CRLF-вход давал куски вида `"a\\r"` — вызов рвался посреди
+    литерала). Перевод строки выражается только `chr(13) + chr(10)`.
     """
     if not text:
         return '""'
     parts: List[str] = []
-    lines = text.split("\n")
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     for index, line in enumerate(lines):
         for piece_index, piece in enumerate(line.split('"')):
             if piece_index:
@@ -736,19 +742,20 @@ class _ScriptReply(NamedTuple):
     ports_after: int = 0
 
 
-#: Строка ответа тела с числом портов: `ports=2->4`.
+#: Строка ответа тела с числом портов: `ports=2->4` — целиком, не поиском
+#: подстроки: такие же символы могут стоять в тексте скрипта (находка ревью).
 _PORTS_RE = re.compile(r"ports=(\d+)->(\d+)")
 
 
 def _parse_script_reply(lines: List[str], token: str) -> _ScriptReply:
     """Разобрать строки тела: скрипты между маркерами, число портов.
 
-    Маркеры уникальны на вызов (токен), поэтому текст скрипта не может
-    подделать границу: строки маркеров ищутся точным совпадением.
+    Маркеры уникальны на вызов (токен), и область разбора ограничена ими же:
+    сентинел `err=no-block` и строка `ports=…` ищутся **вне** текста скрипта
+    (эхо-текст идёт между маркерами). Иначе строка-сентинел внутри самого
+    скрипта подменяла бы ответ — ровно то, от чего маркеры и защищают
+    (находка ревью: скрипт с комментарием `// ports=9->9` давал чужие числа).
     """
-    if "err=no-block" in [line.strip() for line in lines]:
-        return _ScriptReply("no-block")
-
     def between(which: str) -> Optional[str]:
         begin = f"{token}_{which}_BEGIN"
         end = f"{token}_{which}_END"
@@ -764,12 +771,20 @@ def _parse_script_reply(lines: List[str], token: str) -> _ScriptReply:
     old = between("OLD")
     new = between("NEW")
     if old is None or new is None:
+        # Ветка «блок не найден» маркеров не печатает вовсе — её сентинел
+        # ищется только здесь, когда разбор скриптов уже не состоялся.
+        if "err=no-block" in [line.strip() for line in lines]:
+            return _ScriptReply("no-block")
         return _ScriptReply("unknown")
-    ports = _PORTS_RE.search("\n".join(lines))
-    before = int(ports.group(1)) if ports else 0
-    after = int(ports.group(2)) if ports else 0
+    ports_before = ports_after = 0
+    for line in lines[lines.index(f"{token}_NEW_END") + 1:]:
+        match = _PORTS_RE.fullmatch(line.strip())
+        if match:
+            ports_before = int(match.group(1))
+            ports_after = int(match.group(2))
+            break
     return _ScriptReply("written", old=old, new=new,
-                        ports_before=before, ports_after=after)
+                        ports_before=ports_before, ports_after=ports_after)
 
 
 def _set_block_script_body(block_name: str, script: str, token: str) -> str:
@@ -832,6 +847,12 @@ def set_block_script(block: str, script: str) -> str:
     2 → 0) и рвёт соединения. Если цель — осознанная очистка, передайте текст
     с комментарием — так она видна и в модели.
 
+    **Пересборка пинов может оставить провода половинками** (у блока пины
+    пересоздаются, а провода из прошлой конфигурации — нет): проверьте
+    соединения и досоедините `connect`-ом; вердикт в ответе называет, считает
+    ли модель. Блоки ищутся на **главной странице** проекта (как у `connect`
+    и `get_block_script`).
+
     Args:
         block: имя блока (автоимя из `list_blocks`).
         script: новый текст скрипта (канон: секции `input`/`output`/`var` и
@@ -842,6 +863,14 @@ def set_block_script(block: str, script: str) -> str:
             "скрипт пуст: пустой текст оставляет блок без портов (замер: "
             "2 → 0) и рвёт соединения. Если цель — очистка, передайте текст "
             "с одним комментарием — так она видна и в модели.")
+    if "CTX_BEGIN" in script or "CTX_END" in script:
+        raise ToolError(
+            "текст скрипта содержит служебные маркеры контура "
+            "(`CTX_BEGIN`/`CTX_END`): текст возвращается ответом через файл "
+            "результата, границы которого эти маркеры и держат, — запись "
+            "такого текста рвёт разбор ответа. Соберите маркер в тексте "
+            "конкатенацией (например, `\"CTX\" + \"_END\"`), если он нужен "
+            "как содержание, и повторите.")
     project = session._ensure_project()
     target = project.get_main_page().find_block(block)
     if target is None:
@@ -880,7 +909,8 @@ def set_block_script(block: str, script: str) -> str:
     tail = (f"\n---- прежний скрипт ----\n{reply.old}" if reply.old
             else "\nПрежний скрипт был пуст.")
     return (f"Скрипт блока '{block}' записан. Портов: {reply.ports_before} → "
-            f"{reply.ports_after}.{tail}")
+            f"{reply.ports_after}.\n"
+            f"{_describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
 @mcp.tool()

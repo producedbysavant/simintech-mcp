@@ -135,9 +135,9 @@ def _install(monkeypatch, tmp_path, project, bridge=None):
 async def test_get_block_script_reads_from_snapshot(monkeypatch, tmp_path):
     """Скрипт читается снимком выгрузки — контур не запускается.
 
-    Мост в этом тесте не подменяется: если бы инструмент пошёл контурным
-    путём, он дёрнул бы `session._ensure_client()` без живого COM и упал —
-    успешный ответ и есть доказательство «без запуска расчёта».
+    Мост в этом тесте не подменяется: контурный путь упал бы на первом же
+    COM-вызове моста (у фейкового клиента нет `call`) — успешный ответ и есть
+    доказательство «без запуска расчёта».
     """
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
     _install(monkeypatch, tmp_path, project)
@@ -196,7 +196,13 @@ async def test_set_block_script_writes_and_returns_old(monkeypatch, tmp_path):
     body = _BridgeScripts.body
     assert 'setprop(obj, "script"' in body
     assert "reinitlangblock(obj);" in body, "пины не пересобираются"
-    assert 'getpropasstring(obj, "script")' in body
+    # Порядок обязателен: прежний скрипт читается ДО записи, новый — ПОСЛЕ;
+    # иначе в ответ уйдёт новый текст как «прежний», а подтверждение записи
+    # станет тавтологией (находка ревью тестов).
+    assert (body.index('old_script = getpropasstring')
+            < body.index('setprop(obj, "script"'))
+    assert (body.index('new_script = getpropasstring')
+            > body.index('setprop(obj, "script"'))
 
 
 @pytest.mark.anyio
@@ -289,3 +295,192 @@ async def test_get_block_script_refuses_broken_snapshot(monkeypatch, tmp_path):
 
     assert "не удалось" in message
     assert "скрипта нет" not in message
+
+
+# ─── Литерал и разбор ответа: гейты, которые нельзя обойти текстом скрипта ──
+
+
+def test_runtime_literal_uses_codes_for_line_breaks_only():
+    """Перевод строки — только `chr(13) + chr(10)`; сырых CR/LF в литерале нет.
+
+    Находка ревью: вход нормализуется к CRLF, а литерал резался по `\\n` —
+    в куски попадал сырой `\\r`, и собранный скрипт страницы (библиотечный
+    `build_page_script` режет тело `splitlines()`, в том числе по `\\r`) рвался
+    посреди литерала. Этот тест закрывает форму литерала напрямую.
+    """
+    from simintech_mcp.tools.blocks import _runtime_literal
+
+    literal = _runtime_literal("a\r\nb\r\n")
+
+    assert literal == '"a" + chr(13) + chr(10) + "b" + chr(13) + chr(10)'
+    assert "\r" not in literal and "\n" not in literal
+
+
+def test_runtime_literal_escapes_quotes_and_handles_empty():
+    """Кавычка — `chr(34)`; пустой текст — пустая строка."""
+    from simintech_mcp.tools.blocks import _runtime_literal
+
+    assert _runtime_literal('say "hi"') == '"say " + chr(34) + "hi" + chr(34)'
+    assert _runtime_literal("") == '""'
+
+
+@pytest.mark.anyio
+async def test_set_block_script_body_escapes_literal(monkeypatch, tmp_path):
+    """Тело инструмента несёт литерал без сырых переводов строк.
+
+    Подделка моста (`_BridgeScripts`) ответы не выводит из литерала, поэтому
+    форма проверяется по телу напрямую — иначе мутация «литерал собран
+    неверно» осталась бы незамеченной (находка ревью тестов).
+    """
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+    _BridgeScripts.new = "x = 1;\r\ny = 2;\r\n"
+
+    await mcp.call_tool("set_block_script",
+                        {"block": "LangBlock_0", "script": "x = 1;\r\ny = 2;\r\n"})
+
+    body = _BridgeScripts.body
+    assert '"x = 1;" + chr(13) + chr(10) + "y = 2;" + chr(13) + chr(10)' in body
+    assert '"x = 1;\r' not in body, "сырой CR попал внутрь литерала"
+
+
+def test_parse_script_reply_ignores_sentinels_inside_script():
+    """`err=no-block` и `ports=…` внутри текста скрипта — не ответ тела.
+
+    Находка ревью: сентинелы искались по всему выводу, и комментарий
+    `// ports=9->9` в прежнем скрипте перебивал настоящие числа, а строка
+    ровно `err=no-block` давала ложный «блок не найден» после записи.
+    """
+    from simintech_mcp.tools.blocks import _parse_script_reply
+
+    token = "BLKabc"
+    # Строка ровно `err=no-block` — не комментарий: именно так сентинел
+    # подделывался в находке ревью (строку скрипта не спутать с ответом тела).
+    lines = [f"{token}_OLD_BEGIN", "err=no-block", "// ports=9->9",
+             f"{token}_OLD_END", f"{token}_NEW_BEGIN", "y = u;",
+             f"{token}_NEW_END", "ports=1->4"]
+
+    reply = _parse_script_reply(lines, token)
+
+    assert reply.kind == "written"
+    assert reply.ports_before == 1 and reply.ports_after == 4
+    assert "err=no-block" in reply.old, "текст прежнего скрипта потерян"
+
+
+def test_parse_script_reply_no_block_only_without_markers():
+    """Сентинел `err=no-block` без маркеров — «блок не найден»."""
+    from simintech_mcp.tools.blocks import _parse_script_reply
+
+    assert _parse_script_reply(["err=no-block"], "BLKabc").kind == "no-block"
+    assert _parse_script_reply(["мусор"], "BLKabc").kind == "unknown"
+
+
+@pytest.mark.anyio
+async def test_set_block_script_refuses_ctx_markers(monkeypatch, tmp_path):
+    """Текст со служебными маркерами контура отвергается до записи.
+
+    Текст скрипта возвращается ответом через файл результата контура, и
+    строка `CTX_END` в нём рвёт разбор исхода (находка ревью).
+    """
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+
+    message = await _error("set_block_script", {
+        "block": "LangBlock_0", "script": 's = "CTX_END";'})
+
+    assert "служебные маркеры" in message
+    assert _BridgeScripts.body == "", "контур запущен с текстом-маркером"
+
+
+@pytest.mark.anyio
+async def test_set_block_script_does_not_confirm_after_abort(monkeypatch, tmp_path):
+    """Обрыв тела — «запись не подтверждена», а не успех."""
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+
+    class _Aborted(_BridgeScripts):
+        kind = "aborted"
+        new = "x = 1;\r\n"
+
+    monkeypatch.setattr(page_script, "ScriptBridge", _Aborted)
+
+    message = await _error("set_block_script",
+                           {"block": "LangBlock_0", "script": "x = 1;"})
+
+    assert "не подтверждена" in message
+    assert "оборвалось" in message
+
+
+@pytest.mark.anyio
+async def test_set_block_script_unknown_reply(monkeypatch, tmp_path):
+    """Ответ без маркеров и без сентинелов — «не оставило распознаваемого»."""
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+
+    class _Mute(_BridgeScripts):
+        old = ""
+        new = ""
+
+        def run_page_script(self, body, result_path):
+            from simintech_api.core.script_bridge import PageRunResult
+            from simintech_api.script_probe import ContourOutcome
+            type(self).body = body
+            return PageRunResult(
+                outcome=ContourOutcome(kind="ok", lines=["нечто"]),
+                restored_script="")
+
+    monkeypatch.setattr(page_script, "ScriptBridge", _Mute)
+
+    message = await _error("set_block_script",
+                           {"block": "LangBlock_0", "script": "x = 1;"})
+
+    assert "не оставило распознаваемого ответа" in message
+
+
+@pytest.mark.anyio
+async def test_set_block_script_reports_empty_old_script(monkeypatch, tmp_path):
+    """Пустой прежний скрипт назван словами, а не пустым блоком."""
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+    _BridgeScripts.old = ""
+    _BridgeScripts.new = "x = 1;"
+
+    text = _text(await mcp.call_tool("set_block_script",
+                                     {"block": "LangBlock_0", "script": "x = 1;"}))
+
+    assert "Прежний скрипт был пуст" in text
+
+
+@pytest.mark.anyio
+async def test_get_block_script_survives_unreadable_class(monkeypatch, tmp_path):
+    """Нечитаемый класс — ответ без класса, а не отказ."""
+
+    class _NoClass(_ScriptBlock):
+        @property
+        def class_name(self):
+            raise RuntimeError("COM: класс не читается")
+
+    project = _ScriptProject({"LangBlock_0": _NoClass("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project)
+
+    text = _text(await mcp.call_tool("get_block_script",
+                                     {"block": "LangBlock_0"}))
+
+    assert "Скрипт блока 'LangBlock_0':" in text
+    assert "y = u;" in text
+
+
+@pytest.mark.anyio
+async def test_get_block_script_refuses_when_snapshot_missing(monkeypatch, tmp_path):
+    """Снимок не создан (`SaveProjectXML` «успех» без файла) — отказ."""
+
+    class _NoFile(_ScriptProject):
+        def save_xml(self, path):
+            self.saved += 1  # файла нет: так выглядит «успех без файла»
+
+    project = _NoFile({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    _install(monkeypatch, tmp_path, project)
+
+    message = await _error("get_block_script", {"block": "LangBlock_0"})
+
+    assert "выгрузка проекта не создана" in message
