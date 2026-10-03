@@ -33,6 +33,8 @@ REQUIRED = [
     ("simintech_api.catalog", "decode_xprt"),
     ("simintech_api.catalog", "parse_xprt_block_props"),
     ("simintech_api.catalog", "parse_xprt_readonly"),
+    # Скрипт блока ЯП из выгрузки (tools/blocks.py, `get_block_script`).
+    ("simintech_api.catalog", "parse_xprt_block_script"),
     ("simintech_api.constants", "SUPPORTED_COM_BLOCK_CLASSES"),
     ("simintech_api.constants", "default_output_dir"),
     ("simintech_api.constants", "standard_block_size"),
@@ -41,6 +43,9 @@ REQUIRED = [
     ("simintech_api.sdb", "SignalDatabase"),
     ("simintech_api.layout", "LayeredPlacer"),
     ("simintech_api.exceptions", "SimInTechError"),
+    # Мост контура (tools/*.py): отказ ScriptBridge — «состояние проекта
+    # неопределённо», инструменты превращают его в ToolError с причиной.
+    ("simintech_api.exceptions", "ScriptBridgeError"),
     ("simintech_api.utils.xprt_signals", "XprtSignalReader"),
     ("simintech_api.utils.converters", "value_to_prop_string"),
     # Проверка исчезновения процесса в disconnect («завершён» — по факту).
