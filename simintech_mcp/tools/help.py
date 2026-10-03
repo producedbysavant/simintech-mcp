@@ -165,8 +165,16 @@ def format_language_function(
             tail = f" — {arg.description}" if arg.description else ""
             lines.append(f"  {head}{tail}")
     else:
+        # Пустая таблица — не «аргументов нет»: у `createblock` и `dopt`
+        # форма вызова выше аргументы называет, а таблица справки пуста —
+        # «их нет» противоречило бы строке синтаксиса и вводило агента в
+        # заблуждение (находка ревью 03.10.2026).
         lines.append("")
-        lines.append("Раздел «Аргументы» в справке пуст — у функции их нет.")
+        if function.syntax:
+            lines.append("Раздел «Аргументы» в справке не заполнен — состав "
+                         "и порядок смотрите по форме вызова выше.")
+        else:
+            lines.append("Раздел «Аргументы» в справке не заполнен.")
     if not function.syntax:
         lines.append("Формы вызова в реестре этой поставки нет — смотрите "
                      "справку по пути ниже.")
@@ -188,25 +196,52 @@ def _language_haystack(function: language_api.LanguageFunction) -> str:
     return " ".join(parts).casefold()
 
 
-#: Со скольких букв слово запроса сокращается до основы: короткие слова
-#: («abs», «wire») режутся точнее, и основа от них давала бы мусор.
-_STEM_MIN_LENGTH = 6
-
-
 def _token_hits(token: str, haystack: str) -> bool:
     """Найдено ли слово запроса: точное вхождение или основа слова.
 
-    Русские слова в справке склоняются («удаление» против «удаления»,
-    «линии» против «линия»), и поиск по точной подстроке промахивался бы на
-    падежах — а по реестру чаще всего ищут именно по-русски. Основа — слово
-    без одной-двух последних букв: грубо, зато предсказуемо; точное
-    вхождение проверяется первым и никогда не теряется.
+    Русские слова в справке склоняются и спрягаются («удаление» против
+    «удаления», «линия» против «линии», «удалить» против «удаления»), и
+    поиск по точной подстроке промахивался бы на формах — а по реестру чаще
+    всего ищут именно по-русски. Основа — слово без последних `min(3, len-4)`
+    букв: **одно правило** на все длины, от четырёх букв («abs», «wire» —
+    только точное вхождение, срез от них давал бы мусор). Грубо, зато
+    предсказуемо; точное вхождение проверяется первым и не теряется.
+
+    Правило подбиралось замерами, и лестница порогов по длинам не выжила
+    (ревью 03.10.2026): с ней «удалить объект» не находил `removeprimitiv`
+    («удалить» → «удали», а в справке «удаления» — общая часть «удал»),
+    «линия связи» — `createwire`, «сохранить» — `savescreenshot`.
     """
     if token in haystack:
         return True
-    if len(token) >= _STEM_MIN_LENGTH:
-        return token[:-2] in haystack or token[:-1] in haystack
-    return False
+    cut = min(3, len(token) - 4)
+    return cut > 0 and token[:-cut] in haystack
+
+
+def _render_matches(matches: List[language_api.LanguageFunction],
+                    limit: int, head: str) -> str:
+    """Список найденных функций: строка «имя — назначение [раздел]» на запись.
+
+    Общий для полного и частичного (по отдельным словам) ответов поиска:
+    два текста об одном списке разошлись бы при первой же правке.
+    """
+    shown = matches[:limit]
+    text = f"{head}: {len(matches)}"
+    if len(matches) > len(shown):
+        text += f" (показаны первые {len(shown)})"
+    lines = [text + "."]
+    for function in shown:
+        summary = function.purpose or "назначение в справке не указано"
+        lines.append(f"  {function.name} — {summary} "
+                     f"[{function.full_category}]")
+    lines.append("Карточка (синтаксис, аргументы) — "
+                 "get_language_function(\"имя\").")
+    # Непустая выдача не значит исчерпывающая: слова обязаны совпасть все, и
+    # лишний глагол в запросе («получить линию связи») молча сужает её
+    # (находка ревью 03.10.2026). Строка учит расширять, а не верить счёту.
+    lines.append("Поиск требует все слова сразу: если искомого нет — "
+                 "сократите запрос (одно-два слова).")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -228,6 +263,10 @@ def search_language_functions(
     даёт `get_language_function`.
 
     Пустой запрос — обзор: разделы справки и число функций в каждом.
+    Если ни одна запись не содержит **все** слова сразу, ответ покажет
+    частичные совпадения по отдельным словам и честно назовёт их частичными:
+    у агента чаще частичный зацеп («сохранить снимок» — сами слова не из
+    справки, а «сохранить» ведёт к семейству) лучше ответа «ничего».
 
     Args:
         query: слова поиска; пусто — обзор разделов.
@@ -248,30 +287,33 @@ def search_language_functions(
         return format_language_registry(functions,
                                         language_api.registry_meta())
     tokens = query_text.casefold().split()
-    found = [function for function in functions
-             if all(_token_hits(token, _language_haystack(function))
-                    for token in tokens)]
+    # Haystack — один раз на функцию и на оба прохода (ревью 03.10.2026:
+    # прежний код пересобирал шесть полей на каждое слово и повторял проход).
+    entries = [(function, _language_haystack(function))
+               for function in functions]
+    found = [function for function, hay in entries
+             if all(_token_hits(token, hay) for token in tokens)]
     if not found:
+        # «Все слова сразу» не сошлось — показываем, что есть по отдельным
+        # словам: у агента чаще частичный зацеп («сохранить снимок» — слова
+        # вендорским текстом не названо, а «сохранить» находит семейство)
+        # лучше ответа «ничего». Это честно названо частичным совпадением.
+        partial = [function for function, hay in entries
+                   if any(_token_hits(token, hay) for token in tokens)]
+        if partial:
+            return _render_matches(
+                partial, limit,
+                f"Точного совпадения нет: «{query_text}» — все слова сразу не "
+                f"встречаются ни в одной записи. По отдельным словам")
         return (f"Ничего не нашлось: «{query_text}». Реестр знает "
                 f"{len(functions)} функций справки — попробуйте одно-два "
-                f"ключевых слова (createwire, снимок, удаление) или обзор "
-                f"разделов пустым запросом.")
+                f"ключевых слова (createwire, удаление, порт, сохранить) "
+                f"или обзор разделов пустым запросом.")
     exact = language_api.find_function(query_text)
     if exact is not None:
         # Совпавшее имя — первым: обычно ищут саму функцию, а не упоминание.
         found.sort(key=lambda f: (f.name, f.doc) != (exact.name, exact.doc))
-    shown = found[:limit]
-    head = f"Найдено: {len(found)}"
-    if len(found) > len(shown):
-        head += f" (показаны первые {len(shown)})"
-    lines = [head + "."]
-    for function in shown:
-        summary = function.purpose or "назначение в справке не указано"
-        lines.append(f"  {function.name} — {summary} "
-                     f"[{function.full_category}]")
-    lines.append("Карточка (синтаксис, аргументы) — "
-                 "get_language_function(\"имя\").")
-    return "\n".join(lines)
+    return _render_matches(found, limit, "Найдено")
 
 
 @mcp.tool()

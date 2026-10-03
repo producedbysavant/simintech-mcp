@@ -128,7 +128,7 @@ claude mcp add simintech -- simintech-mcp
 | Layout | `layout_place`, `check_model_layout` |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 
-Всего инструментов — 47. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 48. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):
