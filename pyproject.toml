@@ -50,8 +50,14 @@ dependencies = [
     # клиента снимает mmain силами ядра (`job_handle`/`job_error`), плюс
     # перепроверка снимка процессов (ложный UNKNOWN при классификации
     # владения исключён); squash-коммиты PR #31 `0436b88` и PR #33 `6fc7e63`.
-    # sha: 6fc7e63ed32b9755a9f67df14851b43e9591cbbd
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.12.0",
+    # v0.13.0 — релизный тег simintech-code (библиотека 0.13.0): реестр функций
+    # встроенного языка со схемой 2 (`syntax` и `args` в записях, squash PR
+    # #37 `6921642`), предпроверка `Project.open` на несуществующем пути
+    # (PR #38 `637976a`), фикс моста — запертый файл результата (PR #35
+    # `5d0b3d7`, он тоже после v0.12.0), доки/клеймы (PR #36 `778b645`);
+    # выпускной коммит `b88d005`.
+    # sha: b88d005d9b130584840d06ec62d6634ab86a07c3
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
