@@ -67,6 +67,16 @@ _WIRES: List[Tuple[Wire, str, int, str, int]] = []
 #: (роль узла в сетевом расчёте) читается из того же каталога.
 _project_path: Optional[str] = None
 
+#: Были ли у **текущего** проекта правки, не записанные в файл, за эту сессию.
+#: Ставит `_mark_mutated` (обвязка после успешной правки), снимают —
+#: `save_project` (`_clear_unsaved`) и смена проекта (`_set_project`).
+#: Читает только `reload_project`: хвост ответов правок про несохранённость
+#: постоянен (сразу после правки он истинен по определению), а этот счётчик
+#: уточняет сообщение отката — «правки отброшены» против «перечитан тот же
+#: файл». Граница названа честно: флаг не переносится при переключении
+#: участников пакета — он про текущую работу сессии, а не про проект.
+_unsaved: bool = False
+
 
 #: Ошибки COM, которые означают «этот клиент больше не отвечает»: разорванное
 #: соединение или не прошедший вызов. По ним `_ensure_client` переподключается.
@@ -218,10 +228,13 @@ def _set_project(project: Optional[Project],
         source_path: файл, из которого проект открыт; None — проект создан, а
             не открыт (тогда настроек рядом с ним нет).
     """
-    global _project, _project_path
+    global _project, _project_path, _unsaved
     _project = project
     _project_path = source_path
     _WIRES.clear()
+    # Флаг несохранённых правок — про текущий проект: смена проекта (и его
+    # сброс) его снимает, как и линии: оба живут ровно столько же.
+    _unsaved = False
 
 
 def _opened_from() -> Optional[str]:
@@ -260,21 +273,53 @@ def _project_label() -> str:
     return f"«{name}» (id={_project.id})"
 
 
+def _mark_mutated() -> None:
+    """Запомнить, что текущий проект правили после последнего сохранения.
+
+    Единственный вызывающий — `runtime._append_mutation_note`: каждая
+    успешная правка помечена `mutates_project=True`, и второй точки, где
+    счёт пополнялся бы, быть не должно — иначе он разошёлся бы с контрактом
+    правок (issue #18).
+    """
+    global _unsaved
+    _unsaved = True
+
+
+def _unsaved_changes() -> bool:
+    """Были ли у текущего проекта несохранённые правки (см. `_unsaved`)."""
+    return _unsaved
+
+
+def _clear_unsaved() -> None:
+    """Снять пометку несохранённых правок — файл записан (`save_project`)."""
+    global _unsaved
+    _unsaved = False
+
+
 def _mutation_note() -> str:
-    """Хвост ответа мутирующего инструмента: куда именно внесены изменения.
+    """Хвост ответа мутирующего инструмента: куда внесены и что не сохранено.
 
     Пустая строка — проекта нет: в этом состоянии мутирующие инструменты
     отказывают раньше (`_ensure_project`), и хвост был бы ложью. Ставит его
     обвязка (`runtime._com_threaded(mutates_project=True)`), а не каждый
     инструмент по отдельности, — иначе новый мутирующий инструмент молча
     выпал бы из контракта.
+
+    Строка про несохранённость **постоянна**, и это не оговорка: сразу после
+    правки она истинна по определению — правку ещё не записали, и записать
+    её может `save_project`, а откатить `reload_project` (issue #18: «есть
+    несохранённые изменения» должно быть видно в том же ответе, где правка).
     """
     label = _project_label()
-    return f"\nИзменения внесены в: {label}" if label else ""
+    if not label:
+        return ""
+    return (f"\nИзменения внесены в: {label}"
+            f"\nНе сохранено: `save_project` запишет, `reload_project` откатит.")
 
 
 def _replace_project(project: Project,
-                     source_path: Optional[str] = None) -> str:
+                     source_path: Optional[str] = None,
+                     header: str = "ТЕКУЩИЙ ПРОЕКТ СМЕНИЛСЯ") -> str:
     """Сделать проект текущим, закрыв предыдущий.
 
     Без этого `create_project`/`open_project` копили бы открытые проекты внутри
@@ -289,6 +334,10 @@ def _replace_project(project: Project,
     Args:
         project: новый текущий проект.
         source_path: файл, из которого проект открыт (см. `_set_project`).
+        header: зачин примечания о смене. По умолчанию «ТЕКУЧИЙ ПРОЕКТ
+            СМЕНИЛСЯ»; `reload_project` передаёт «…ПЕРЕОТКРЫТ ИЗ ФАЙЛА» —
+            для него «сменился» было бы правдой с оговоркой (тот же файл,
+            новый экземпляр), и зачин обязан называть событие точно.
 
     Returns:
         Пустая строка, если менять было нечего; иначе — примечание для ответа
@@ -306,7 +355,7 @@ def _replace_project(project: Project,
     _set_project(project, source_path)
     if previous is None or previous is project:
         return ""
-    switch = (f"\nТЕКУЩИЙ ПРОЕКТ СМЕНИЛСЯ: было {previous_label} → "
+    switch = (f"\n{header}: было {previous_label} → "
               f"стало {_project_label()}.")
     if membership is not False:
         # `None` (состав пака не читается) — тот же запрет, что и «участник»:

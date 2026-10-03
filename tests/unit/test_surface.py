@@ -98,8 +98,8 @@ async def test_all_tools_registered():
     names = {t.name for t in tools}
     expected = {
         "status", "disconnect",
-        "create_project", "open_project", "save_project", "close_project",
-        "set_calc_time", "project_network_role",
+        "create_project", "open_project", "reload_project", "save_project",
+        "close_project", "set_calc_time", "project_network_role",
         "create_pack", "open_pack", "close_pack", "list_pack_projects",
         "select_pack_project", "pack_run", "pack_step", "pack_stop",
         "get_project_config", "set_project_config",

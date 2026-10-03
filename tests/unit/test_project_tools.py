@@ -176,6 +176,140 @@ async def test_open_project_resolves_path_before_com(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_mutating_tool_marks_unsaved(monkeypatch):
+    """Мутирующий инструмент помечает несохранённые правки (issue #18).
+
+    Счёт читает `reload_project` («правки отброшены» против «перечитан тот
+    же файл»); ставит его обвязка — одна точка на все мутирующие инструменты
+    (`runtime._append_mutation_note`): заведи счёт инструменты сами, новый
+    мутирующий выпал бы из него молча.
+    """
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(_TemplateProject())
+    try:
+        assert not session._unsaved_changes()
+
+        _text(await mcp.call_tool("set_calc_time", {"seconds": 1.0}))
+
+        assert session._unsaved_changes()
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+# ─── reload_project (issue #18, п.3) ──────────────────────────────
+
+
+def _install_reload(monkeypatch, tmp_path):
+    """Общая обвязка reload-тестов: файл на диске, прежний проект, фейк open."""
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("Project.open трогать нельзя")
+
+    target = tmp_path / "CoolInt.prt"
+    target.write_text("x", encoding="utf-8")
+    opened = _WireProject({}, project_id=17)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(lambda client, path: opened))
+    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    previous = _WireProject({}, project_id=12)
+    prev_project, prev_path = session._project, session._project_path
+    session._set_project(previous, source_path=str(target))
+    return target, previous, opened, prev_project, prev_path, \
+        _must_not_be_called
+
+
+@pytest.mark.anyio
+async def test_reload_project_reopens_from_file(monkeypatch, tmp_path):
+    """reload_project закрывает текущий экземпляр и открывает файл заново.
+
+    Прежний экземпляр закрывается **без сохранения** — правки, не записанные
+    `save_project`, отбрасываются (issue #18: откат того, что раньше делали
+    вручную переоткрытием).
+    """
+    target, previous, opened, prev_project, prev_path, _ = \
+        _install_reload(monkeypatch, tmp_path)
+    try:
+        text = _text(await mcp.call_tool("reload_project", {}))
+
+        assert "ПЕРЕОТКРЫТ ИЗ ФАЙЛА" in text
+        assert "было «CoolInt.prt» (id=12)" in text
+        assert "стало «CoolInt.prt» (id=17)" in text
+        assert "Несохранённых правок не было" in text
+        assert previous.closed, "прежний экземпляр закрыт"
+        assert session._project is opened
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_reload_project_says_when_edits_were_dropped(monkeypatch,
+                                                           tmp_path):
+    """Есть несохранённые правки — ответ называет их отброшенными.
+
+    Счёт ведёт сессия: правку помечают мутирующие инструменты, снимает
+    `save_project`; без счёта сообщение было бы ложью в одну из сторон.
+    """
+    target, previous, opened, prev_project, prev_path, _ = \
+        _install_reload(monkeypatch, tmp_path)
+    session._mark_mutated()
+    try:
+        text = _text(await mcp.call_tool("reload_project", {}))
+
+        assert "Несохранённые правки прежнего экземпляра отброшены." in text
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_reload_project_refuses_template_project(monkeypatch, tmp_path):
+    """Проект из шаблона — отказ: файла нет, переоткрывать нечего."""
+    target, previous, opened, prev_project, prev_path, must_not = \
+        _install_reload(monkeypatch, tmp_path)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(must_not))
+    session._set_project(previous)  # source_path=None — проект из шаблона
+    try:
+        text = await _error("reload_project", {})
+
+        assert "из шаблона" in text
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_reload_project_refuses_pack_member(monkeypatch, tmp_path):
+    """Участник пакета — отказ: закрытие исключило бы его из состава."""
+    target, previous, opened, prev_project, prev_path, must_not = \
+        _install_reload(monkeypatch, tmp_path)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(must_not))
+    monkeypatch.setattr(session, "_pack_membership", lambda: True)
+    try:
+        text = await _error("reload_project", {})
+
+        assert "участник пакета" in text
+        assert "open_pack" in text
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_reload_project_refuses_missing_file(monkeypatch, tmp_path):
+    """Файл проекта исчез после открытия — откатывать не к чему."""
+    target, previous, opened, prev_project, prev_path, must_not = \
+        _install_reload(monkeypatch, tmp_path)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(must_not))
+    session._set_project(previous, source_path=str(tmp_path / "уехал.prt"))
+    try:
+        text = await _error("reload_project", {})
+
+        assert "не найден" in text
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_open_project_directory_gets_hint(tmp_path):
     """Каталог вместо файла — отказ с подсказкой.
 
