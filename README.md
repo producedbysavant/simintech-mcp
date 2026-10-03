@@ -126,9 +126,9 @@ claude mcp add simintech -- simintech-mcp
 | Языковой слой | `get_page_script`, `set_page_script`, `run_page_script`, `inject_submodel_script` |
 | Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role` |
 | Layout | `layout_place`, `check_model_layout` |
-| Справка | `help_text` |
+| Справка | `help_text`, `search_language_functions`, `get_language_function` |
 
-Всего инструментов — 45. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 47. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):
@@ -139,6 +139,9 @@ claude mcp add simintech -- simintech-mcp
 
 Ресурсы: `simintech://status`, `simintech://project/blocks`,
 `simintech://blocks/catalog` (классы и имена параметров),
+`simintech://language/functions` и `.../<имя>` (реестр функций встроенного
+языка: имя, назначение, синтаксис, аргументы — поиск
+`search_language_functions`, карточка `get_language_function`),
 `simintech://skills` и `simintech://skills/<имя>` (скиллы из `simintech-skill`).
 Промпты: `create_pid_model`, `create_rc_chain`.
 

@@ -25,6 +25,7 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
     "help_text", "project_network_role", "create_pack",
+    "search_language_functions", "get_language_function",
 }
 
 
@@ -109,6 +110,7 @@ async def test_all_tools_registered():
         "list_signals", "get_signal", "set_signal", "export_signal_db",
         "read_output_file", "summarize_output_file", "inspect_project_file",
         "layout_place", "check_model_layout", "help_text",
+        "search_language_functions", "get_language_function",
         "export_model_text", "import_model_text",
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",

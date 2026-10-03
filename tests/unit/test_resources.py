@@ -222,28 +222,29 @@ def test_resource_status_returns_text_on_failure(monkeypatch):
 
 
 def test_resource_language_functions_tells_what_registry_gives():
-    """Реестр языка: видно объём и то, чего в нём нет — сигнатур.
+    """Реестр языка: объём, разделы и инструменты для поиска.
 
-    Знаниевый контент описывает около 5% имён, а правдоподобное имя функции
-    в языке может отсутствовать, поэтому агент должен уметь спросить реестр.
-    Реестр даёт только имя, категорию и назначение — об этом сказано прямо,
-    иначе агент принял бы молчание о сигнатурах за их наличие.
+    Правдоподобное имя функции в языке может отсутствовать, поэтому агент
+    должен уметь спросить реестр; обзор обязан называть, чем искать и что
+    реестр несёт (схема 2 — синтаксис и аргументы).
     """
     text = resources.resource_language_functions()
 
     assert "уникальных имён" in text
-    assert "сигнатуры" in text
+    assert "синтаксис" in text.lower()
+    assert "search_language_functions" in text
     assert "simintech://language/functions" in text
 
 
 @pytest.mark.anyio
 async def test_resource_language_function_finds_existing_name():
-    """Имя из реестра: существование, категория и назначение."""
+    """Имя из реестра: карточка с синтаксисом и аргументами (схема 2)."""
     text = await _resource_text("simintech://language/functions/abs")
 
     assert "abs" in text
-    assert "категория:" in text
-    assert "назначение:" in text
+    assert "Синтаксис:" in text
+    assert "Аргументы:" in text
+    assert "Справка:" in text
 
 
 @pytest.mark.anyio
