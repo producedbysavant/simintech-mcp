@@ -49,10 +49,12 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Pack, Project
+from simintech_api.pak import PackEntry, write_pack
 
 from .. import runtime, session
 from ..app import mcp
@@ -132,6 +134,105 @@ def _composition_lines(members: List[Tuple[int, Optional[str]]]) -> str:
 
 
 # ─── Жизненный цикл ───────────────────────────────────────────────
+
+
+@mcp.tool()
+@runtime._plain_tool
+def create_pack(path: str, projects: List[str],
+                inactive: Optional[List[int]] = None,
+                no_sync: Optional[List[int]] = None,
+                synchronize: bool = True) -> str:
+    """Собрать пакет проектов (`.pak`) текстом — COM не нужен.
+
+    `.pak` — плоский INI-файл со списком проектов `.prt` (`[Files]`; порядок
+    строк — порядок запуска): собрать его — файловая операция, без COM.
+    Проекты рядом с пакетом указываются **голыми именами** (`a.prt` — так
+    пишет и сама среда; при другом каталоге — путь относительно `.pak`).
+    Относительная запись не может выходить за каталог пакета: среда
+    развернула бы её мимо пакета, а читатель такие записи не выдаёт (замер
+    01.10.2026) — проект за каталогом указывается **абсолютным** путём, как
+    это делает и сама среда. Файл записывается UTF-8 с BOM и CRLF, как файлы
+    поставки, и тут же перечитывается разборщиком: расхождение формата стало
+    бы отказом здесь, а не отказом среды при `open_pack`.
+
+    Живой замер 01.10.2026 (поставка 2.26.6.23): собранный так пакет среда
+    открывает (`OpenPack` отвечает, состав читается). Файлы проектов должны
+    существовать на момент записи — это проверяется заранее, вместе с
+    каталогом пути. Существующий файл перезаписывается целиком.
+
+    Args:
+        path: путь к файлу `.pak` (должен оканчиваться на `.pak`).
+        projects: пути к проектам; порядок задаёт порядок запуска.
+        inactive: позиции (0-based) в `projects`, исключаемые из расчёта
+            (`[Active]` = 0). От `no_sync` не зависит: в примерах поставки
+            эти флаги и совпадают, и расходятся.
+        no_sync: позиции, у которых выключается пер-проектная синхронизация
+            реального времени (`[TimeSync]` = 0); из расчёта такой проект не
+            исключается.
+        synchronize: `Synchronize` — объединение списков сигналов проектов
+            (по умолчанию включено, как у большинства файлов поставки).
+    """
+    if not projects:
+        raise ToolError(
+            "projects пуст: пакет без проектов — файл без состава; если "
+            "нужен именно такой, соберите его текстом вручную.")
+    if not path.lower().endswith(".pak"):
+        raise ToolError(
+            f"«{path}» не оканчивается на `.pak`: среда открывает как пакет "
+            f"только файл пакета — `open_pack` на другом расширении вернёт 0.")
+    base = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(base):
+        raise ToolError(
+            f"Каталог «{base}» не существует — файл пакета записывать некуда.")
+    off = set(inactive or [])
+    unsynced = set(no_sync or [])
+    for label, positions in (("inactive", off), ("no_sync", unsynced)):
+        bad = sorted(i for i in positions if not 0 <= i < len(projects))
+        if bad:
+            raise ToolError(
+                f"{label}: позиции {bad} вне списка projects (в нём "
+                f"{len(projects)} записей, допустимо 0…{len(projects) - 1}).")
+    missing = []
+    entries = []
+    for index, project in enumerate(projects):
+        candidate = project
+        if not os.path.isabs(project):
+            candidate = os.path.join(base, project.replace("\\", "/"))
+        if not os.path.isfile(candidate):
+            missing.append(f"[{index}] {project}")
+        entries.append(PackEntry(project, active=index not in off,
+                                 time_sync=index not in unsynced))
+    if missing:
+        raise ToolError(
+            "Проекты не найдены (относительные пути ищутся от каталога "
+            "пакета «" + base + "»):\n  " + "\n  ".join(missing)
+            + "\nСначала сохраните их (`save_project` с `binary=True`) или "
+              "поправьте пути.")
+    try:
+        pack = write_pack(Path(path), entries, synchronize=synchronize)
+    except Exception as exc:                                  # noqa: BLE001
+        raise ToolError(
+            f"пакет не собран: {type(exc).__name__}: {exc}") from exc
+    lines = []
+    for index, item in enumerate(pack.projects):
+        marks = []
+        if not item.active:
+            marks.append("неактивен")
+        if not item.time_sync:
+            marks.append("без синхронизации")
+        tail = f" — {', '.join(marks)}" if marks else ""
+        lines.append(f"  [{index}] {item.path}{tail}")
+    # Единственное разрешённое писателем расхождение разбора — абсолютные
+    # записи: среда их принимает (так пишет и сама за каталогом пакета), но
+    # переносимость ниже — клиент обязан это видеть, а не узнавать при переносе.
+    note = ""
+    if pack.problems:
+        note = "\nПримечание: " + "; ".join(pack.problems)
+    return (f"Пакет собран и перечитан: «{os.path.basename(path)}» — "
+            f"проектов {pack.project_count} (перезаписан целиком).\n"
+            + "\n".join(lines)
+            + note
+            + f"\nОткрыть: `open_pack(\"{path}\")`.")
 
 
 @mcp.tool()
