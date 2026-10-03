@@ -66,13 +66,17 @@ async def test_create_project_rejects_non_positive_end_time(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_open_project_names_file_and_reports_switch(monkeypatch):
+async def test_open_project_names_file_and_reports_switch(monkeypatch, tmp_path):
     """open_project называет файл и смену проекта (issue #18).
 
     Раньше ответ был «Проект открыт (id=17)»: агент не видел, какой файл
     стал текущим и на какой сменён, — на этом и разошлись образец и правка.
     """
 
+    # Путь существует по-настоящему: open_project проверяет его до COM
+    # (см. test_open_project_refuses_missing_file_before_com).
+    target = tmp_path / "sub_TractionState.prt"
+    target.write_text("", encoding="utf-8")
     opened = _WireProject({}, project_id=17)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(lambda client, path: opened))
@@ -82,7 +86,7 @@ async def test_open_project_names_file_and_reports_switch(monkeypatch):
                          source_path=r"C:\a\CoolInt.prt")
     try:
         text = _text(await mcp.call_tool(
-            "open_project", {"path": r"C:\b\sub_TractionState.prt"}))
+            "open_project", {"path": str(target)}))
 
         assert "Проект открыт: «sub_TractionState.prt» (id=17)" in text
         assert "СМЕНИЛСЯ" in text
@@ -90,6 +94,99 @@ async def test_open_project_names_file_and_reports_switch(monkeypatch):
         assert session._project is opened
     finally:
         session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_open_project_refuses_missing_file_before_com(
+        monkeypatch, tmp_path):
+    """Несуществующий путь — отказ до COM (живой замер 03.10.2026).
+
+    `OpenProject` на таком пути возвращает ненулевой id: среда показывает
+    модальное «Cannot open file…», но наружу это не выходит —
+    `GetOpenedFileName` открытого «проекта» возвращает тот же путь. Без
+    предпроверки инструмент отчитался бы «Проект открыт», и агент работал
+    бы с пустым проектом-фантомом.
+    """
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("COM трогать нельзя: файла нет")
+
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(_must_not_be_called))
+    monkeypatch.setattr(session, "_ensure_client", _must_not_be_called)
+
+    text = await _error(
+        "open_project", {"path": str(tmp_path / "nope.prt")})
+
+    assert "не найден" in text
+
+
+@pytest.mark.anyio
+async def test_open_project_requires_absolute_path(monkeypatch):
+    """Относительный путь — отказ до COM (находка ревью).
+
+    Предпроверка раскрыла бы его от рабочего каталога процесса сервера, а
+    среда — от своего; на этом они расходятся, и проверка либо пропустила бы
+    чужой файл, либо отказала бы там, где среда открыла бы.
+    """
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("COM трогать нельзя: путь не абсолютный")
+
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(_must_not_be_called))
+    monkeypatch.setattr(session, "_ensure_client", _must_not_be_called)
+
+    text = await _error("open_project", {"path": "model.prt"})
+
+    assert "абсолют" in text
+
+
+@pytest.mark.anyio
+async def test_open_project_resolves_path_before_com(monkeypatch, tmp_path):
+    """В COM уходит полностью определённый путь (хвост находки ревью).
+
+    Windows-путь без диска (`\\foo\\m.prt`) абсолютен, но каждый процесс
+    раскрывает его от своего текущего диска — та же расходимость, что у
+    относительных путей. Путь нормализуется до проверки и подачи в COM:
+    что проверили, то и откроется.
+    """
+    (tmp_path / "sub").mkdir()
+    target = tmp_path / "model.prt"
+    target.write_text("", encoding="utf-8")
+    tricky = tmp_path / "sub" / ".." / "model.prt"
+    opened = _WireProject({}, project_id=5)
+    seen = {}
+
+    def fake_open(client, path):
+        seen["path"] = path
+        return opened
+
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(fake_open))
+    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    prev_project, prev_path = session._project, session._project_path
+    try:
+        _text(await mcp.call_tool("open_project", {"path": str(tricky)}))
+
+        assert seen["path"] == str(target)
+        assert session._project is opened
+    finally:
+        session._set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_open_project_directory_gets_hint(tmp_path):
+    """Каталог вместо файла — отказ с подсказкой.
+
+    Живой случай 03.10.2026: у демо поставки проект лежит в **одноимённом
+    каталоге**, и путь без хвоста «\\Имя.prt» выглядит как файл — среда
+    отвечает модальной ошибкой, а по COM промах неотличим (см. тест выше).
+    """
+
+    text = await _error("open_project", {"path": str(tmp_path)})
+
+    assert "каталог" in text
 
 
 @pytest.mark.anyio
