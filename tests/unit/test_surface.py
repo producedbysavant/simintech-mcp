@@ -195,10 +195,10 @@ async def test_all_tools_have_failure_contract():
 
 @pytest.mark.anyio
 async def test_plain_tools_are_exactly_the_com_free_ones():
-    """`_plain_tool` стоит там, где COM не нужен, и только там.
+    """`plain_tool` стоит там, где COM не нужен, и только там.
 
     `__wrapped__` различает «обёрнут / не обёрнут», но не сам декоратор:
-    COM-инструмент под `_plain_tool` обёрнут ровно так же. Между тем это
+    COM-инструмент под `plain_tool` обёрнут ровно так же. Между тем это
     опаснее — на Linux-тестах (COM нет вовсе) он отработает, а на Windows
     упадёт с `CO_E_OBJNOTCONNECTED`: COM-объект в чужом потоке. Поэтому
     сверяем метку, которую оставил фактически применённый декоратор.
@@ -209,8 +209,8 @@ async def test_plain_tools_are_exactly_the_com_free_ones():
              if getattr(t.fn, runtime.COM_THREAD_MARK, None) is False}
 
     assert plain == _PLAIN_TOOLS, (
-        f"_plain_tool лишний у: {sorted(plain - _PLAIN_TOOLS)}; "
-        f"_plain_tool пропал у: {sorted(_PLAIN_TOOLS - plain)}")
+        f"plain_tool лишний у: {sorted(plain - _PLAIN_TOOLS)}; "
+        f"plain_tool пропал у: {sorted(_PLAIN_TOOLS - plain)}")
 
 
 @pytest.mark.anyio
@@ -227,7 +227,7 @@ async def test_help_text_tool():
 async def test_help_text_does_not_use_com_thread(monkeypatch):
     """Справка не трогает COM — и не должна вставать в очередь COM-потока.
 
-    Под `_com_threaded` она занимала бы единственный выделенный поток: при
+    Под `com_threaded` она занимала бы единственный выделенный поток: при
     занятом `mmain.exe` справка упиралась бы в `COM_CALL_TIMEOUT`, хотя ей это
     не нужно. Проверка сторожит именно выбор декоратора.
     """

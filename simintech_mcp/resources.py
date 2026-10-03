@@ -112,8 +112,8 @@ def resource_skills() -> str:
     """
     root = skills.skills_root()
     if root is None:
-        return skills._skills_missing_message()
-    entries = skills._list_skills(root)
+        return skills.skills_missing_message()
+    entries = skills.list_skills(root)
     if not entries:
         return (f"В каталоге «{root}» скиллов нет: нужны подкаталоги с файлом "
                 f"{skills.SKILL_FILE}.")
@@ -136,8 +136,8 @@ def resource_skill(name: str) -> str:
     """Текст скилла (`SKILL.md`) — инструкции по работе с SimInTech."""
     root = skills.skills_root()
     if root is None:
-        return skills._skills_missing_message()
-    if not skills._SKILL_NAME_RE.match(name):
+        return skills.skills_missing_message()
+    if not skills.SKILL_NAME_RE.match(name):
         return (f"ERROR: недопустимое имя скилла «{name}»: разрешены строчные "
                 f"латинские буквы, цифры и дефис")
     path = Path(root) / name / skills.SKILL_FILE
@@ -146,7 +146,7 @@ def resource_skill(name: str) -> str:
     try:
         # Чтение ограничено ЗАРАНЕЕ, как и у файлов результатов: проверка
         # размера после чтения защитой не является — файл уже в памяти.
-        raw, truncated = sandbox._read_bounded(str(path), skills.MAX_SKILL_BYTES)
+        raw, truncated = sandbox.read_bounded(str(path), skills.MAX_SKILL_BYTES)
     except OSError as exc:
         return f"ERROR: {exc}"
     text = raw.decode("utf-8", errors="replace")

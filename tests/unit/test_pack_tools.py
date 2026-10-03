@@ -123,7 +123,7 @@ async def test_open_pack_names_composition(monkeypatch):
     """Открытие называет пакет, состав с индексами и файлами участников."""
 
     client = _FakePackClient()
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
     monkeypatch.setattr(session, "_pack", None)
     monkeypatch.setattr(session, "_pack_path", None)
 
@@ -148,14 +148,14 @@ async def test_open_pack_replaces_previous(monkeypatch):
     # id читается ДО закрытия: `Pack.close` обнуляет идентификатор, и чтение
     # после — уже не тот id, что ушёл в ClosePack.
     old_id = old.id
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
 
     text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
 
     assert client.closed_packs == [old_id]
     assert "ПАКЕТ СМЕНИЛСЯ" in text
-    assert session._pack is not old
-    assert session._pack.id != old_id
+    assert session.current_pack() is not old
+    assert session.current_pack().id != old_id
 
 
 @pytest.mark.anyio
@@ -169,12 +169,12 @@ async def test_open_pack_zero_id_refuses_and_keeps_previous(monkeypatch):
 
     client = _Refusing()
     old = _install_pack(monkeypatch, client, pack_id=500)
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
 
     text = await _error("open_pack", {"path": _PAK})
 
     assert "не открыт" in text
-    assert session._pack is old
+    assert session.current_pack() is old
     assert client.closed_packs == []
 
 
@@ -186,11 +186,11 @@ async def test_open_pack_resets_member_project_of_old_pack(monkeypatch):
     _install_pack(monkeypatch, client, pack_id=500)
     monkeypatch.setattr(session, "_project", _ClosableProject(project_id=11))
     monkeypatch.setattr(session, "_project_path", None)
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
 
     text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
 
-    assert session._project is None
+    assert session.current_project() is None
     assert "закрыт вместе с ним" in text
 
 
@@ -208,8 +208,8 @@ async def test_close_pack_closes_and_names(monkeypatch):
 
     assert client.closed_packs == [pack_id]
     assert "Пакет закрыт" in text and "«Пакет.pak»" in text
-    assert session._pack is None
-    assert session._project is None
+    assert session.current_pack() is None
+    assert session.current_project() is None
     assert "закрыт вместе с ним" in text
 
 
@@ -283,8 +283,8 @@ async def test_select_pack_project_switches_current(monkeypatch):
 
     text = _text(await mcp.call_tool("select_pack_project", {"index": 1}))
 
-    assert session._project is not None
-    assert session._project.id == 22
+    assert session.current_project() is not None
+    assert session.current_project().id == 22
     assert "«Дискретная часть.prt»" in text
     assert "id=22" in text
 
@@ -307,7 +307,7 @@ async def test_select_pack_project_keeps_previous_member(monkeypatch):
 
     assert previous.closed is False, "участник пакета закрыт — состав сломается"
     assert "оставлен в пакете" in text
-    assert session._project.id == 22
+    assert session.current_project().id == 22
 
 
 @pytest.mark.anyio
@@ -323,7 +323,7 @@ async def test_select_pack_project_closes_non_member(monkeypatch):
     await mcp.call_tool("select_pack_project", {"index": 0})
 
     assert previous.closed is True
-    assert session._project.id == 11
+    assert session.current_project().id == 11
 
 
 @pytest.mark.anyio
@@ -456,22 +456,22 @@ async def test_close_project_refuses_pack_member(monkeypatch):
 
     assert "участник открытого пакета" in text
     assert "close_pack" in text
-    assert session._project is not None, "проект не должен быть потерян"
+    assert session.current_project() is not None, "проект не должен быть потерян"
 
 
 def test_replace_project_keeps_pack_member(monkeypatch):
-    """`_replace_project` не закрывает участника открытого пакета — замер."""
+    """`replace_project` не закрывает участника открытого пакета — замер."""
 
     client = _FakePackClient()
     _install_pack(monkeypatch, client)
     previous = _ClosableProject(project_id=22)
     monkeypatch.setattr(session, "_project", previous)
 
-    note = session._replace_project(_ClosableProject(project_id=7777))
+    note = session.replace_project(_ClosableProject(project_id=7777))
 
     assert previous.closed is False
     assert "оставлен в пакете" in note
-    assert session._project.id == 7777
+    assert session.current_project().id == 7777
 
 
 # ─── Хелперы самого модуля ────────────────────────────────────────
@@ -503,7 +503,7 @@ def test_replace_project_fails_closed_when_composition_unreadable(monkeypatch):
     previous = _ClosableProject(project_id=11)
     monkeypatch.setattr(session, "_project", previous)
 
-    note = session._replace_project(_ClosableProject(project_id=7777))
+    note = session.replace_project(_ClosableProject(project_id=7777))
 
     assert previous.closed is False
     assert "проверить не удалось" in note
@@ -521,7 +521,7 @@ async def test_close_project_refuses_when_membership_unknown(monkeypatch):
     text = await _error("close_project", {})
 
     assert "проверить не удалось" in text
-    assert session._project is not None, "проект не должен быть потерян"
+    assert session.current_project() is not None, "проект не должен быть потерян"
 
 
 @pytest.mark.anyio
@@ -540,7 +540,7 @@ async def test_close_pack_resets_project_when_membership_unknown(monkeypatch):
     text = _text(await mcp.call_tool("close_pack", {}))
 
     assert client.closed_packs == [pack_id]
-    assert session._project is None
+    assert session.current_project() is None
     assert "на всякий случай" in text
 
 
@@ -556,14 +556,14 @@ async def test_open_pack_failed_previous_close_keeps_project(monkeypatch):
     project = _ClosableProject(project_id=11)
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "_project_path", None)
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
 
     text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
 
     assert "ВНИМАНИЕ" in text
     assert "закрыт вместе с ним" not in text
     assert "мог остаться открытым вместе с пакетом" in text
-    assert session._project is project
+    assert session.current_project() is project
 
 
 @pytest.mark.anyio
@@ -574,14 +574,14 @@ async def test_open_pack_reports_unreadable_composition_but_installs(monkeypatch
     не учтён в сессии — и закрыть его нечем.
     """
     client = _FakePackClient(fail_composition=True)
-    monkeypatch.setattr(session, "_ensure_client", lambda: client)
+    monkeypatch.setattr(session, "ensure_client", lambda: client)
     monkeypatch.setattr(session, "_pack", None)
     monkeypatch.setattr(session, "_pack_path", None)
 
     text = _text(await mcp.call_tool("open_pack", {"path": _PAK}))
 
     assert "состав прочитать не удалось" in text
-    assert session._pack is not None
+    assert session.current_pack() is not None
 
 
 @pytest.mark.anyio
@@ -676,7 +676,7 @@ async def test_disconnect_closes_pack_and_names_member(monkeypatch):
 
     До этого у ветки disconnect с паком не было ни одного теста (ревью
     mcp#25): регрессия «участник закрыт напрямую» или пропавший
-    `_set_pack(None)` оставались зелёными.
+    `set_pack(None)` оставались зелёными.
     """
     client = _FakePackClient()
     pack = _install_pack(monkeypatch, client, pack_id=555)
@@ -693,7 +693,7 @@ async def test_disconnect_closes_pack_and_names_member(monkeypatch):
     assert "закрыт вместе с пакетом" in text
     assert client.shutdown_called
     assert "PID 777" in text, "ответ обязан назвать снятый процесс"
-    assert session._pack is None and session._project is None
+    assert session.current_pack() is None and session.current_project() is None
 
 
 @pytest.mark.anyio
@@ -710,7 +710,7 @@ async def test_disconnect_pack_failure_does_not_claim_member_closed(monkeypatch)
 
     assert "ВНИМАНИЕ" in text
     assert "закрыт вместе с пакетом" not in text
-    assert session._project is None
+    assert session.current_project() is None
 
 
 # ─── create_pack: сборка пакета текстом (без COM) ─────────────────

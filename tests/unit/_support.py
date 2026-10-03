@@ -282,7 +282,7 @@ def _install_wire_project(monkeypatch, blocks):
     Возвращает журнал вызовов: по нему проверяется, что перерисовка идёт
     до трассировки, а не наоборот.
     """
-    session._WIRES.clear()
+    session.WIRES.clear()
     events = []
     for block in blocks.values():
         block.events = events
@@ -525,7 +525,7 @@ def _install_fake_template(monkeypatch):
 
     monkeypatch.setattr(project_tools.Project, "from_template",
                         staticmethod(fake_from_template))
-    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
     monkeypatch.setattr(session, "_project", None)
     return project, opened
 

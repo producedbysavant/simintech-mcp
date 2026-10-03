@@ -42,7 +42,7 @@ MAX_REPORTED_OBJECTS = 20
 #: оно не нужно: строки тела возвращаются в ответе, а каталог — тот же, что у
 #: остальных инструментов.
 #:
-#: Полное имя добавляет уникальный на вызов суффикс (`_fresh_name`): общее имя
+#: Полное имя добавляет уникальный на вызов суффикс (`fresh_name`): общее имя
 #: упиралось в запертый файл — обрыв тела оставляет его залоченным процессом
 #: SimInTech (`freeobject` не исполнен), и следующий вызов падал на
 #: `result_path.unlink` в мосте — WinError 32 (живое наблюдение 02.10.2026,
@@ -51,7 +51,7 @@ MAX_REPORTED_OBJECTS = 20
 RESULT_FILE = "page-script-result.txt"
 
 
-def _fresh_name(base: str) -> str:
+def fresh_name(base: str) -> str:
     """Имя контурного файла, уникальное на вызов: `база-<8 hex>.<расширение>`.
 
     Запертый прошлым обрывом файл остаётся под своим прежним именем и никому
@@ -66,12 +66,12 @@ def _fresh_name(base: str) -> str:
     return f"{stem}-{token}{dot}{ext}"
 
 
-def _bridge() -> ScriptBridge:
+def bridge() -> ScriptBridge:
     """Мост для текущего проекта — общая часть всех инструментов модуля."""
-    return ScriptBridge(session._ensure_client(), session._ensure_project().id)
+    return ScriptBridge(session.ensure_client(), session.ensure_project().id)
 
 
-def _object_names() -> list[str]:
+def object_names() -> list[str]:
     """Имена объектов текущей страницы — снимки «до» и «после».
 
     Именно **текущей**: мост ставит скрипт в страницу, которую называет
@@ -79,7 +79,7 @@ def _object_names() -> list[str]:
     инструмента берёт главную — для отчёта это было бы расхождение на модели,
     где работа идёт внутри субмодели.
     """
-    page = session._ensure_project().get_current_page()
+    page = session.ensure_project().get_current_page()
     names = []
     for obj in page.get_blocks():
         try:
@@ -89,8 +89,8 @@ def _object_names() -> list[str]:
     return names
 
 
-def _change_report(before: list[str], after: list[str],
-                   restored: str) -> str:
+def change_report(before: list[str], after: list[str],
+                  restored: str) -> str:
     """Отчёт об изменениях: было/стало, добавленные имена, возврат скрипта.
 
     Сравнение идёт по **мультимножествам имён**, а не по числу: среда сама
@@ -115,7 +115,7 @@ def _change_report(before: list[str], after: list[str],
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_page_script() -> str:
     """Прочитать скрипт текущей страницы проекта.
 
@@ -133,7 +133,7 @@ def get_page_script() -> str:
     об этом сообщается текстом.
     """
     try:
-        script = _bridge().read_page_script()
+        script = bridge().read_page_script()
     except ScriptBridgeError as exc:
         raise ToolError(
             f"прочитать скрипт страницы не удалось: {exc}. Чтение опознаёт "
@@ -153,19 +153,19 @@ def _install_script(script: str) -> None:
     Отдельной функцией — чтобы тест мог подменить её и проверить, что скрипт
     остаётся **только** после успешной проверки компиляции.
     """
-    _bridge().install_script(script)
+    bridge().install_script(script)
 
 
-def _result_path() -> Path:
+def result_path() -> Path:
     """Путь файла результата внутри каталога результатов (песочница).
 
     Имя уникально на вызов (см. `RESULT_FILE`): запертый прошлым обрывом файл
     результата новому вызову не мешает.
     """
-    return Path(os.path.join(sandbox.output_root(), _fresh_name(RESULT_FILE)))
+    return Path(os.path.join(sandbox.output_root(), fresh_name(RESULT_FILE)))
 
 
-def _discard_result(path: Path) -> None:
+def discard_result(path: Path) -> None:
     """Удалить контурный файл результата — best-effort.
 
     Строки тела приходят ответом (`outcome.lines`), и после прогона файл не
@@ -187,24 +187,24 @@ def _run(body: str) -> Tuple[ContourOutcome, str]:
     Отказ моста (`ScriptBridgeError`) означает, что состояние проекта
     неопределённо: тело могло не установиться, а могло и отработать. Поэтому он
     не превращается в исход, а выходит наружу — с объяснением, что проверить.
-    Файл результата убирается на любом пути (см. `_discard_result`).
+    Файл результата убирается на любом пути (см. `discard_result`).
     """
-    path = _result_path()
+    path = result_path()
     try:
-        run = _bridge().run_page_script(body, path)
+        run = bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
-        _discard_result(path)
+        discard_result(path)
         raise ToolError(
             f"выполнить скрипт страницы не удалось: {exc}. Тело идёт в секцию "
             "`initialization`, поэтому расчёт должен сдвинуть модельное время: "
             "проверьте, что модель считает — неподключённый вход останавливает "
             "расчёт всей модели молча."
         ) from exc
-    _discard_result(path)
+    discard_result(path)
     return run.outcome, run.restored_script
 
 
-def _describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
+def describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
     """Строка состояния для исхода, при котором работа **состоялась**.
 
     Исходы `not-compiled` и `aborted` сюда не попадают: они означают, что
@@ -223,7 +223,7 @@ def _describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_page_script(script: str) -> str:
     """Поставить скрипт в текущую страницу проекта и проверить, что он собрался.
 
@@ -252,7 +252,7 @@ def set_page_script(script: str) -> str:
             "скрипт страницы, поэтому пустой текст отвергается: если цель — "
             "очистить скрипт, сделайте это осознанно и передайте скрипт с одним "
             "комментарием.")
-    before = _object_names()
+    before = object_names()
     outcome, restored = _run(script)
     if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
         reason = (
@@ -266,11 +266,11 @@ def set_page_script(script: str) -> str:
             f"скрипт не поставлен: {reason}. Прежний скрипт страницы возвращён "
             "на место, проект не изменён.")
     _install_script(script)
-    after = _object_names()
+    after = object_names()
     return (
         f"Скрипт поставлен в текущую страницу.\n"
-        f"{_describe_outcome(outcome, what='Вердикт')}\n"
-        f"{_change_report(before, after, restored)}\n"
+        f"{describe_outcome(outcome, what='Вердикт')}\n"
+        f"{change_report(before, after, restored)}\n"
         f"Чтобы вернуть прежний скрипт — передайте его текст в "
         f"`set_page_script`.\n"
         f"---- прежний скрипт ----\n{restored}"
@@ -278,7 +278,7 @@ def set_page_script(script: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def run_page_script(script: str) -> str:
     """Выполнить произвольный скрипт в секции `initialization` текущей страницы.
 
@@ -314,14 +314,14 @@ def run_page_script(script: str) -> str:
         script: тело на встроенном языке; секции `initialization` и `end;`
             дописывает инструмент — объявлять их в теле не нужно.
     """
-    before = _object_names()
+    before = object_names()
     outcome, restored = _run(script)
-    after = _object_names()
+    after = object_names()
     lines = "\n".join(outcome.lines)
     return (
         f"Исход: {outcome.kind}\n"
-        f"{_describe_outcome(outcome, what='Что видно')}\n"
-        f"{_change_report(before, after, restored)}\n"
+        f"{describe_outcome(outcome, what='Что видно')}\n"
+        f"{change_report(before, after, restored)}\n"
         f"---- строки тела ----\n{lines}"
     )
 
@@ -370,7 +370,7 @@ def _collect_body(body: str, collect_path: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def inject_submodel_script(script: str) -> str:
     """Создать субмодель со скриптом сбора данных и вернуть собранное.
 
@@ -415,23 +415,23 @@ def inject_submodel_script(script: str) -> str:
             "тело сбора пусто: скрипту нечего записывать, и файл сбора остался "
             "бы пустым — то есть отказ пришёл бы всё равно, но позже и с менее "
             "понятной причиной.")
-    collect_path = os.path.join(sandbox.output_root(), _fresh_name(COLLECT_FILE))
+    collect_path = os.path.join(sandbox.output_root(), fresh_name(COLLECT_FILE))
     # Файл создаём заранее и пустым: скрипт открывает его режимом «чтение и
     # запись», а этот режим новый файл не создаёт. Чистка прошлого прогона
     # больше не нужна: имя уникально, и этот пустой файл всегда наш.
     Path(collect_path).write_text("", encoding="utf-8")
-    before = _object_names()
+    before = object_names()
     outcome, restored = _run(
         build_inject_submodel_script_body(_collect_body(script, collect_path)))
-    after = _object_names()
+    after = object_names()
     if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
         raise ToolError(
             f"субмодель со скриптом не создана: исход «{outcome.kind}»"
             + (f", последняя строка тела: {outcome.lines[-1]!r}"
                if outcome.lines else "")
             + ". Прежний скрипт страницы возвращён, проект не изменён.")
-    data, truncated, error = sandbox._load_result_file(
-        collect_path, MAX_COLLECT_BYTES, sandbox._MISSING_RESULT_FILE)
+    data, truncated, error = sandbox.load_result_file(
+        collect_path, MAX_COLLECT_BYTES, sandbox.MISSING_RESULT_FILE)
     if error:
         raise ToolError(
             f"субмодель создана, но файла сбора нет: {error}. Данные пишет "
@@ -447,7 +447,7 @@ def inject_submodel_script(script: str) -> str:
     note = "\n… данные обрезаны по пределу" if truncated else ""
     return (
         f"Субмодель со скриптом сбора создана.\n"
-        f"{_describe_outcome(outcome, what='Вердикт')}\n"
-        f"{_change_report(before, after, restored)}\n"
+        f"{describe_outcome(outcome, what='Вердикт')}\n"
+        f"{change_report(before, after, restored)}\n"
         f"---- собранные данные ({collect_path}) ----\n{collected}{note}"
     )

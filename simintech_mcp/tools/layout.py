@@ -122,7 +122,7 @@ def _overlaps(rect_a: "tuple[float, float, float, float]",
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def layout_place(block_ids: str = "", connections: str = "") -> str:
     """Расставить блоки по слоям без наложений — **с применением** координат.
 
@@ -195,7 +195,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     """
     from simintech_api.layout import LayeredPlacer
 
-    project = session._ensure_project()
+    project = session.ensure_project()
     page = project.get_main_page()
     available = {}
     for block in page.get_blocks():
@@ -240,7 +240,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
             kept.append(token)
     tokens = kept
 
-    # `connect` запоминает концы линий именами блоков (`_WIRES`), а блоки здесь
+    # `connect` запоминает концы линий именами блоков (`WIRES`), а блоки здесь
     # разрешено адресовать числовыми id (`block_ids='1,2'`). Без перевода имён в
     # токены `centers` совпадений не находил, и выравнивание молча пропускалось.
     # `available` хранит оба ключа — и id, и имя.
@@ -270,7 +270,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
                 continue
         links = []
         seen_pairs: set = set()
-        for _wire, src, _out, dst, _in in session._WIRES:
+        for _wire, src, _out, dst, _in in session.WIRES:
             src_token = by_name.get(src)
             dst_token = by_name.get(dst)
             if src_token is None or dst_token is None:
@@ -340,7 +340,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     # двигаются, а COM отдаёт координаты портов только после перерисовки —
     # повторное чтение вернуло бы устаревшие значения.
     offsets = {}
-    for _wire, src_name, out_index, dst_name, in_index in session._WIRES:
+    for _wire, src_name, out_index, dst_name, in_index in session.WIRES:
         src_token = aliases.get(src_name, src_name)
         dst_token = aliases.get(dst_name, dst_name)
         for token, index, is_output in ((src_token, out_index, True),
@@ -359,7 +359,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
                 unaligned.append(f"{token}[{index}] ({type(exc).__name__})")
 
     shifted = False
-    for _wire, src_name, out_index, dst_name, in_index in session._WIRES:
+    for _wire, src_name, out_index, dst_name, in_index in session.WIRES:
         if in_index != 0:
             continue
         src_token = aliases.get(src_name, src_name)

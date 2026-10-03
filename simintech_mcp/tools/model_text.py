@@ -45,25 +45,25 @@ from .. import runtime, sandbox, session
 from ..app import mcp
 from .page_script import (
     RESULT_FILE,
-    _change_report,
-    _describe_outcome,
-    _discard_result,
-    _fresh_name,
-    _object_names,
+    change_report,
+    describe_outcome,
+    discard_result,
+    fresh_name,
+    object_names,
 )
 
 #: Базы имён файлов внутри каталога результатов. Клиенту они не нужны: путь
 #: возвращается в ответе, а каталог — тот же, что у остальных инструментов.
-#: Полные имена уникальны на вызов (`page_script._fresh_name`): прошлый
+#: Полные имена уникальны на вызов (`page_script.fresh_name`): прошлый
 #: запертый обрывом файл не мешает, а прошлые артефакты не затираются.
 MODEL_TEXT_FILE = "model-text.txt"
 PROBE_RESULT_FILE = RESULT_FILE
 
 
-def _bridge() -> ScriptBridge:
+def bridge() -> ScriptBridge:
     """Мост для текущего проекта."""
-    project = session._ensure_project()
-    return ScriptBridge(session._ensure_client(), project.id)
+    project = session.ensure_project()
+    return ScriptBridge(session.ensure_client(), project.id)
 
 
 def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
@@ -73,31 +73,31 @@ def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     поэтому он выходит наружу отдельным `ToolError` с рецептом проверки; исходы
     же разбирает вызывающий — у выгрузки и сборки разный набор допустимых.
     Контурный файл результата убирается на любом пути: строки тела уже
-    прочитаны мостом (`page_script._discard_result`).
+    прочитаны мостом (`page_script.discard_result`).
     """
-    path = _result_path()
+    path = result_path()
     try:
-        run = _bridge().run_page_script(body, path)
+        run = bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
-        _discard_result(path)
+        discard_result(path)
         raise ToolError(
             f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
             "расчёт должен сдвинуть модельное время: проверьте, что модель "
             "считает — неподключённый вход останавливает расчёт всей модели "
             "молча."
         ) from exc
-    _discard_result(path)
+    discard_result(path)
     return run.outcome, run.restored_script
 
 
-def _result_path() -> Path:
+def result_path() -> Path:
     """Путь файла результата внутри каталога результатов (песочница).
 
-    Имя уникально на вызов (`_fresh_name`): прежде оно совпадало с именем
+    Имя уникально на вызов (`fresh_name`): прежде оно совпадало с именем
     результата `run_page_script`, и запертый тем вызовом файл валил и выгрузку.
     """
     return Path(os.path.join(sandbox.output_root(),
-                             _fresh_name(PROBE_RESULT_FILE)))
+                             fresh_name(PROBE_RESULT_FILE)))
 
 
 def _refuse_on_bad_outcome(outcome, *, action: str) -> None:
@@ -114,7 +114,7 @@ def _refuse_on_bad_outcome(outcome, *, action: str) -> None:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def export_model_text() -> str:
     """Выгрузить модель текущей страницы проекта в декларативный текст.
 
@@ -140,7 +140,7 @@ def export_model_text() -> str:
     (прежний возвращается на место после прогона).
     """
     root = sandbox.output_root()
-    text_path = os.path.join(root, _fresh_name(MODEL_TEXT_FILE))
+    text_path = os.path.join(root, fresh_name(MODEL_TEXT_FILE))
     # Прежняя защита от устаревшего текста — удаление файла прошлого прогона —
     # не переживала блокировку: запертый файл удалить не даёт (WinError 32,
     # живое наблюдение 02.10.2026), и тогда оборвавшийся прогон отдал бы
@@ -154,8 +154,8 @@ def export_model_text() -> str:
         failed="выгрузка текста модели не удалась")
     _refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
 
-    data, truncated, error = sandbox._load_result_file(
-        text_path, sandbox.MAX_OUTPUT_BYTES, sandbox._MISSING_RESULT_FILE
+    data, truncated, error = sandbox.load_result_file(
+        text_path, sandbox.MAX_OUTPUT_BYTES, sandbox.MISSING_RESULT_FILE
     )
     if error:
         raise ToolError(
@@ -178,7 +178,7 @@ def export_model_text() -> str:
     # дальше, и обязан видеть, что модель не считает.
     head = ""
     if outcome.kind == OUTCOME_MODEL_NOT_RUNNING:
-        head = (_describe_outcome(outcome, what="Выгрузка")
+        head = (describe_outcome(outcome, what="Выгрузка")
                 + " Текст при этом полный: savemodeltofile пишется из секции "
                   "`initialization`, а не из шагов расчёта.\n")
     return f"{head}Текст модели (файл {text_path}):\n{text}{note}"
@@ -187,7 +187,7 @@ def export_model_text() -> str:
 def _wire_count() -> Optional[int]:
     """Число линий текущей страницы или `None`, если перечислить не удалось."""
     try:
-        return len(session._ensure_project().get_current_page().get_wires())
+        return len(session.ensure_project().get_current_page().get_wires())
     except Exception:                                          # noqa: BLE001
         return None
 
@@ -223,7 +223,7 @@ def _trace_note(before: Optional[int], after: Optional[int]) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def import_model_text(model_text: str) -> str:
     """Собрать объекты модели из декларативного текста.
 
@@ -290,16 +290,16 @@ def import_model_text(model_text: str) -> str:
             "сделает»: он означает, что на стороне клиента содержимое потеряно, "
             "и молчание здесь скрыло бы это.")
     wires_before = _wire_count()
-    before = _object_names()
+    before = object_names()
     outcome, restored = _run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
     _refuse_on_bad_outcome(outcome, action="сборка модели")
-    after = _object_names()
+    after = object_names()
     wires_after = _wire_count()
     return (
         f"Модель собрана из текста.\n"
-        f"{_describe_outcome(outcome, what='Вердикт')}\n"
-        f"{_change_report(before, after, restored)}\n"
+        f"{describe_outcome(outcome, what='Вердикт')}\n"
+        f"{change_report(before, after, restored)}\n"
         f"{_trace_note(wires_before, wires_after)}"
     )

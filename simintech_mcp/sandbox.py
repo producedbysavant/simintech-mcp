@@ -2,7 +2,7 @@
 
 `read_output_file`, `summarize_output_file` и `inspect_project_file` читают
 только каталог результатов — всегда. Предел объёма применяется **до** чтения
-(`_read_bounded` читает не больше предела + 1 байта): проверка «прочитать,
+(`read_bounded` читает не больше предела + 1 байта): проверка «прочитать,
 потом отказать по размеру» защитой не является, память к моменту проверки уже
 израсходована.
 """
@@ -84,7 +84,7 @@ def output_root() -> str:
     return _ensure_default_output_dir()
 
 
-def _safe_output_root() -> str:
+def safe_output_root() -> str:
     """Каталог результатов для справки: не падает на ошибке конфигурации."""
     try:
         return output_root()
@@ -100,7 +100,7 @@ def _is_inside(root: str, path: str) -> bool:
         return False
 
 
-def _read_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool]:
+def read_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool]:
     """Прочитать файл не более `max_bytes` байт: `(данные, обрезано)`.
 
     Ограничение обязательно именно **до** чтения. Проверка «прочитать целиком,
@@ -122,17 +122,17 @@ def _read_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool]:
 
 #: Отказ, когда файла результата нет. Один и тот же текст у всех, кто читает
 #: файл блока «В файл»: расхождение формулировок путало бы агента.
-_MISSING_RESULT_FILE = ("ERROR: файла нет: {path}. Проверьте свойство "
-                        "`filename` блока «В файл» и что расчёт действительно "
-                        "прошёл.")
+MISSING_RESULT_FILE = ("ERROR: файла нет: {path}. Проверьте свойство "
+                       "`filename` блока «В файл» и что расчёт действительно "
+                       "прошёл.")
 
 #: Отказ, когда нет сохранённого проекта: подсказка здесь своя.
-_MISSING_PROJECT_FILE = ("ERROR: файла нет: {path}. Сохраните проект через "
-                         "`save_project` в каталог результатов.")
+MISSING_PROJECT_FILE = ("ERROR: файла нет: {path}. Сохраните проект через "
+                        "`save_project` в каталог результатов.")
 
 
-def _load_result_file(path: str, max_bytes: int,
-                      missing: str) -> Tuple[bytes, bool, str]:
+def load_result_file(path: str, max_bytes: int,
+                     missing: str) -> Tuple[bytes, bool, str]:
     """Разрешить путь в песочнице и прочитать файл не больше `max_bytes`.
 
     Читатели файлов (`read_output_file`, `summarize_output_file`,
@@ -144,7 +144,7 @@ def _load_result_file(path: str, max_bytes: int,
     Args:
         path: путь от клиента (абсолютный или относительный — к каталогу).
         max_bytes: предел чтения; применяется **до** чтения (см.
-            `_read_bounded`).
+            `read_bounded`).
         missing: текст отказа при отсутствующем файле; в него подставляется
             `path` (у разных инструментов подсказка разная).
 
@@ -152,17 +152,17 @@ def _load_result_file(path: str, max_bytes: int,
         `(data, truncated, error)`: `error` непуст, если читать нечего; иначе
         `data` — прочитанное (возможно, обрезанное) содержимое.
     """
-    resolved = _resolve_output_path(path)
+    resolved = resolve_output_path(path)
     if not os.path.isfile(resolved):
         return b"", False, missing.format(path=path)
     try:
-        data, truncated = _read_bounded(resolved, max_bytes)
+        data, truncated = read_bounded(resolved, max_bytes)
     except OSError as exc:
         return b"", False, f"ERROR: {exc}"
     return data, truncated, ""
 
 
-def _resolve_output_path(path: str) -> str:
+def resolve_output_path(path: str) -> str:
     """Разрешить путь внутри каталога результатов (см. `read_output_file`).
 
     Относительный путь ищется внутри каталога результатов — так запись и

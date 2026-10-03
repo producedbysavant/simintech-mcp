@@ -1,18 +1,18 @@
 """Состояние сессии: COM-клиент, текущий проект и созданные в нём линии.
 
-Текущий проект меняется только через `_set_project`: линии принадлежат
+Текущий проект меняется только через `set_project`: линии принадлежат
 проекту, и сбрасывать их надо вместе с ним. Пока проект присваивался бы в
 нескольких местах, инвариант «линии живут ровно столько же, сколько проект»
 держался бы на соглашении — и одного нового инструмента хватило бы, чтобы
 `layout_place` начал двигать блоки по мёртвым COM-идентификаторам. Линия
 может умереть и **раньше** проекта — её снимает `disconnect_wire`; тогда
-реестр точечно чистит `_forget_wire`, и он снова согласован с моделью.
+реестр точечно чистит `forget_wire`, и он снова согласован с моделью.
 
 Пакет проектов (`.pak`) — второй объект сессии, рядом с проектом: он живёт
-через `_set_pack`, а его участники — обычные открытые проекты среды. Связь
+через `set_pack`, а его участники — обычные открытые проекты среды. Связь
 двух состояний ровно одна: **участника открытого пакета нельзя закрывать**
 (`CloseProject` исключает его из состава — живой замер 01.10.2026), поэтому
-`_replace_project` оставляет такого участника в пакете, а не закрывает.
+`replace_project` оставляет такого участника в пакете, а не закрывает.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _project: Optional[Project] = None
 
 #: Текущий пакет проектов и путь, из которого он открыт. Пакет — объект
 #: сессии, а не проекта: он живёт рядом с текущим проектом и не заменяется
-#: при `open_project`/`create_project`. Меняется только через `_set_pack`.
+#: при `open_project`/`create_project`. Меняется только через `set_pack`.
 _pack: Optional[Pack] = None
 _pack_path: Optional[str] = None
 
@@ -56,7 +56,7 @@ _pack_path: Optional[str] = None
 #:
 #: Живут ровно столько же, сколько проект: сбрасываются вместе с ним. Линия
 #: может умереть и раньше проекта — её снимает `disconnect_wire`; тогда след
-#: уходит через `_forget_wire`, чтобы расстановка не считала снятую связь
+#: уходит через `forget_wire`, чтобы расстановка не считала снятую связь
 #: живой.
 #:
 #: **Уточнено 2026-09-28 (живой замер, поставка 2.26.6.23):** ограничение — про
@@ -65,7 +65,7 @@ _pack_path: Optional[str] = None
 #: `dst = "block:in:N"`, адрес ветви `src = "wireName:K"`, `K` с нуля). Здесь это
 #: ничего не меняет: сессия по-прежнему запоминает то, чего COM не отдаёт. Канон —
 #: README («Ограничения») и §10.20 журнала.
-_WIRES: List[Tuple[Wire, str, int, str, int]] = []
+WIRES: List[Tuple[Wire, str, int, str, int]] = []
 
 #: Путь, из которого открыт текущий проект (None — проект создан, а не открыт).
 #: Нужен там, где настройки лежат рядом с файлом проекта: `.dblocalconf`
@@ -73,8 +73,8 @@ _WIRES: List[Tuple[Wire, str, int, str, int]] = []
 _project_path: Optional[str] = None
 
 #: Были ли у **текущего** проекта правки, не записанные в файл, за эту сессию.
-#: Ставит `_mark_mutated` (обвязка после успешной правки), снимают —
-#: `save_project` (`_clear_unsaved`) и смена проекта (`_set_project`).
+#: Ставит `mark_mutated` (обвязка после успешной правки), снимают —
+#: `save_project` (`clear_unsaved`) и смена проекта (`set_project`).
 #: Читает только `reload_project`: хвост ответов правок про несохранённость
 #: постоянен (сразу после правки он истинен по определению), а этот счётчик
 #: уточняет сообщение отката — «правки отброшены» против «перечитан тот же
@@ -84,8 +84,47 @@ _unsaved: bool = False
 
 
 #: Ошибки COM, которые означают «этот клиент больше не отвечает»: разорванное
-#: соединение или не прошедший вызов. По ним `_ensure_client` переподключается.
+#: соединение или не прошедший вызов. По ним `ensure_client` переподключается.
 _COM_DEAD_ERRORS = (ComConnectionError, ComCallError)
+
+
+def current_project() -> Optional[Project]:
+    """Текущий проект сессии (может быть None) — без проверки живости COM.
+
+    Для кода, которому нужен **только факт состояния** (ветвления `pack` /
+    `disconnect`, подписи ответов). Путям, где дальше идут COM-вызовы, нужен
+    `ensure_project`: он проверяет живость пробным вызовом и поднимает
+    соединение заново.
+    """
+    return _project
+
+
+def current_pack() -> Optional[Pack]:
+    """Текущий пакет сессии (может быть None).
+
+    Пакет — состояние сессии, а не проекта; меняется только `set_pack`.
+    """
+    return _pack
+
+
+def current_client() -> Optional[COMClient]:
+    """Текущий COM-клиент сессии (может быть None).
+
+    Чтение для `disconnect` (передать клиента управляемому `shutdown`).
+    Подключение поднимает `ensure_client`.
+    """
+    return _client
+
+
+def clear_client() -> None:
+    """Забыть клиента сессии, не завершая его.
+
+    `disconnect` вызывает это **до** `shutdown`: состояние сессии не должно
+    зависеть от того, ответил ли COM, а завершение процесса — забота
+    вызывающего (`client.shutdown()`), а не сброса состояния.
+    """
+    global _client
+    _client = None
 
 
 def _client_is_alive(client: COMClient) -> bool:
@@ -106,19 +145,19 @@ def _client_is_alive(client: COMClient) -> bool:
 def _drop_dead_session() -> None:
     """Сбросить состояние сессии, привязанное к мёртвому COM-клиенту.
 
-    Одна точка на три места (`_ensure_client`, `_ensure_project`,
-    `_ensure_pack`): клиент, проект и пакет указывают в один и тот же мёртвый
+    Одна точка на три места (`ensure_client`, `ensure_project`,
+    `ensure_pack`): клиент, проект и пакет указывают в один и тот же мёртвый
     прокси, и сбрасывать их порознь — значит однажды забыть одно из трёх.
-    Линии уходят вместе с проектом (`_set_project`) — смена проекта и сброс
+    Линии уходят вместе с проектом (`set_project`) — смена проекта и сброс
     линий остаются одной операцией.
     """
     global _client
-    _set_project(None)
-    _set_pack(None)
+    set_project(None)
+    set_pack(None)
     _client = None
 
 
-def _ensure_client() -> COMClient:
+def ensure_client() -> COMClient:
     """Подключиться к COM-серверу (лениво), не отдав мёртвый клиент.
 
     Мёртвый клиент сбрасывается вместе с проектом и пакетом
@@ -150,7 +189,7 @@ def _require_owned(client: COMClient) -> None:
     вручную (GUI) SimInTech принимает подключение, COM-экземпляры
     (`-Embedding`) не переиспользуются. `EXTERNAL` — подключились к чужому
     процессу: инструменты сервера закрывали бы проекты пользователя
-    (`_replace_project`) и завершали бы его процессы. `UNKNOWN` — владение
+    (`replace_project`) и завершали бы его процессы. `UNKNOWN` — владение
     подтвердить не удалось; «неизвестно» — тоже не разрешение (fail closed).
 
     В обоих случаях кандидат отпускается (`disconnect` — только наша ссылка;
@@ -188,17 +227,17 @@ def _require_owned(client: COMClient) -> None:
         f"остаться жить.")
 
 
-def _ensure_project() -> Project:
+def ensure_project() -> Project:
     """Текущий проект — с проверкой, что COM ещё отвечает.
 
-    Пробник тот же, что в `_ensure_client` (`GetProcessID`), и нужен здесь по
+    Пробник тот же, что в `ensure_client` (`GetProcessID`), и нужен здесь по
     той же причине: флаг `connected` переживает смерть `mmain.exe`, а проект
     держит **собственный** клиент. Без этой проверки переподключались бы только
     `create_project`, `open_project` и `status`, а остальные COM-инструменты
     (`list_blocks`, `run`, `set_signal`, …) отдавали бы сырой `ComCallError` из
     недр библиотеки — по тексту неотличимый от «просто не повезло».
 
-    Мёртвый проект сбрасывается вместе с клиентом (`_set_project(None)`): его
+    Мёртвый проект сбрасывается вместе с клиентом (`set_project(None)`): его
     COM-идентификаторы после смены сервера недействительны, а линии живут ровно
     столько же, сколько проект. Отказ называет причину и рецепт, а не
     «Нет открытого проекта»: клиент иначе решил бы, что проект не создавали.
@@ -217,17 +256,17 @@ def _ensure_project() -> Project:
     return _project
 
 
-def _set_project(project: Optional[Project],
-                 source_path: Optional[str] = None) -> None:
+def set_project(project: Optional[Project],
+                source_path: Optional[str] = None) -> None:
     """Сделать проект текущим — единственное место, где он меняется.
 
     Линии принадлежат проекту: их COM-идентификаторы после смены проекта
-    указывают в никуда, поэтому `_WIRES` сбрасывается здесь же. Пока проект
+    указывают в никуда, поэтому `WIRES` сбрасывается здесь же. Пока проект
     присваивался в нескольких местах, инвариант «линии живут ровно столько
     же, сколько проект» держался на соглашении — и одного нового инструмента
     хватило бы, чтобы `layout_place` начал двигать блоки по мёртвым линиям.
     Отдельная линия уходит из реестра и раньше смены проекта — точечно, через
-    `_forget_wire` (`disconnect_wire`); здесь сбрасывается всё сразу.
+    `forget_wire` (`disconnect_wire`); здесь сбрасывается всё сразу.
     Переменная `_project` остаётся на месте: на неё опираются тесты.
 
     Args:
@@ -238,18 +277,18 @@ def _set_project(project: Optional[Project],
     global _project, _project_path, _unsaved
     _project = project
     _project_path = source_path
-    _WIRES.clear()
+    WIRES.clear()
     # Флаг несохранённых правок — про текущий проект: смена проекта (и его
     # сброс) его снимает, как и линии: оба живут ровно столько же.
     _unsaved = False
 
 
-def _opened_from() -> Optional[str]:
+def opened_from() -> Optional[str]:
     """Путь, из которого открыт текущий проект, если он открыт из файла."""
     return _project_path
 
 
-def _forget_wire(wire_id: int) -> None:
+def forget_wire(wire_id: int) -> None:
     """Убрать из реестра запись о снятой линии.
 
     Реестр жил по правилу «линии живут ровно столько же, сколько проект» —
@@ -258,11 +297,11 @@ def _forget_wire(wire_id: int) -> None:
     парам концов линий сессии, и запись о снятой связи осталась бы в расчёте
     расстановки линией, которой в модели нет, а отчёты считали бы её живой.
     """
-    _WIRES[:] = [record for record in _WIRES
-                 if getattr(record[0], "id", None) != wire_id]
+    WIRES[:] = [record for record in WIRES
+                if getattr(record[0], "id", None) != wire_id]
 
 
-def _project_label() -> str:
+def project_label() -> str:
     """Имя текущего проекта для ответов инструментов.
 
     Открытый из файла называется **именем файла** — по нему проект и находят,
@@ -293,7 +332,7 @@ def _project_label() -> str:
     return f"«{name}» (id={_project.id})"
 
 
-def _mark_mutated() -> None:
+def mark_mutated() -> None:
     """Запомнить, что текущий проект правили после последнего сохранения.
 
     Единственный вызывающий — `runtime._append_mutation_note`: каждая
@@ -305,23 +344,23 @@ def _mark_mutated() -> None:
     _unsaved = True
 
 
-def _unsaved_changes() -> bool:
+def unsaved_changes() -> bool:
     """Были ли у текущего проекта несохранённые правки (см. `_unsaved`)."""
     return _unsaved
 
 
-def _clear_unsaved() -> None:
+def clear_unsaved() -> None:
     """Снять пометку несохранённых правок — файл записан (`save_project`)."""
     global _unsaved
     _unsaved = False
 
 
-def _mutation_note() -> str:
+def mutation_note() -> str:
     """Хвост ответа мутирующего инструмента: куда внесены и что не сохранено.
 
     Пустая строка — проекта нет: в этом состоянии мутирующие инструменты
-    отказывают раньше (`_ensure_project`), и хвост был бы ложью. Ставит его
-    обвязка (`runtime._com_threaded(mutates_project=True)`), а не каждый
+    отказывают раньше (`ensure_project`), и хвост был бы ложью. Ставит его
+    обвязка (`runtime.com_threaded(mutates_project=True)`), а не каждый
     инструмент по отдельности, — иначе новый мутирующий инструмент молча
     выпал бы из контракта.
 
@@ -330,16 +369,16 @@ def _mutation_note() -> str:
     её может `save_project`, а откатить `reload_project` (issue #18: «есть
     несохранённые изменения» должно быть видно в том же ответе, где правка).
     """
-    label = _project_label()
+    label = project_label()
     if not label:
         return ""
     return (f"\nИзменения внесены в: {label}"
             f"\nНе сохранено: `save_project` запишет, `reload_project` откатит.")
 
 
-def _replace_project(project: Project,
-                     source_path: Optional[str] = None,
-                     header: str = "ТЕКУЩИЙ ПРОЕКТ СМЕНИЛСЯ") -> str:
+def replace_project(project: Project,
+                    source_path: Optional[str] = None,
+                    header: str = "ТЕКУЩИЙ ПРОЕКТ СМЕНИЛСЯ") -> str:
     """Сделать проект текущим, закрыв предыдущий.
 
     Без этого `create_project`/`open_project` копили бы открытые проекты внутри
@@ -353,7 +392,7 @@ def _replace_project(project: Project,
 
     Args:
         project: новый текущий проект.
-        source_path: файл, из которого проект открыт (см. `_set_project`).
+        source_path: файл, из которого проект открыт (см. `set_project`).
         header: зачин примечания о смене. По умолчанию «ТЕКУЧИЙ ПРОЕКТ
             СМЕНИЛСЯ»; `reload_project` передаёт «…ПЕРЕОТКРЫТ ИЗ ФАЙЛА» —
             для него «сменился» было бы правдой с оговоркой (тот же файл,
@@ -367,16 +406,16 @@ def _replace_project(project: Project,
         остался жить в `mmain.exe`).
     """
     previous = _project
-    previous_label = _project_label()
-    membership = _pack_membership() if previous is not None else False
-    # Смена проекта и сброс линий — одна операция (`_set_project`): линии
+    previous_label = project_label()
+    membership = pack_membership() if previous is not None else False
+    # Смена проекта и сброс линий — одна операция (`set_project`): линии
     # принадлежат предыдущему проекту, их идентификаторы после смены
     # указывают в никуда.
-    _set_project(project, source_path)
+    set_project(project, source_path)
     if previous is None or previous is project:
         return ""
     switch = (f"\n{header}: было {previous_label} → "
-              f"стало {_project_label()}.")
+              f"стало {project_label()}.")
     if membership is not False:
         # `None` (состав пака не читается) — тот же запрет, что и «участник»:
         # молча закрыть нельзя, иначе сбой чтения сам отключает защиту.
@@ -403,10 +442,10 @@ def _replace_project(project: Project,
 # ─── Пакет проектов ───────────────────────────────────────────────
 
 
-def _ensure_pack() -> Pack:
+def ensure_pack() -> Pack:
     """Текущий пакет сессии — с проверкой, что COM ещё отвечает.
 
-    Пробник тот же, что в `_ensure_project` (`GetProcessID`), и нужен по той
+    Пробник тот же, что в `ensure_project` (`GetProcessID`), и нужен по той
     же причине: флаг `connected` переживает смерть `mmain.exe`, а пакет держит
     тот же мёртвый прокси. Мёртвый клиент сбрасывает сессию вместе с пакетом;
     отказ называет это, а не только «пакета нет»: клиент иначе решил бы, что
@@ -424,22 +463,22 @@ def _ensure_pack() -> Pack:
     return _pack
 
 
-def _set_pack(pack: Optional[Pack], source_path: Optional[str] = None) -> None:
+def set_pack(pack: Optional[Pack], source_path: Optional[str] = None) -> None:
     """Сделать пакет текущим — единственное место, где он меняется.
 
     Линии пакет не трогает: они принадлежат текущему проекту, и смена проекта
-    происходит не здесь (см. `_set_project`). А вот текущий проект пакет
+    происходит не здесь (см. `set_project`). А вот текущий проект пакет
     уносит с собой: его участники закрываются вместе с пакетом (живой замер
     01.10.2026), поэтому вызывающий обязан до или после смены позаботиться о
-    `_set_project(None)`, если текущий проект был участником, — за него это
-    делают `_replace_pack` и инструменты пакета.
+    `set_project(None)`, если текущий проект был участником, — за него это
+    делают `replace_pack` и инструменты пакета.
     """
     global _pack, _pack_path
     _pack = pack
     _pack_path = source_path
 
 
-def _pack_label() -> str:
+def pack_label() -> str:
     """Имя текущего пакета для ответов: «Пакет.pak» (id=…); пусто — пакета нет."""
     if _pack is None:
         return ""
@@ -454,7 +493,7 @@ def _pack_member_ids() -> Optional[List[int]]:
     `None` — состав прочитать не удалось: идентификаторы участников среда
     выдаёт заново после изменений состава (замер 01.10.2026), и запрос к
     подпорченному пакету может отказать. Отличить «не участник» от «не смогли
-    прочитать» важно: на первом строится защита участника в `_replace_project`,
+    прочитать» важно: на первом строится защита участника в `replace_project`,
     и молчаливое «пусто» закрыло бы участника, исключив его из пакета.
     Сбой чтения других путей не ломает — вызывающие трактуют `None` как
     «неизвестно».
@@ -467,7 +506,7 @@ def _pack_member_ids() -> Optional[List[int]]:
         return None
 
 
-def _pack_membership() -> Optional[bool]:
+def pack_membership() -> Optional[bool]:
     """Участие текущего проекта в открытом пакете сессии: True / False / None.
 
     `None` — состав пакета прочитать не удалось, и «участник» от «не
@@ -488,7 +527,7 @@ def _pack_membership() -> Optional[bool]:
     return _project.id in ids
 
 
-def _replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
+def replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
     """Сделать пакет текущим, закрыв предыдущий.
 
     Открытие второго пакета того же файла создаёт **второй** пакет, а не
@@ -504,13 +543,13 @@ def _replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
         смена пакета называется явно, сбой закрытия прежнего — предупреждением.
     """
     previous = _pack
-    previous_label = _pack_label()
-    membership = _pack_membership() if previous is not None else False
-    _set_pack(pack, source_path)
+    previous_label = pack_label()
+    membership = pack_membership() if previous is not None else False
+    set_pack(pack, source_path)
     if previous is None or previous is pack:
         return ""
     switch = (f"\nПАКЕТ СМЕНИЛСЯ: было {previous_label} → "
-              f"стало {_pack_label()}.")
+              f"стало {pack_label()}.")
     warning = ""
     closed = False
     try:
@@ -524,7 +563,7 @@ def _replace_pack(pack: Pack, source_path: Optional[str] = None) -> str:
     # «закрыт вместе с пакетом» рядом с предупреждением «пакет закрыть не
     # удалось» — противоречие, и оно уже случалось (ревью mcp#25).
     if closed and membership is not False:
-        _set_project(None)
+        set_project(None)
         if membership is None:
             switch += (" Принадлежность текущего проекта к закрытому пакету "
                        "проверить не удалось; текущий проект сброшен на "

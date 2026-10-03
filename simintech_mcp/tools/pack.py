@@ -2,7 +2,7 @@
 
 Пакет — несколько проектов, считающих вместе (модельное время у них общее —
 минимум по участникам), с общей базой сигналов. Сессия держит один пакет (см.
-`session._set_pack`); его участники — обычные открытые проекты среды, и
+`session.set_pack`); его участники — обычные открытые проекты среды, и
 `select_pack_project` делает один из них текущим проектом сессии.
 
 Форму инструментов определил живой замер, а не предположение (копия
@@ -26,10 +26,10 @@
   нечем, а отдавать непроверяемое ожидание — против контракта;
 * `CloseProject` участника **исключает его из пакета** (состав 2 → 1) — отсюда
   защита участника; решение «участник / не участник / неизвестно» принимает
-  `session._pack_membership`, и «неизвестно» трактуется как «нельзя
+  `session.pack_membership`, и «неизвестно» трактуется как «нельзя
   исключить»:
-  `_replace_project` такого проекта не закрывает, `close_project` отказывает,
-  `close_pack`/`_replace_pack`/`disconnect` сбрасывают состояние текущего
+  `replace_project` такого проекта не закрывает, `close_project` отказывает,
+  `close_pack`/`replace_pack`/`disconnect` сбрасывают состояние текущего
   проекта после **удавшегося** закрытия пакета (неудавшееся — только
   предупреждение: уверять «закрыт вместе с пакетом» рядом с «закрыть не
   удалось» — противоречие);
@@ -137,7 +137,7 @@ def _composition_lines(members: List[Tuple[int, Optional[str]]]) -> str:
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def create_pack(path: str, projects: List[str],
                 inactive: Optional[List[int]] = None,
                 no_sync: Optional[List[int]] = None,
@@ -236,7 +236,7 @@ def create_pack(path: str, projects: List[str],
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def open_pack(path: str) -> str:
     """Открыть пакет проектов SimInTech (`.pak`).
 
@@ -253,7 +253,7 @@ def open_pack(path: str) -> str:
     Args:
         path: путь к файлу `.pak` (абсолютный).
     """
-    client = session._ensure_client()
+    client = session.ensure_client()
     pack_id = client.open_pack(path)
     if pack_id <= 0:
         # Ноль документирован библиотекой («не открылся»); отрицательный id
@@ -265,7 +265,7 @@ def open_pack(path: str) -> str:
             f"прочитан средой (не .pak, повреждён или недоступен). Прежний "
             f"пакет сессии не тронут.")
     pack = Pack(client, pack_id)
-    replaced = session._replace_pack(pack, source_path=path)
+    replaced = session.replace_pack(pack, source_path=path)
     # Состав — после установки пакета в сессию: даже если он не читается,
     # пакет уже текущий, и клиент должен узнать это из ответа, а не из отказа
     # с потерянным состоянием (ревью mcp#25).
@@ -273,16 +273,16 @@ def open_pack(path: str) -> str:
         ids = _member_ids(pack)
         members = [(pid, _member_name(pack, pid)) for pid in ids]
     except Exception as exc:                                  # noqa: BLE001
-        return (f"Пакет {session._pack_label()} открыт, но состав прочитать не "
+        return (f"Пакет {session.pack_label()} открыт, но состав прочитать не "
                 f"удалось ({type(exc).__name__}: {exc}). Пакет стал текущим "
                 f"пакетом сессии: повторите `list_pack_projects`, а закрыть "
                 f"пакет можно `close_pack`." + replaced)
-    return (f"Пакет {session._pack_label()} открыт: проектов {len(members)}\n"
+    return (f"Пакет {session.pack_label()} открыт: проектов {len(members)}\n"
             + _composition_lines(members) + replaced)
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def close_pack() -> str:
     """Закрыть текущий пакет сессии.
 
@@ -290,23 +290,23 @@ def close_pack() -> str:
     текущий проект сессии — один из участников, состояние текущего проекта
     сбрасывается, и ответ это называет.
     """
-    if session._pack is None:
+    if session.current_pack() is None:
         return "Без изменений: пакет не был открыт"
-    pack = session._ensure_pack()
-    label = session._pack_label()
+    pack = session.ensure_pack()
+    label = session.pack_label()
     # Принадлежность проверяется ДО закрытия: после него состав уже не
     # прочитать. `None` (состав не читается) — тот же сброс, что и «участник»:
     # неизвестно, жив ли текущий проект, а мёртвый id в сессии хуже
     # сброшенного.
-    membership = session._pack_membership()
+    membership = session.pack_membership()
     # Порядок как у `close_project`: сначала закрыть, потом сбросить
     # состояние. Сбой `ClosePack` оставляет пакет текущим — его видно, и
     # закрытие можно повторить, а не потерять открытым внутри mmain.exe.
     pack.close()
-    session._set_pack(None)
+    session.set_pack(None)
     tail = ""
     if membership is not False:
-        session._set_project(None)
+        session.set_project(None)
         tail = (" Текущий проект — участник пакета — закрыт вместе с ним: "
                 "текущего проекта больше нет." if membership else
                 " Принадлежность текущего проекта к пакету проверить не "
@@ -319,7 +319,7 @@ def close_pack() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def list_pack_projects() -> str:
     """Вывести состав пакета: индекс, id, файл и модельное время участников.
 
@@ -333,12 +333,12 @@ def list_pack_projects() -> str:
     отдельной строкой и недоступно, если хоть одно время участника не
     прочиталось.
     """
-    pack = session._ensure_pack()
+    pack = session.ensure_pack()
     try:
         ids = _member_ids(pack)
     except Exception as exc:                                  # noqa: BLE001
         raise ToolError(
-            f"Состав пакета {session._pack_label()} прочитать не удалось "
+            f"Состав пакета {session.pack_label()} прочитать не удалось "
             f"({type(exc).__name__}: {exc}): идентификаторы участников не "
             f"получены, перечислять нечего. Закрыть пакет можно `close_pack`; "
             f"если состав не читается и дальше, пакет, вероятно, повреждён.")
@@ -349,13 +349,13 @@ def list_pack_projects() -> str:
         lines.append(f"  [{index}] id={pid} «{_file_label(name)}» — модельное "
                      f"время {_fmt_time(times[index])}")
     total = _pack_time(times)
-    return (f"Пакет {session._pack_label()}: проектов {len(members)}\n"
+    return (f"Пакет {session.pack_label()}: проектов {len(members)}\n"
             + "\n".join(lines)
             + f"\nВремя пакета (минимум по участникам): {_fmt_time(total)}")
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def select_pack_project(index: int) -> str:
     """Сделать проект пакета текущим проектом сессии.
 
@@ -370,33 +370,34 @@ def select_pack_project(index: int) -> str:
             индекс, а не id — идентификаторы среда выдаёт заново после
             изменений состава.
     """
-    pack = session._ensure_pack()
+    pack = session.ensure_pack()
     ids = _member_ids(pack)
     if not 0 <= index < len(ids):
         raise ToolError(
-            f"index={index} вне состава пакета {session._pack_label()}: "
+            f"index={index} вне состава пакета {session.pack_label()}: "
             f"участников {len(ids)}"
             + (f", допустимо 0…{len(ids) - 1}" if ids else "")
             + ". Состав — `list_pack_projects`.")
     pid = ids[index]
-    if session._project is not None and session._project.id == pid:
+    current = session.current_project()
+    if current is not None and current.id == pid:
         return (f"Без изменений: проект [{index}] уже текущий — "
-                f"{session._project_label()}")
+                f"{session.project_label()}")
     name = _member_name(pack, pid)
     # Пустая строка (и непрочитанное имя) — не то же, что «проект из шаблона»:
     # метка обязана называть неизвестный источник неизвестным, а не выдумывать
     # шаблон (ревью mcp#25).
     source = name or ""
     project = Project(pack.client, pid)
-    replaced = session._replace_project(project, source_path=source)
-    return f"Текущий проект: {session._project_label()}" + replaced
+    replaced = session.replace_project(project, source_path=source)
+    return f"Текущий проект: {session.project_label()}" + replaced
 
 
 # ─── Расчёт ───────────────────────────────────────────────────────
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def pack_run() -> str:
     """Запустить расчёт пакета (`PackStart` + `PackRun`, неблокирующий).
 
@@ -410,7 +411,7 @@ def pack_run() -> str:
     `Pack.run_to`) в пробе не вернулся, а `RunToPack` без PackRun-цикла время
     не двигает — подтверждать достижение отметки нечем.
     """
-    pack = session._ensure_pack()
+    pack = session.ensure_pack()
     ids = _member_ids(pack)
     before = _pack_time(_member_times(pack, ids))
     pack.start()
@@ -428,7 +429,7 @@ def pack_run() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def pack_step(count: int = 1) -> str:
     """Выполнить указанное число шагов расчёта пакета.
 
@@ -450,7 +451,7 @@ def pack_step(count: int = 1) -> str:
             f"count={count} больше предела {MAX_STEP_COUNT} шагов за вызов: "
             f"каждый шаг — отдельный COM-вызов, и такой вызов надолго занял бы "
             f"выделенный поток. Разбейте на несколько вызовов `pack_step`.")
-    pack = session._ensure_pack()
+    pack = session.ensure_pack()
     ids = _member_ids(pack)
     before = _pack_time(_member_times(pack, ids))
     pack.start()
@@ -478,12 +479,12 @@ def pack_step(count: int = 1) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def pack_stop() -> str:
     """Остановить расчёт пакета.
 
     Вызов неблокирующий и не подтверждает, что расчёт шёл (`PackStop`
     сообщает об успехе и на остановленном пакете — как `ProjectStop`).
     """
-    session._ensure_pack().stop()
+    session.ensure_pack().stop()
     return "Расчёт пакета остановлен"

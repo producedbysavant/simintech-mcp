@@ -18,8 +18,8 @@ from simintech_api.catalog import load_default_catalog
 
 # ─── Проверка имён параметров ─────────────────────────────────────
 
-def _check_params(class_name: str, names: Iterable[str], *,
-                  allow_unknown: bool, notes: List[str]) -> None:
+def check_params(class_name: str, names: Iterable[str], *,
+                 allow_unknown: bool, notes: List[str]) -> None:
     """Проверить имена параметров до записи; примечание дописать в `notes`.
 
     `SetBlockProp` не отвергает неизвестное имя: запись уходит в никуда **без
@@ -101,7 +101,7 @@ def is_covered(class_name: str, notes: List[str]) -> bool:
     значит, что не прочиталось ни одно имя, то есть отказ чтения, а не
     отсутствие класса.
 
-    Разбор «каталог недоступен целиком» здесь тот же, что в `_check_params`
+    Разбор «каталог недоступен целиком» здесь тот же, что в `check_params`
     (`BlockCatalog.load` на пропавший файл отдаёт ПУСТОЙ каталог, а не
     ошибку), и живёт он в одном модуле: разойдясь, чтение и запись
     объявляли бы одну и ту же установку по-разному.

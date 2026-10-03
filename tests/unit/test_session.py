@@ -29,11 +29,11 @@ def test_replace_project_clears_wire_registry(monkeypatch):
     src = _ConnectingBlock("k_0", 1)
     dst = _ConnectingBlock("kx_0", 2)
     _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
-    session._WIRES.append(_FakeWire(99))  # запись целиком не важна
+    session.WIRES.append(_FakeWire(99))  # запись целиком не важна
 
-    session._replace_project(_WireProject({}))
+    session.replace_project(_WireProject({}))
 
-    assert session._WIRES == []
+    assert session.WIRES == []
 
 
 @pytest.mark.anyio
@@ -42,11 +42,11 @@ async def test_close_project_clears_wire_registry(monkeypatch):
     project = _WireProject({})
     _install_wire_project(monkeypatch, {})
     monkeypatch.setattr(session, "_project", project)
-    session._WIRES.append(_FakeWire(1))
+    session.WIRES.append(_FakeWire(1))
 
     text = _text(await mcp.call_tool("close_project", {}))
 
-    assert session._WIRES == []
+    assert session.WIRES == []
     assert "закрыт" in text
 
 
@@ -60,10 +60,10 @@ def test_replace_project_closes_previous(monkeypatch):
     previous, fresh = _ClosableProject(), _ClosableProject()
     monkeypatch.setattr(session, "_project", previous)
 
-    session._replace_project(fresh)
+    session.replace_project(fresh)
 
     assert previous.closed, "предыдущий проект не закрыт"
-    assert session._project is fresh
+    assert session.current_project() is fresh
 
 
 def test_replace_project_tolerates_already_closed(monkeypatch):
@@ -72,9 +72,9 @@ def test_replace_project_tolerates_already_closed(monkeypatch):
     monkeypatch.setattr(session, "_project", _ClosableProject(raises=True))
     fresh = _ClosableProject()
 
-    session._replace_project(fresh)
+    session.replace_project(fresh)
 
-    assert session._project is fresh
+    assert session.current_project() is fresh
 
 
 def test_replace_project_without_previous(monkeypatch):
@@ -83,9 +83,9 @@ def test_replace_project_without_previous(monkeypatch):
     monkeypatch.setattr(session, "_project", None)
     fresh = _ClosableProject()
 
-    session._replace_project(fresh)
+    session.replace_project(fresh)
 
-    assert session._project is fresh
+    assert session.current_project() is fresh
     assert not fresh.closed
 
 
@@ -94,9 +94,9 @@ def test_replace_project_without_previous(monkeypatch):
 
 def _with_project(project, source_path=None):
     """Поставить проект текущим; вернуть функцию восстановления прежнего."""
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(project, source_path=source_path)
-    return lambda: session._set_project(prev_project, source_path=prev_path)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(project, source_path=source_path)
+    return lambda: session.set_project(prev_project, source_path=prev_path)
 
 
 def test_project_label_names_opened_file_and_id():
@@ -109,7 +109,7 @@ def test_project_label_names_opened_file_and_id():
     restore = _with_project(_WireProject({}, project_id=12),
                             source_path=r"C:\work\CoolInt.prt")
     try:
-        assert session._project_label() == "«CoolInt.prt» (id=12)"
+        assert session.project_label() == "«CoolInt.prt» (id=12)"
     finally:
         restore()
 
@@ -118,7 +118,7 @@ def test_project_label_for_created_project():
     """У созданного из шаблона имени нет — метка говорит это прямо."""
     restore = _with_project(_WireProject({}, project_id=5))
     try:
-        assert session._project_label() == "«проект из шаблона» (id=5)"
+        assert session.project_label() == "«проект из шаблона» (id=5)"
     finally:
         restore()
 
@@ -127,7 +127,7 @@ def test_project_label_without_project_is_empty():
     """Без проекта метки нет: подставлять «None» в адрес правки нельзя."""
     restore = _with_project(None)
     try:
-        assert session._project_label() == ""
+        assert session.project_label() == ""
     finally:
         restore()
 
@@ -141,7 +141,7 @@ def test_replace_project_note_names_the_switch(monkeypatch):
     restore = _with_project(_ClosableProject(project_id=12),
                             source_path=r"C:\a\CoolInt.prt")
     try:
-        note = session._replace_project(
+        note = session.replace_project(
             _ClosableProject(project_id=17),
             source_path=r"C:\b\sub_TractionState.prt")
 
@@ -156,7 +156,7 @@ def test_replace_project_without_previous_has_no_switch_note(monkeypatch):
     """Первый проект «сменой» не объявляется: было — ничего."""
     restore = _with_project(None)
     try:
-        note = session._replace_project(_ClosableProject(project_id=5))
+        note = session.replace_project(_ClosableProject(project_id=5))
         assert note == ""
     finally:
         restore()
@@ -172,7 +172,7 @@ def test_mutation_note_names_current_project():
     restore = _with_project(_WireProject({}, project_id=3),
                             source_path=r"C:\work\CoolInt.prt")
     try:
-        assert session._mutation_note() == (
+        assert session.mutation_note() == (
             "\nИзменения внесены в: «CoolInt.prt» (id=3)\n"
             "Не сохранено: `save_project` запишет, `reload_project` откатит.")
     finally:
@@ -184,18 +184,18 @@ def test_unsaved_flag_tracks_mutations_and_resets():
 
     Счёт читает `reload_project` («правки отброшены» против «перечитан тот
     же файл»), а ставит его обвязка правок — здесь проверяется сама
-    механика: `_mark_mutated` и оба сброса.
+    механика: `mark_mutated` и оба сброса.
     """
     restore = _with_project(_WireProject({}, project_id=3))
     try:
-        assert not session._unsaved_changes()
-        session._mark_mutated()
-        assert session._unsaved_changes()
-        session._clear_unsaved()
-        assert not session._unsaved_changes()
-        session._mark_mutated()
-        session._set_project(_WireProject({}, project_id=4))
-        assert not session._unsaved_changes(), "смена проекта снимает счёт"
+        assert not session.unsaved_changes()
+        session.mark_mutated()
+        assert session.unsaved_changes()
+        session.clear_unsaved()
+        assert not session.unsaved_changes()
+        session.mark_mutated()
+        session.set_project(_WireProject({}, project_id=4))
+        assert not session.unsaved_changes(), "смена проекта снимает счёт"
     finally:
         restore()
 
@@ -204,7 +204,7 @@ def test_mutation_note_without_project_is_empty():
     """Без проекта хвост пуст: «внесены в никуда» — ложь."""
     restore = _with_project(None)
     try:
-        assert session._mutation_note() == ""
+        assert session.mutation_note() == ""
     finally:
         restore()
 
@@ -233,8 +233,8 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
 
     assert project.closed
     assert client.shutdown_called
-    assert session._project is None
-    assert session._client is None
+    assert session.current_project() is None
+    assert session.current_client() is None
     assert "Сессия завершена" in text
     assert "id=7" in text, "завершение сессии обязано назвать закрытый проект"
     assert "PID 777" in text, "ответ обязан назвать снятый процесс"
@@ -305,10 +305,10 @@ def test_replace_project_reports_failed_close(monkeypatch):
                         _ClosableProject(raises=True))
     fresh = _ClosableProject()
 
-    note = session._replace_project(fresh)
+    note = session.replace_project(fresh)
 
     assert "ВНИМАНИЕ" in note
-    assert session._project is fresh
+    assert session.current_project() is fresh
 
 
 @pytest.mark.anyio
@@ -327,7 +327,7 @@ async def test_disconnect_reports_failed_close(monkeypatch):
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
-    assert session._project is None
+    assert session.current_project() is None
     assert "ВНИМАНИЕ" in text
 
 
@@ -338,35 +338,35 @@ def test_forget_wire_removes_only_named_wire():
     ней обязана уйти вместе с ней — иначе `layout_place` выравнивал бы блоки
     по мёртвой связи, считая её живой.
     """
-    saved = list(session._WIRES)
+    saved = list(session.WIRES)
     first, second = _FakeWire(1), _FakeWire(2)
-    session._WIRES[:] = [(first, "k_0", 0, "kx_0", 0),
-                         (second, "k_0", 0, "k_1", 1)]
+    session.WIRES[:] = [(first, "k_0", 0, "kx_0", 0),
+                        (second, "k_0", 0, "k_1", 1)]
     try:
-        session._forget_wire(1)
+        session.forget_wire(1)
 
-        assert [record[0] for record in session._WIRES] == [second]
+        assert [record[0] for record in session.WIRES] == [second]
     finally:
-        session._WIRES[:] = saved
+        session.WIRES[:] = saved
 
 
 def test_set_project_clears_wires():
     """Смена проекта сбрасывает линии: их COM-идентификаторы мертвы.
 
-    Инвариант держится одним местом (`_set_project`), поэтому проверяется
+    Инвариант держится одним местом (`set_project`), поэтому проверяется
     здесь, а не через `create_project`/`disconnect`.
     """
 
-    saved_project = session._project
-    session._WIRES.append(("wire", "k_0", 0, "kx_0", 0))
+    saved_project = session.current_project()
+    session.WIRES.append(("wire", "k_0", 0, "kx_0", 0))
     try:
-        session._set_project(None)
+        session.set_project(None)
 
-        assert session._WIRES == []
-        assert session._project is None
+        assert session.WIRES == []
+        assert session.current_project() is None
     finally:
-        session._WIRES.clear()
-        session._project = saved_project
+        session.WIRES.clear()
+        session.set_project(saved_project)
 
 
 # ─── Живучесть COM ────────────────────────────────────────────────
@@ -418,10 +418,10 @@ def _install_client_factory(monkeypatch, ownership=None):
 
 
 def test_ensure_client_reconnects_dead_com(monkeypatch):
-    """Мёртвый клиент не отдаётся повторно: `_ensure_client` переподключается.
+    """Мёртвый клиент не отдаётся повторно: `ensure_client` переподключается.
 
     Без этого рецепт «перезапустите mmain.exe и повторите» неисполним:
-    `connected` остаётся True, `_ensure_client` возвращал бы тот же мёртвый
+    `connected` остаётся True, `ensure_client` возвращал бы тот же мёртвый
     прокси, и каждый следующий COM-инструмент падал бы, пока не вызван
     `disconnect`. Проект сбрасывается вместе с клиентом: он держит собственный
     `_client`, и его COM-идентификаторы после смены сервера недействительны.
@@ -430,17 +430,17 @@ def test_ensure_client_reconnects_dead_com(monkeypatch):
     dead = _DeadClient()
     monkeypatch.setattr(session, "_client", dead)
     monkeypatch.setattr(session, "_project", _ClosableProject())
-    session._WIRES.append(_FakeWire(1))
+    session.WIRES.append(_FakeWire(1))
     made = _install_client_factory(monkeypatch)
 
-    client = session._ensure_client()
+    client = session.ensure_client()
 
     assert client is not dead, "старый мёртвый клиент не должен возвращаться"
-    assert session._client is client
+    assert session.current_client() is client
     assert made == [client], "новый клиент создаётся ровно один"
-    assert session._WIRES == [], "линии мертвого проекта сбрасываются с ним"
+    assert session.WIRES == [], "линии мертвого проекта сбрасываются с ним"
     with pytest.raises(ToolError, match="Нет открытого проекта"):
-        session._ensure_project()
+        session.ensure_project()
 
 
 def test_ensure_client_reuses_live_client(monkeypatch):
@@ -454,7 +454,7 @@ def test_ensure_client_reuses_live_client(monkeypatch):
     monkeypatch.setattr(session, "_client", alive)
     made = _install_client_factory(monkeypatch)
 
-    assert session._ensure_client() is alive
+    assert session.ensure_client() is alive
     assert alive.probed == 1, "живой клиент должен быть проверен вызовом"
     assert made == [], "живой клиент пересоздавать нельзя"
 
@@ -471,7 +471,7 @@ async def test_ensure_project_reports_dead_com(monkeypatch):
     """Мёртвый COM виден и инструменту, который проект не создаёт.
 
     Смерть `mmain.exe` переподключали только `create_project`, `open_project` и
-    `status`: остальные шли через `_ensure_project()` мимо пробника и отдавали
+    `status`: остальные шли через `ensure_project()` мимо пробника и отдавали
     сырой `ComCallError` из недр библиотеки. Теперь смерть видна и здесь: отказ
     называет причину и рецепт, а состояние сессии сброшено — иначе повтор
     подхватил бы тот же мёртвый прокси, и отказывали бы все COM-инструменты.
@@ -479,17 +479,17 @@ async def test_ensure_project_reports_dead_com(monkeypatch):
 
     monkeypatch.setattr(session, "_client", _DeadClient())
     monkeypatch.setattr(session, "_project", _DeadProject())
-    session._WIRES.append(_FakeWire(7))
+    session.WIRES.append(_FakeWire(7))
 
     text = await _error("list_blocks", {})
 
     assert "потеряно" in text, "отказ обязан называть причину, а не молчать"
     assert "create_project" in text, "рецепт должен быть исполним"
-    assert session._project is None
-    assert session._client is None
-    assert session._WIRES == [], "линии мёртвого проекта сбрасываются с ним"
+    assert session.current_project() is None
+    assert session.current_client() is None
+    assert session.WIRES == [], "линии мёртвого проекта сбрасываются с ним"
     with pytest.raises(ToolError, match="Нет открытого проекта"):
-        session._ensure_project()
+        session.ensure_project()
 
 
 def test_ensure_client_refuses_external_session(monkeypatch):
@@ -508,14 +508,14 @@ def test_ensure_client_refuses_external_session(monkeypatch):
                                    ownership=SessionOwnership.EXTERNAL)
 
     with pytest.raises(ToolError) as excinfo:
-        session._ensure_client()
+        session.ensure_client()
 
     text = str(excinfo.value)
     assert "ownership=external" in text, "отказ обязан назвать владение"
     assert "не наша" in text
     assert "Закройте SimInTech" in text, "нужен исполнимый рецепт"
     assert made and made[0].disconnected, "кандидата обязаны отпустить"
-    assert session._client is None, "чужой клиент не должен осесть в сессии"
+    assert session.current_client() is None, "чужой клиент не должен осесть в сессии"
 
 
 def test_ensure_client_refuses_unknown_session(monkeypatch):
@@ -527,7 +527,7 @@ def test_ensure_client_refuses_unknown_session(monkeypatch):
                                    ownership=SessionOwnership.UNKNOWN)
 
     with pytest.raises(ToolError) as excinfo:
-        session._ensure_client()
+        session.ensure_client()
 
     text = str(excinfo.value)
     assert "ownership=unknown" in text
@@ -536,4 +536,4 @@ def test_ensure_client_refuses_unknown_session(monkeypatch):
     assert "Закройте SimInTech" not in text, (
         "рецепт EXTERNAL на UNKNOWN — тупик (ревью #41)")
     assert made and made[0].disconnected
-    assert session._client is None
+    assert session.current_client() is None

@@ -21,9 +21,9 @@ def test_com_threaded_uses_single_dedicated_thread():
     из другого потока даёт «Объект не подключен к серверу». Проверено на
     реальном SimInTech.
     """
-    from simintech_mcp.runtime import _com_threaded
+    from simintech_mcp.runtime import com_threaded
 
-    @_com_threaded
+    @com_threaded
     def whoami():
         import threading
         return threading.get_ident()
@@ -37,21 +37,21 @@ def test_com_threaded_returns_result_and_wraps_errors():
     Раньше инструменты сообщали об ошибке строкой «ERROR: …», и клиент,
     доверяющий флагу `isError`, видел 100% успеха.
     """
-    from simintech_mcp.runtime import _com_threaded
+    from simintech_mcp.runtime import com_threaded
 
-    @_com_threaded
+    @com_threaded
     def add(a, b):
         return a + b
 
-    @_com_threaded
+    @com_threaded
     def boom():
         raise ValueError("нет проекта")
 
-    @_com_threaded
+    @com_threaded
     def prose_error():
         return "ERROR: блока нет"
 
-    @_com_threaded
+    @com_threaded
     def ok_message():
         return "всё хорошо"
 
@@ -69,7 +69,7 @@ def test_com_threaded_times_out_instead_of_hanging(monkeypatch):
 
     monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
 
-    @runtime._com_threaded
+    @runtime.com_threaded
     def slow():
         _time.sleep(0.3)
         return "поздно"
@@ -87,9 +87,9 @@ def test_com_threaded_times_out_instead_of_hanging(monkeypatch):
 
 def test_com_threaded_preserves_signature():
     """functools.wraps сохраняет сигнатуру — иначе FastMCP не увидит аргументы."""
-    from simintech_mcp.runtime import _com_threaded
+    from simintech_mcp.runtime import com_threaded
 
-    @_com_threaded
+    @com_threaded
     def sample(name: str, count: int = 1) -> str:
         return name * count
 
@@ -104,11 +104,11 @@ def test_mutating_tool_response_names_the_project():
     правка» иначе нет ни одной видимой точки, и импорт уходит не в тот проект
     молча (живой случай 01.10.2026).
     """
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(_WireProject({}, project_id=9),
-                         source_path=r"C:\w\Model.prt")
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(_WireProject({}, project_id=9),
+                        source_path=r"C:\w\Model.prt")
     try:
-        @runtime._com_threaded(mutates_project=True)
+        @runtime.com_threaded(mutates_project=True)
         def tool() -> str:
             return "Правка сделана"
 
@@ -117,13 +117,13 @@ def test_mutating_tool_response_names_the_project():
                           "Не сохранено: `save_project` запишет, "
                           "`reload_project` откатит.")
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 def test_plain_response_gets_no_mutation_note():
     """Инструмент без флага хвоста не получает: «внесены» было бы ложью."""
 
-    @runtime._com_threaded
+    @runtime.com_threaded
     def tool() -> str:
         return "Чтение сделано"
 
@@ -132,16 +132,16 @@ def test_plain_response_gets_no_mutation_note():
 
 def test_mutation_note_is_empty_without_project():
     """Без проекта хвост пуст, а не «внесены в None»."""
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(None)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(None)
     try:
-        @runtime._com_threaded(mutates_project=True)
+        @runtime.com_threaded(mutates_project=True)
         def tool() -> str:
             return "ok"
 
         assert tool() == "ok"
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 def test_log_event_writes_json_lines(monkeypatch, tmp_path):

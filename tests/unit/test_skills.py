@@ -28,7 +28,7 @@ def test_skills_missing_message_without_env(monkeypatch):
 
     monkeypatch.delenv(skills.SKILLS_DIR_ENV, raising=False)
 
-    text = skills._skills_missing_message()
+    text = skills.skills_missing_message()
 
     assert skills.SKILLS_DIR_ENV in text
     assert "Задайте каталог" in text
