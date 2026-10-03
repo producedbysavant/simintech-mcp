@@ -44,12 +44,12 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import overlaps, rect_of
-from .page_script import _fresh_name
+from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
 #: пробах: дескриптор моста телу недоступен по имени (он назван случайной
 #: частью метки), поэтому тело открывает файл само, а контур пишет маркеры в
-#: свой. Полные имена уникальны на вызов (`page_script._fresh_name`, тот же
+#: свой. Полные имена уникальны на вызов (`page_script.fresh_name`, тот же
 #: приём, что в #40): запертый прошлым обрывом файл (WinError 32) новому
 #: вызову не мешает и не может быть выдан за отчёт этого вызова.
 REPORT_FILE = "check-model-report.txt"
@@ -104,17 +104,17 @@ _KIND_TEXT = {
 }
 
 
-def _bridge() -> ScriptBridge:
+def bridge() -> ScriptBridge:
     """Мост для текущего проекта — общая часть с соседними инструментами."""
-    return ScriptBridge(session._ensure_client(), session._ensure_project().id)
+    return ScriptBridge(session.ensure_client(), session.ensure_project().id)
 
 
 def _rect_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), _fresh_name(REPORT_FILE)))
+    return Path(os.path.join(sandbox.output_root(), fresh_name(REPORT_FILE)))
 
 
 def _marker_path() -> Path:
-    return Path(os.path.join(sandbox.output_root(), _fresh_name(MARKER_FILE)))
+    return Path(os.path.join(sandbox.output_root(), fresh_name(MARKER_FILE)))
 
 
 #: Пути контурных файлов **предыдущего** вызова этой сессии. Имена уникальны
@@ -230,7 +230,7 @@ def _parse_point(text: str) -> Optional[Tuple[float, float]]:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def check_model_layout() -> str:
     """Проверить оформление текущей страницы: наложения, подписи, порты, связи.
 
@@ -262,7 +262,7 @@ def check_model_layout() -> str:
     Ничего не меняет в модели: контур ставит свой скрипт и возвращает прежний
     (`run_page_script` — тот же механизм и та же гарантия).
     """
-    project = session._ensure_project()
+    project = session.ensure_project()
     page = project.get_current_page()
 
     # ── Слой COM: габариты, подписи ────────────────────────────────
@@ -344,7 +344,7 @@ def check_model_layout() -> str:
     _PREVIOUS_PATHS.extend((report_path, marker_path))
     script = _check_script(report_path, port_blocks, wire_ids)
     try:
-        run = _bridge().run_page_script(script, marker_path)
+        run = bridge().run_page_script(script, marker_path)
     except ScriptBridgeError as exc:
         raise ToolError(
             f"контур проверки не отработал: {exc}. Проверка портов и концов "
@@ -359,9 +359,9 @@ def check_model_layout() -> str:
     unparsed: List[str] = []
     unparsed_total = 0
     done = False
-    data, _truncated, error = sandbox._load_result_file(
+    data, _truncated, error = sandbox.load_result_file(
         str(report_path), sandbox.MAX_OUTPUT_BYTES,
-        sandbox._MISSING_RESULT_FILE)
+        sandbox.MISSING_RESULT_FILE)
     if error:
         contour_line += (f" Отчёт контура не прочитан: {error} — пустые порты "
                          f"и связи не проверены.")

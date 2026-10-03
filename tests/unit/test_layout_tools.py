@@ -125,7 +125,7 @@ async def test_connect_only_remembers_wire(monkeypatch):
     assert "Соединено" in text
     wire = src.wires[0][0]
     assert wire.normalized == 0, "линия трассирована до расстановки блоков"
-    assert session._WIRES == [(wire, "k_0", 0, "Integrator_0", 0)], \
+    assert session.WIRES == [(wire, "k_0", 0, "Integrator_0", 0)], \
         "линия не запомнена вместе с концами для выравнивания"
 
 
@@ -146,7 +146,7 @@ async def test_connect_refuses_zero_wire_id(monkeypatch):
     text = await _error("connect", {"src": "k_0", "dst": "Integrator_0"})
 
     assert "id=0" in text
-    assert session._WIRES == [], "отказ по нулевому id, а линия запомнена"
+    assert session.WIRES == [], "отказ по нулевому id, а линия запомнена"
 
 
 @pytest.mark.anyio
@@ -175,7 +175,7 @@ async def test_layout_place_aligns_port_heights(monkeypatch):
 async def test_layout_place_aligns_ports_addressed_by_id(monkeypatch):
     """Блоки адресованы id, а `connect` запомнил имена — выравнивание всё равно.
 
-    `block_ids` принимает и числовые id, но `_WIRES` хранит имена блоков: без
+    `block_ids` принимает и числовые id, но `WIRES` хранит имена блоков: без
     перевода имён в токены `centers` совпадений не находил, и выравнивание
     молча пропускалось (ни счётчика, ни строки ВНИМАНИЕ).
     """
@@ -232,7 +232,7 @@ async def test_layout_place_routes_wires_of_opened_project(monkeypatch):
     dst = _ConnectingBlock("kx_0", 2)
     events = _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
     wire = src.connect(dst)          # линия из файла: `connect` не вызывался
-    assert session._WIRES == []
+    assert session.WIRES == []
 
     text = _text(await mcp.call_tool(
         "layout_place",
@@ -290,7 +290,7 @@ async def test_layout_place_bare_ignores_stale_wires(monkeypatch):
     """
     src = _ConnectingBlock("k_0", 1)
     _install_wire_project(monkeypatch, {"k_0": src})
-    session._WIRES.append((None, "k_0", 0, "исчез_0", 0))
+    session.WIRES.append((None, "k_0", 0, "исчез_0", 0))
 
     text = _text(await mcp.call_tool("layout_place", {}))
 
@@ -564,7 +564,7 @@ class _BridgeReplies:
 def _install_disconnect(monkeypatch, tmp_path, bridge, blocks):
     """Подменить проект, клиента и мост разом.
 
-    Клиент обязателен: без него `_ensure_client` ушёл бы в настоящий COM,
+    Клиент обязателен: без него `ensure_client` ушёл бы в настоящий COM,
     которого на Linux нет.
     """
     from simintech_mcp.tools import page_script
@@ -620,7 +620,7 @@ async def test_disconnect_wire_removes_line_and_forgets_it(monkeypatch, tmp_path
     src.wires.append((wire, dst, 0, 0))
     spare = _FakeWire(78)
     other.wires.append((spare, dst, 0, 1))
-    saved = list(session._WIRES)
+    saved = list(session.WIRES)
 
     class _Drops(_BridgeReplies):
         lines = ["removed=77 pw=0"]
@@ -631,19 +631,19 @@ async def test_disconnect_wire_removes_line_and_forgets_it(monkeypatch, tmp_path
                             {"k_0": src, "kx_0": other, "Integrator_0": dst})
         # Записи кладутся после установки: `_install_wire_project` чистит
         # реестр (он общий для сессии).
-        session._WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
-        session._WIRES.append((spare, "kx_0", 0, "Integrator_0", 1))
+        session.WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
+        session.WIRES.append((spare, "kx_0", 0, "Integrator_0", 1))
 
         text = _text(await mcp.call_tool(
             "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
 
         assert "снята (wire=77)" in text
         assert "Линий связи на странице: 2 → 1" in text
-        assert [record[0] for record in session._WIRES] == [spare], (
+        assert [record[0] for record in session.WIRES] == [spare], (
             "запись о снятой линии осталась в реестре (или пропала чужая)")
         assert _Drops.body.count("findstartport") == 1
     finally:
-        session._WIRES[:] = saved
+        session.WIRES[:] = saved
 
 
 @pytest.mark.anyio
@@ -663,7 +663,7 @@ async def test_disconnect_wire_refuses_when_input_has_no_line(monkeypatch, tmp_p
 
     assert "не приходит ни одной линии" in message
     assert "не изменён" in message
-    assert session._WIRES == []
+    assert session.WIRES == []
 
 
 @pytest.mark.anyio
@@ -728,7 +728,7 @@ async def test_disconnect_wire_forgets_every_vanished_line(monkeypatch, tmp_path
     first, second = _FakeWire(77), _FakeWire(78)
     src.wires.append((first, dst, 0, 0))
     dst.wires.append((second, src, 0, 0))
-    saved = list(session._WIRES)
+    saved = list(session.WIRES)
 
     class _Bundle(_BridgeReplies):
         lines = ["removed=77 pw=0"]
@@ -743,17 +743,17 @@ async def test_disconnect_wire_forgets_every_vanished_line(monkeypatch, tmp_path
     try:
         _install_disconnect(monkeypatch, tmp_path, _Bundle,
                             {"k_0": src, "Integrator_0": dst})
-        session._WIRES.append((first, "k_0", 0, "Integrator_0", 0))
-        session._WIRES.append((second, "Integrator_0", 0, "k_0", 0))
+        session.WIRES.append((first, "k_0", 0, "Integrator_0", 0))
+        session.WIRES.append((second, "Integrator_0", 0, "k_0", 0))
 
         text = _text(await mcp.call_tool(
             "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
 
         assert "Линий связи на странице: 2 → 0" in text
         assert "Исчезло больше одной линии" in text
-        assert session._WIRES == [], "реестр держит записи исчезнувших линий"
+        assert session.WIRES == [], "реестр держит записи исчезнувших линий"
     finally:
-        session._WIRES[:] = saved
+        session.WIRES[:] = saved
 
 
 @pytest.mark.anyio
@@ -829,7 +829,7 @@ async def test_disconnect_wire_does_not_claim_success_after_abort(
     dst = _ConnectingBlock("Integrator_0", 2)
     wire = _FakeWire(77)
     src.wires.append((wire, dst, 0, 0))
-    saved = list(session._WIRES)
+    saved = list(session.WIRES)
 
     class _Aborted(_BridgeReplies):
         kind = "aborted"
@@ -839,7 +839,7 @@ async def test_disconnect_wire_does_not_claim_success_after_abort(
     try:
         _install_disconnect(monkeypatch, tmp_path, _Aborted,
                             {"k_0": src, "Integrator_0": dst})
-        session._WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
+        session.WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
 
         message = await _error("disconnect_wire",
                                {"src": "k_0", "dst": "Integrator_0"})
@@ -847,10 +847,10 @@ async def test_disconnect_wire_does_not_claim_success_after_abort(
         assert "не подтверждено" in message
         assert "оборвалось" in message
         assert "list_wires" in message, "отказ не говорит, чем проверить схему"
-        assert session._WIRES == [], \
+        assert session.WIRES == [], \
             "запись реально исчезнувшей линии осталась в реестре"
     finally:
-        session._WIRES[:] = saved
+        session.WIRES[:] = saved
 
 
 @pytest.mark.anyio
@@ -905,7 +905,7 @@ async def test_disconnect_wire_refuses_when_wire_count_did_not_drop(
                            {"src": "k_0", "dst": "Integrator_0"})
 
     assert "не уменьшилось" in message
-    assert session._WIRES == [], "реестр тронут без подтверждения"
+    assert session.WIRES == [], "реестр тронут без подтверждения"
 
 
 @pytest.mark.anyio
@@ -924,7 +924,7 @@ async def test_disconnect_wire_says_when_wire_list_is_unreadable(
     def _boom():
         raise RuntimeError("COM: перечисление объектов не прошло")
 
-    session._project.page.get_wires = _boom
+    session.current_project().page.get_wires = _boom
 
     text = _text(await mcp.call_tool(
         "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))

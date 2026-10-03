@@ -1,6 +1,6 @@
 """Инструмент справки: что сервер умеет и куда пишет результаты.
 
-Печатает текущий каталог результатов (`sandbox._safe_output_root`) — иначе
+Печатает текущий каталог результатов (`sandbox.safe_output_root`) — иначе
 клиент не знает, где искать файл блока «В файл», и не может передать путь
 `read_output_file`.
 
@@ -12,7 +12,7 @@
 отсутствовать, а раздел «Графические и системные» (объекты, порты, линии)
 заменяет отсутствующие COM-методы.
 
-COM не трогает, поэтому идёт под `_plain_tool`: под `_com_threaded` справка
+COM не трогает, поэтому идёт под `plain_tool`: под `com_threaded` справка
 вставала бы в очередь за единственным COM-потоком и при занятом `mmain.exe`
 сама упиралась бы в `COM_CALL_TIMEOUT`, хотя ей этого не нужно.
 """
@@ -30,7 +30,7 @@ from ..app import mcp
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def help_text() -> str:
     """Справка: порядок работы и где взять список инструментов.
 
@@ -61,7 +61,7 @@ def help_text() -> str:
         "текущий проект из файла без сохранения).\n"
         "\n"
         f"Результаты читаются только из каталога:\n"
-        f"  {sandbox._safe_output_root()}\n"
+        f"  {sandbox.safe_output_root()}\n"
         f"Блок «В файл» должен писать внутрь него (свойство filename); каталог\n"
         f"переопределяется переменной SIMINTECH_OUTPUT_DIR.\n"
         "\n"
@@ -245,7 +245,7 @@ def _render_matches(matches: List[language_api.LanguageFunction],
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def search_language_functions(
         query: str = "",
         limit: int = DEFAULT_LANGUAGE_RESULTS) -> str:
@@ -317,7 +317,7 @@ def search_language_functions(
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def get_language_function(name: str) -> str:
     """Карточка функции встроенного языка: синтаксис, аргументы, назначение.
 

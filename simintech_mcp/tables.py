@@ -43,7 +43,7 @@ class NumericTable(NamedTuple):
     partial_dropped: bool   # последняя строка обрезана и отброшена
 
 
-def _read_numeric_table(data: bytes, truncated: bool) -> NumericTable:
+def read_numeric_table(data: bytes, truncated: bool) -> NumericTable:
     """Разобрать содержимое файла результата — чистый разбор, без ввода-вывода.
 
     Разделитель — любой пробельный (SimInTech пишет табуляцию, но таблица
@@ -54,7 +54,7 @@ def _read_numeric_table(data: bytes, truncated: bool) -> NumericTable:
     последняя строка не разбирается — см. `partial_dropped`.
 
     Args:
-        data: прочитанное содержимое (см. `sandbox._load_result_file`).
+        data: прочитанное содержимое (см. `sandbox.load_result_file`).
         truncated: файл обрезан пределом чтения — тогда последняя строка
             может быть неполной.
     """

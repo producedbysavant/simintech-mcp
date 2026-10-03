@@ -5,7 +5,7 @@
 воспользовался: шаги собирали не ПИД — `kd` применялся к обычному
 «Усилителю», дифференцирующего звена не было вовсе, — а расчёт при этом шёл,
 и ошибку не диагностировало ничто. Поэтому проверяется текст промпта, а не
-факт его регистрации: имена параметров проходят тот же `catalog._check_params`,
+факт его регистрации: имена параметров проходят тот же `catalog.check_params`,
 что и вызовы инструментов, число входов «Сумматора» сверяется с длиной его
 `a`, а время расчёта — с `to_time`.
 """
@@ -108,7 +108,7 @@ def _gain(step: _Step) -> float:
 async def test_prompt_params_pass_catalog_check(name: str) -> None:
     """Имена параметров из промпта проходят ту же проверку, что вызов COM.
 
-    `catalog._check_params` — рабочий страж `add_block`/`set_block_param`: он
+    `catalog.check_params` — рабочий страж `add_block`/`set_block_param`: он
     отвергает неизвестное имя и запись в вычисляемый параметр. Здесь он же
     применяется к именам из шаблона, чтобы опечатка в промпте не ушла агенту
     молчаливой записью в никуда.
@@ -119,8 +119,8 @@ async def test_prompt_params_pass_catalog_check(name: str) -> None:
     for step in _parse_steps(await _render(name, {})):
         assert catalog_blocks.has(step.class_name), (
             f"{name}: класса '{step.class_name}' нет в каталоге блоков")
-        catalog._check_params(step.class_name, list(step.props),
-                              allow_unknown=False, notes=[])
+        catalog.check_params(step.class_name, list(step.props),
+                             allow_unknown=False, notes=[])
 
 
 @pytest.mark.anyio

@@ -47,7 +47,7 @@ async def test_create_project_uses_template_and_sets_end_time(monkeypatch):
     assert opened == [project], "проект должен создаваться из шаблона"
     assert project.end_time == 2.5
     assert "2.5 с" in text
-    assert session._project is project
+    assert session.current_project() is project
 
 
 @pytest.mark.anyio
@@ -80,10 +80,10 @@ async def test_open_project_names_file_and_reports_switch(monkeypatch, tmp_path)
     opened = _WireProject({}, project_id=17)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(lambda client, path: opened))
-    monkeypatch.setattr(session, "_ensure_client", lambda: object())
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(_WireProject({}, project_id=12),
-                         source_path=r"C:\a\CoolInt.prt")
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(_WireProject({}, project_id=12),
+                        source_path=r"C:\a\CoolInt.prt")
     try:
         text = _text(await mcp.call_tool(
             "open_project", {"path": str(target)}))
@@ -91,9 +91,9 @@ async def test_open_project_names_file_and_reports_switch(monkeypatch, tmp_path)
         assert "Проект открыт: «sub_TractionState.prt» (id=17)" in text
         assert "СМЕНИЛСЯ" in text
         assert "было «CoolInt.prt» (id=12)" in text
-        assert session._project is opened
+        assert session.current_project() is opened
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -113,7 +113,7 @@ async def test_open_project_refuses_missing_file_before_com(
 
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(_must_not_be_called))
-    monkeypatch.setattr(session, "_ensure_client", _must_not_be_called)
+    monkeypatch.setattr(session, "ensure_client", _must_not_be_called)
 
     text = await _error(
         "open_project", {"path": str(tmp_path / "nope.prt")})
@@ -135,7 +135,7 @@ async def test_open_project_requires_absolute_path(monkeypatch):
 
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(_must_not_be_called))
-    monkeypatch.setattr(session, "_ensure_client", _must_not_be_called)
+    monkeypatch.setattr(session, "ensure_client", _must_not_be_called)
 
     text = await _error("open_project", {"path": "model.prt"})
 
@@ -164,15 +164,15 @@ async def test_open_project_resolves_path_before_com(monkeypatch, tmp_path):
 
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(fake_open))
-    monkeypatch.setattr(session, "_ensure_client", lambda: object())
-    prev_project, prev_path = session._project, session._project_path
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    prev_project, prev_path = session.current_project(), session._project_path
     try:
         _text(await mcp.call_tool("open_project", {"path": str(tricky)}))
 
         assert seen["path"] == str(target)
-        assert session._project is opened
+        assert session.current_project() is opened
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -184,16 +184,16 @@ async def test_mutating_tool_marks_unsaved(monkeypatch):
     (`runtime._append_mutation_note`): заведи счёт инструменты сами, новый
     мутирующий выпал бы из него молча.
     """
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(_TemplateProject())
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(_TemplateProject())
     try:
-        assert not session._unsaved_changes()
+        assert not session.unsaved_changes()
 
         _text(await mcp.call_tool("set_calc_time", {"seconds": 1.0}))
 
-        assert session._unsaved_changes()
+        assert session.unsaved_changes()
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 # ─── reload_project (issue #18, п.3) ──────────────────────────────
@@ -210,10 +210,10 @@ def _install_reload(monkeypatch, tmp_path):
     opened = _WireProject({}, project_id=17)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(lambda client, path: opened))
-    monkeypatch.setattr(session, "_ensure_client", lambda: object())
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
     previous = _WireProject({}, project_id=12)
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(previous, source_path=str(target))
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous, source_path=str(target))
     return target, previous, opened, prev_project, prev_path, \
         _must_not_be_called
 
@@ -236,9 +236,9 @@ async def test_reload_project_reopens_from_file(monkeypatch, tmp_path):
         assert "стало «CoolInt.prt» (id=17)" in text
         assert "Несохранённых правок не было" in text
         assert previous.closed, "прежний экземпляр закрыт"
-        assert session._project is opened
+        assert session.current_project() is opened
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -251,13 +251,13 @@ async def test_reload_project_says_when_edits_were_dropped(monkeypatch,
     """
     target, previous, opened, prev_project, prev_path, _ = \
         _install_reload(monkeypatch, tmp_path)
-    session._mark_mutated()
+    session.mark_mutated()
     try:
         text = _text(await mcp.call_tool("reload_project", {}))
 
         assert "Несохранённые правки прежнего экземпляра отброшены." in text
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -267,13 +267,13 @@ async def test_reload_project_refuses_template_project(monkeypatch, tmp_path):
         _install_reload(monkeypatch, tmp_path)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(must_not))
-    session._set_project(previous)  # source_path=None — проект из шаблона
+    session.set_project(previous)  # source_path=None — проект из шаблона
     try:
         text = await _error("reload_project", {})
 
         assert "из шаблона" in text
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -283,14 +283,14 @@ async def test_reload_project_refuses_pack_member(monkeypatch, tmp_path):
         _install_reload(monkeypatch, tmp_path)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(must_not))
-    monkeypatch.setattr(session, "_pack_membership", lambda: True)
+    monkeypatch.setattr(session, "pack_membership", lambda: True)
     try:
         text = await _error("reload_project", {})
 
         assert "участник пакета" in text
         assert "open_pack" in text
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -300,13 +300,13 @@ async def test_reload_project_refuses_missing_file(monkeypatch, tmp_path):
         _install_reload(monkeypatch, tmp_path)
     monkeypatch.setattr(project_tools.Project, "open",
                         staticmethod(must_not))
-    session._set_project(previous, source_path=str(tmp_path / "уехал.prt"))
+    session.set_project(previous, source_path=str(tmp_path / "уехал.prt"))
     try:
         text = await _error("reload_project", {})
 
         assert "не найден" in text
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -328,9 +328,9 @@ async def test_create_project_reports_switch_from_previous(monkeypatch):
     """Создание поверх открытого проекта называет смену (issue #18)."""
 
     _project_obj, _opened = _install_fake_template(monkeypatch)
-    prev_project, prev_path = session._project, session._project_path
-    session._set_project(_WireProject({}, project_id=12),
-                         source_path=r"C:\a\CoolInt.prt")
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(_WireProject({}, project_id=12),
+                        source_path=r"C:\a\CoolInt.prt")
     try:
         text = _text(await mcp.call_tool("create_project", {}))
 
@@ -338,7 +338,7 @@ async def test_create_project_reports_switch_from_previous(monkeypatch):
         assert "было «CoolInt.prt» (id=12)" in text
         assert "стало «проект из шаблона» (id=5)" in text
     finally:
-        session._set_project(prev_project, source_path=prev_path)
+        session.set_project(prev_project, source_path=prev_path)
 
 
 @pytest.mark.anyio
@@ -566,7 +566,7 @@ def test_status_refuses_when_com_unavailable(monkeypatch):
     def unavailable():
         raise RuntimeError("COM не зарегистрирован")
 
-    monkeypatch.setattr(session, "_ensure_client", unavailable)
+    monkeypatch.setattr(session, "ensure_client", unavailable)
 
     with pytest.raises(ToolError, match="недоступен"):
         project_tools.status()
@@ -581,7 +581,7 @@ def test_status_names_ownership(monkeypatch):
     """
 
     monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(session, "_ensure_client", lambda: _OwnedClientStub())
+    monkeypatch.setattr(session, "ensure_client", lambda: _OwnedClientStub())
 
     text = project_tools.status()
 

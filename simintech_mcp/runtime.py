@@ -49,8 +49,8 @@ COM_CALL_TIMEOUT = 120.0
 ERROR_PREFIX = "ERROR:"
 
 #: Метка на обёртке инструмента: `True` — вызов идёт через COM-поток
-#: (`_com_threaded`), `False` — без него (`_plain_tool`). Наличия `__wrapped__`
-#: для проверки мало: инструмент, ошибочно помеченный `_plain_tool`, обёрнут
+#: (`com_threaded`), `False` — без него (`plain_tool`). Наличия `__wrapped__`
+#: для проверки мало: инструмент, ошибочно помеченный `plain_tool`, обёрнут
 #: ровно так же, но COM-вызов из чужого потока даёт `CO_E_OBJNOTCONNECTED`, а
 #: на Linux-тестах (COM нет вовсе) не проявляется. Метку ставит сам декоратор,
 #: поэтому тест поверхности читает фактически применённый, а не любой.
@@ -58,7 +58,7 @@ COM_THREAD_MARK = "_simintech_com_threaded"
 
 #: Метка мутирующего инструмента: `True` — к успешному ответу обвязка
 #: добавляет адрес правки («Изменения внесены в: …»,
-#: `session._mutation_note`). Метку ставит декоратор по флагу
+#: `session.mutation_note`). Метку ставит декоратор по флагу
 #: `mutates_project`, поэтому тест поверхности видит фактический контракт:
 #: забытый флаг вернул бы слепые ответы — ровно дыра issue #18 (импорт ушёл
 #: не в тот проект, а ответ не назвал, куда именно).
@@ -106,7 +106,7 @@ def _append_mutation_note(result: Any) -> Any:
     """Дописать к успешному ответу правки адресата: «Изменения внесены в: …».
 
     Здесь же сессия узнаёт, что у текущего проекта есть **несохранённые**
-    правки (`session._mark_mutated`): успешная правка — единственный признак,
+    правки (`session.mark_mutated`): успешная правка — единственный признак,
     и точка эта одна на все мутирующие инструменты (issue #18) — заведи её
     инструменты сами, новый мутирующий выпал бы из счёта.
 
@@ -118,8 +118,8 @@ def _append_mutation_note(result: Any) -> Any:
     if not isinstance(result, str):
         return result
     from . import session
-    session._mark_mutated()
-    note = session._mutation_note()
+    session.mark_mutated()
+    note = session.mutation_note()
     return result + note if note else result
 
 
@@ -208,8 +208,8 @@ def _instrumented(fn: Callable[..., Any],
     return wrapper
 
 
-def _com_threaded(fn: Callable[..., Any] | None = None, *,
-                  mutates_project: bool = False) -> Callable[..., Any]:
+def com_threaded(fn: Callable[..., Any] | None = None, *,
+                 mutates_project: bool = False) -> Callable[..., Any]:
     """Выполнить инструмент в выделенном COM-потоке.
 
     Делает три вещи, каждая из которых обязательна:
@@ -219,7 +219,7 @@ def _com_threaded(fn: Callable[..., Any] | None = None, *,
     * приводит отказ к `ToolError`, то есть к `isError` в ответе.
 
     Плюс контракт «ответ правки называет проект»: при `mutates_project=True`
-    к успешному ответу добавляется адрес (`session._mutation_note`). Хвост
+    к успешному ответу добавляется адрес (`session.mutation_note`). Хвост
     ставит обвязка, а не сам инструмент: текущий проект — скрытое состояние
     сессии, и новый мутирующий инструмент иначе молча выпал бы из контракта
     (issue #18 — импорт ушёл не в тот проект, а ответ не назвал, куда).
@@ -239,9 +239,9 @@ def _com_threaded(fn: Callable[..., Any] | None = None, *,
     Поэтому рецепт в тексте отказа называет оба шага.
     """
     if fn is None:
-        # Декоратор вызван с флагом (`@_com_threaded(mutates_project=True)`):
+        # Декоратор вызван с флагом (`@com_threaded(mutates_project=True)`):
         # вернуть обёртку, которая дождётся самой функции.
-        return functools.partial(_com_threaded,
+        return functools.partial(com_threaded,
                                  mutates_project=mutates_project)
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
@@ -268,8 +268,8 @@ def _com_threaded(fn: Callable[..., Any] | None = None, *,
     return wrapper
 
 
-def _plain_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Как `_com_threaded`, но без COM-потока — для инструментов без COM.
+def plain_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Как `com_threaded`, но без COM-потока — для инструментов без COM.
 
     Разбор сохранённого проекта, каталог и справка COM не трогают, поэтому
     выделенный поток им не нужен (и на Linux его нет). Контракт отказа при

@@ -203,7 +203,7 @@ def test_resource_skills_marks_unreadable_skill(monkeypatch, tmp_path):
     def unreadable(path, max_bytes):
         raise OSError("нет доступа")
 
-    monkeypatch.setattr(sandbox, "_read_bounded", unreadable)
+    monkeypatch.setattr(sandbox, "read_bounded", unreadable)
 
     assert "описание недоступно" in resources.resource_skills()
 
@@ -216,7 +216,7 @@ def test_resource_status_returns_text_on_failure(monkeypatch):
     def unavailable():
         raise RuntimeError("COM не зарегистрирован")
 
-    monkeypatch.setattr(session, "_ensure_client", unavailable)
+    monkeypatch.setattr(session, "ensure_client", unavailable)
 
     assert "недоступен" in resources.resource_status()
 

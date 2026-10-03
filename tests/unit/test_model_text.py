@@ -317,7 +317,7 @@ class _BridgeAddsWires(_BridgeRunsContour):
 
     def run_page_script(self, body, result_path):
         if "createmodel(" in body:
-            session._ensure_project()._wires.extend([object(), object()])
+            session.ensure_project()._wires.extend([object(), object()])
         return super().run_page_script(body, result_path)
 
 

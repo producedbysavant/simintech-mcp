@@ -68,7 +68,7 @@ def test_read_bounded_reads_no_more_than_limit(tmp_path):
     path = tmp_path / "big.bin"
     path.write_bytes(b"x" * 5000)
 
-    data, truncated = sandbox._read_bounded(str(path), 100)
+    data, truncated = sandbox.read_bounded(str(path), 100)
 
     assert truncated is True
     assert len(data) == 100, "прочитано должно быть ровно 100 байт"
@@ -80,4 +80,4 @@ def test_read_bounded_keeps_small_file_intact(tmp_path):
     path = tmp_path / "small.bin"
     path.write_bytes(b"abc")
 
-    assert sandbox._read_bounded(str(path), 100) == (b"abc", False)
+    assert sandbox.read_bounded(str(path), 100) == (b"abc", False)

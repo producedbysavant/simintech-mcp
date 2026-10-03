@@ -1,6 +1,6 @@
 """Инструменты жизненного цикла проекта: открыть, сохранить, закрыть.
 
-`create_project` и `open_project` идут через `session._replace_project`, который
+`create_project` и `open_project` идут через `session.replace_project`, который
 закрывает предыдущий проект: иначе они копились бы внутри `mmain.exe`.
 """
 
@@ -22,20 +22,20 @@ from ..app import mcp
 # ─── Подключение ──────────────────────────────────────────────────
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def status() -> str:
     """Проверить доступность COM-сервера SimInTech (Windows).
 
     Ответ называет и владение сессией: подключение принимается только к
     собственному процессу (`simintech-code` v0.11.0), и `ownership=owned`
     это подтверждает. Чужой (EXTERNAL) или неподтверждённый (UNKNOWN)
-    экземпляр — отказ с объяснением (`session._require_owned`), а не работа
+    экземпляр — отказ с объяснением (гейт владения в `session`), а не работа
     в чужой сессии.
     """
     if sys.platform != "win32":
         return "COM SimInTech доступен только на Windows"
     try:
-        c = session._ensure_client()
+        c = session.ensure_client()
         pid = c.get_process_id()
         return (f"SimInTech подключён (PID={pid}, "
                 f"ownership={c.ownership.value})")
@@ -50,7 +50,7 @@ def status() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def disconnect() -> str:
     """Завершить сессию: закрыть пакет, проект и снять свой процесс.
 
@@ -67,22 +67,22 @@ def disconnect() -> str:
     (замеры 02.10.2026), поэтому сессия ждёт уход процесса сессии и при
     необходимости завершает ровно его PID. Это процесс, поднятый самим
     сервером: подключение к чужому экземпляру отсекается гейтом владения
-    ещё на `_ensure_client`. Ответ называет процесс «завершённым» только
+    ещё на `ensure_client`. Ответ называет процесс «завершённым» только
     после проверки, что он действительно исчез; иначе — предупреждение:
     `shutdown` библиотеки не сигнализирует об исчерпании попыток.
     """
-    if (session._client is None and session._project is None
-            and session._pack is None):
+    if (session.current_client() is None and session.current_project() is None
+            and session.current_pack() is None):
         return "Без изменений: соединения не было — сбрасывать нечего"
-    project = session._project
-    label = session._project_label()
-    in_pack = session._pack_membership()
-    pack = session._pack
-    pack_label = session._pack_label()
+    project = session.current_project()
+    label = session.project_label()
+    in_pack = session.pack_membership()
+    pack = session.current_pack()
+    pack_label = session.pack_label()
     # Пакет, проект и линии сбрасываются до попыток закрыть: состояние сессии
     # не должно зависеть от того, ответил ли COM.
-    session._set_pack(None)
-    session._set_project(None)
+    session.set_pack(None)
+    session.set_project(None)
     failed = ""
     closed = []
     pack_closed = False
@@ -116,10 +116,10 @@ def disconnect() -> str:
         else:
             closed.append(f"проект {label} — участие в пакете не подтверждено "
                           f"(состав не читался)")
-    if session._client is not None:
-        client = session._client
+    client = session.current_client()
+    if client is not None:
         pid = client.session_pid
-        session._client = None
+        session.clear_client()
         # Не просто disconnect: отпускание последней COM-ссылки завершает
         # сервер лишь иногда (замеры 02.10.2026 — чаще процесс остаётся
         # жить), поэтому сессия закрывается управляемо — release, ожидание
@@ -153,7 +153,7 @@ def disconnect() -> str:
 # ─── Проекты ──────────────────────────────────────────────────────
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def create_project(project_hint: str = "model",
                    end_time: Optional[float] = None) -> str:
     """Создать новый проект SimInTech из шаблона «пустой модели».
@@ -175,13 +175,13 @@ def create_project(project_hint: str = "model",
             шаблона (10 с). Меняется инструментом `set_calc_time`.
     """
     # Проверяем до открытия шаблона: иначе неверное значение оставило бы
-    # созданный проект висеть в mmain.exe — он не попал бы ни в session._project,
+    # созданный проект висеть в mmain.exe — он не попал бы ни в состояние сессии,
     # ни в закрытие.
     if end_time is not None and end_time <= 0:
         raise ToolError("end_time должен быть положительным числом секунд")
 
-    prj = Project.from_template(session._ensure_client())
-    replaced = session._replace_project(prj)
+    prj = Project.from_template(session.ensure_client())
+    replaced = session.replace_project(prj)
     if end_time is not None:
         prj.set_calc_end_time(end_time)
     tail = (f", время расчёта {end_time} с" if end_time is not None
@@ -191,7 +191,7 @@ def create_project(project_hint: str = "model",
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_calc_time(seconds: float) -> str:
     """Задать конечное время расчёта проекта (`endtime` расчётного слоя).
 
@@ -200,12 +200,12 @@ def set_calc_time(seconds: float) -> str:
     Args:
         seconds: конечное время расчёта в секундах (> 0).
     """
-    session._ensure_project().set_calc_end_time(seconds)
+    session.ensure_project().set_calc_end_time(seconds)
     return f"Время расчёта: {seconds} с"
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def open_project(path: str) -> str:
     """Открыть существующий проект SimInTech (.prt/.xprt).
 
@@ -255,13 +255,13 @@ def open_project(path: str) -> str:
             f"существовать на машине сервера (среда на такой вызов "
             f"показывает ошибку, но через COM она не видна, и инструмент "
             f"молча открыл бы пустой проект).")
-    prj = Project.open(session._ensure_client(), path)
-    replaced = session._replace_project(prj, source_path=path)
-    return f"Проект открыт: {session._project_label()}" + replaced
+    prj = Project.open(session.ensure_client(), path)
+    replaced = session.replace_project(prj, source_path=path)
+    return f"Проект открыт: {session.project_label()}" + replaced
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def reload_project() -> str:
     """Переоткрыть текущий проект из файла — откат несохранённых правок.
 
@@ -280,8 +280,8 @@ def reload_project() -> str:
     * **файл проекта не найден** — откатывать не к чему (файл мог быть
       удалён или переименован после открытия).
     """
-    session._ensure_project()
-    membership = session._pack_membership()
+    session.ensure_project()
+    membership = session.pack_membership()
     if membership is not False:
         if membership is None:
             raise ToolError(
@@ -291,12 +291,12 @@ def reload_project() -> str:
                 "закрытие исключит его из состава пакета (живой замер "
                 "01.10.2026). Повторите `list_pack_projects`.")
         raise ToolError(
-            f"Текущий проект — участник пакета {session._pack_label()}: "
+            f"Текущий проект — участник пакета {session.pack_label()}: "
             f"переоткрыть его отдельно нельзя — закрытие исключило бы его "
             f"из состава пакета (живой замер 01.10.2026). Переоткройте пакет "
             f"целиком (`close_pack`, затем `open_pack`) — это откатит всех "
             f"участников.")
-    source = session._opened_from()
+    source = session.opened_from()
     if source is None:
         raise ToolError(
             "Текущий проект создан из шаблона (файла нет) — переоткрывать "
@@ -313,9 +313,9 @@ def reload_project() -> str:
             f"(файл мог быть удалён или переименован после открытия). "
             f"Сохраните проект (`save_project`) или откройте другой "
             f"(`open_project`).")
-    had_unsaved = session._unsaved_changes()
-    prj = Project.open(session._ensure_client(), source)
-    replaced = session._replace_project(
+    had_unsaved = session.unsaved_changes()
+    prj = Project.open(session.ensure_client(), source)
+    replaced = session.replace_project(
         prj, source_path=source,
         header="ТЕКУЩИЙ ПРОЕКТ ПЕРЕОТКРЫТ ИЗ ФАЙЛА")
     tail = (" Несохранённые правки прежнего экземпляра отброшены."
@@ -325,7 +325,7 @@ def reload_project() -> str:
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def project_network_role() -> str:
     """Показать роль проекта в распределённом (сетевом) расчёте.
 
@@ -342,7 +342,7 @@ def project_network_role() -> str:
     Читается только файл рядом с открытым из файла проектом: произвольный путь
     инструмент не принимает, как и остальные инструменты чтения.
     """
-    source = session._opened_from()
+    source = session.opened_from()
     if not source:
         raise ToolError(
             "Текущий проект не открывался из файла (создан или ещё не открыт), "
@@ -380,7 +380,7 @@ def project_network_role() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_project_config() -> str:
     """Показать параметры расчётного слоя проекта.
 
@@ -396,7 +396,7 @@ def get_project_config() -> str:
     шаблона). Пустой ответ — у проекта без расчётного слоя: тогда расчёт в нём
     не идёт вообще, и это не «настройки по умолчанию», а их отсутствие.
     """
-    settings = session._ensure_project().calc_settings()
+    settings = session.ensure_project().calc_settings()
     if not settings:
         raise ToolError(
             "В проекте нет параметров расчётного слоя: сам слой отсутствует. "
@@ -407,7 +407,7 @@ def get_project_config() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_project_config(param: str, value: str) -> str:
     """Записать параметр расчётного слоя проекта (`SetLayerProp`).
 
@@ -422,7 +422,7 @@ def set_project_config(param: str, value: str) -> str:
         param: имя параметра (`endtime`, `hmin`, `intmet`, …).
         value: значение строкой — так его принимает среда.
     """
-    session._ensure_project().set_calc_setting(param, value)
+    session.ensure_project().set_calc_setting(param, value)
     return f"{param} = {value}"
 
 
@@ -578,7 +578,7 @@ def _refuse_format_extension_mismatch(path: str, binary: bool) -> None:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def save_project(path: str, binary: bool = False,
                  show_form: bool = True) -> str:
     """Сохранить текущий проект в файл.
@@ -615,7 +615,7 @@ def save_project(path: str, binary: bool = False,
     **Запись снимает счёт несохранённого.** Ответы мутирующих инструментов
     заканчиваются «Не сохранено: …», а `reload_project` отличает «правки были
     отброшены» от «перечитан тот же файл»; успешная запись — момент, когда
-    счёт обнуляется (`session._clear_unsaved`).
+    счёт обнуляется (`session.clear_unsaved`).
 
     Args:
         path: путь к файлу (абсолютный).
@@ -625,7 +625,7 @@ def save_project(path: str, binary: bool = False,
             не покажет окно модели этого проекта.
     """
     _refuse_format_extension_mismatch(path, binary)
-    project = session._ensure_project()
+    project = session.ensure_project()
     if show_form:
         project.show_form()
         tail = (" Форма проекта показана — без этого файл открывался бы в GUI "
@@ -636,17 +636,17 @@ def save_project(path: str, binary: bool = False,
         before = _file_state(path)
         project.save_binary(path)
         _verify_saved(path, before)
-        session._clear_unsaved()
+        session.clear_unsaved()
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
     before = _file_state(path)
     project.save_xml(path)
     _verify_saved(path, before)
-    session._clear_unsaved()
+    session.clear_unsaved()
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def close_project() -> str:
     """Закрыть текущий проект.
 
@@ -660,9 +660,10 @@ def close_project() -> str:
     (`close_pack`) или переключиться на другого участника
     (`select_pack_project`).
     """
-    if session._project is None:
+    project = session.current_project()
+    if project is None:
         return "Без изменений: проект не был открыт"
-    membership = session._pack_membership()
+    membership = session.pack_membership()
     if membership is not False:
         if membership is None:
             # Состав пакета не читается — «неизвестно» не разрешение: если
@@ -677,15 +678,14 @@ def close_project() -> str:
                 "`close_pack`.")
         raise ToolError(
             f"Текущий проект — участник открытого пакета "
-            f"{session._pack_label()}: его закрытие исключило бы проект из "
+            f"{session.pack_label()}: его закрытие исключило бы проект из "
             f"состава пакета (живой замер 01.10.2026). Закройте пакет целиком "
             f"(`close_pack`) или выберите другой проект "
             f"(`select_pack_project`).")
-    project = session._project
-    label = session._project_label()
+    label = session.project_label()
     # Порядок: сначала закрыть, потом сбросить состояние. Если `CloseProject`
     # не ответил, проект остаётся текущим — его видно и можно закрыть повторно,
     # а не потерять открытым внутри mmain.exe.
     project.close()
-    session._set_project(None)
+    session.set_project(None)
     return f"Проект закрыт: {label} — текущего проекта больше нет"

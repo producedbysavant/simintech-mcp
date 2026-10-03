@@ -302,7 +302,7 @@ async def test_add_block_rejects_unknown_prop_without_creating_block(
                         {"class_name": "Константа", "props": "y0=5"})
 
     assert "y0" in text
-    assert session._project.get_main_page()._created == [], (
+    assert session.current_project().get_main_page()._created == [], (
         "отказ до создания блока — иначе блок остался бы на схеме"
     )
 
@@ -316,7 +316,7 @@ async def test_add_block_allow_unknown_props_creates_block(monkeypatch):
     await mcp.call_tool("add_block", {"class_name": "Константа", "props": "y0=5",
                                       "allow_unknown_props": True})
 
-    created = session._project.get_main_page()._created
+    created = session.current_project().get_main_page()._created
     assert len(created) == 1
     assert created[0]._props["y0"] == 5
 
@@ -451,7 +451,7 @@ async def test_add_block_rejects_computed_param(monkeypatch):
         "add_block", {"class_name": "Усилитель", "props": "formula_visible=1"})
 
     assert "вычисляемый" in text
-    assert session._project.get_main_page()._created == []
+    assert session.current_project().get_main_page()._created == []
 
 
 class _CreatedBlock:

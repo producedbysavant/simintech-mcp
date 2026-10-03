@@ -26,7 +26,7 @@ from ..app import mcp
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def read_output_file(path: str, max_lines: int = 200) -> str:
     """Прочитать текстовый файл с результатами расчёта.
 
@@ -56,8 +56,8 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     # Именно байты, а не символы: кириллица в UTF-8 весит вдвое больше, и по
     # символам предел объёма занижался бы. Чтение ограничено заранее — иначе
     # предел срабатывал бы уже после того, как файл занял память.
-    data, truncated, error = sandbox._load_result_file(path, sandbox.MAX_OUTPUT_BYTES,
-                                                       sandbox._MISSING_RESULT_FILE)
+    data, truncated, error = sandbox.load_result_file(path, sandbox.MAX_OUTPUT_BYTES,
+                                                      sandbox.MISSING_RESULT_FILE)
     if error:
         return error
     text = data.decode("utf-8", errors="replace")
@@ -84,7 +84,7 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def summarize_output_file(path: str, column: int = -1) -> str:
     """Свести результат расчёта к числам: диапазон, min/max, среднее, наклон.
 
@@ -101,11 +101,11 @@ def summarize_output_file(path: str, column: int = -1) -> str:
         column: номер колонки значения; отрицательный — с конца строки
             (`-1` — последняя). `0` — время.
     """
-    data, truncated, error = sandbox._load_result_file(path, tables.MAX_SUMMARY_BYTES,
-                                                       sandbox._MISSING_RESULT_FILE)
+    data, truncated, error = sandbox.load_result_file(path, tables.MAX_SUMMARY_BYTES,
+                                                      sandbox.MISSING_RESULT_FILE)
     if error:
         return error
-    table = tables._read_numeric_table(data, truncated)
+    table = tables.read_numeric_table(data, truncated)
     rows = table.rows
     if not rows:
         if table.partial_dropped:
@@ -185,7 +185,7 @@ def _xprt_block_names(text: str) -> List[str]:
 
 
 @mcp.tool()
-@runtime._plain_tool
+@runtime.plain_tool
 def inspect_project_file(path: str) -> str:
     """Разобрать сохранённый проект (.xprt) **без COM** — годится и для Linux.
 
@@ -205,8 +205,8 @@ def inspect_project_file(path: str) -> str:
         path: путь к `.xprt` внутри каталога результатов (как у
             `read_output_file`): файл должен лежать в нём.
     """
-    raw, truncated, error = sandbox._load_result_file(path, MAX_PROJECT_BYTES,
-                                                      sandbox._MISSING_PROJECT_FILE)
+    raw, truncated, error = sandbox.load_result_file(path, MAX_PROJECT_BYTES,
+                                                     sandbox.MISSING_PROJECT_FILE)
     if error:
         return error
     if truncated:

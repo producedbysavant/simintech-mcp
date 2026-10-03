@@ -1,6 +1,6 @@
 """Инструменты работы с блоками и связями.
 
-Имена параметров проверяются `catalog._check_params` до вызова COM; разбор
+Имена параметров проверяются `catalog.check_params` до вызова COM; разбор
 текста свойств (`_split_props`, `_parse_val`, `_coerce_param_value`) — здесь же,
 потому что нужен только этим инструментам.
 """
@@ -26,10 +26,10 @@ from simintech_api.script_probe import (
 from .. import catalog, runtime, session
 from ..app import mcp
 from .page_script import (
-    _bridge,
-    _describe_outcome,
-    _discard_result,
-    _result_path,
+    bridge,
+    describe_outcome,
+    discard_result,
+    result_path,
 )
 
 
@@ -77,7 +77,7 @@ MAX_BLOCK_IN_PORTS = 64
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def add_block(class_name: str, name_hint: str = "",
               x: float = 0.0, y: float = 0.0,
               props: str = "", in_ports: int = 0,
@@ -116,7 +116,7 @@ def add_block(class_name: str, name_hint: str = "",
             параметр у блока есть, а в каталог не попал (каталог собран не
             для всех классов).
     """
-    project = session._ensure_project()
+    project = session.ensure_project()
     # Параметры разбираются и проверяются ДО создания блока: иначе отказ
     # оставил бы на схеме блок, которого нет в ответе инструмента.
     pairs: Dict[str, ParamValue] = {}
@@ -159,8 +159,8 @@ def add_block(class_name: str, name_hint: str = "",
             f"прерывается)."
         )
     notes: List[str] = []
-    catalog._check_params(class_name, list(pairs),
-                          allow_unknown=allow_unknown_props, notes=notes)
+    catalog.check_params(class_name, list(pairs),
+                         allow_unknown=allow_unknown_props, notes=notes)
 
     page = project.get_main_page()
     block = page.create_block(class_name, x, y)
@@ -203,7 +203,7 @@ def add_block(class_name: str, name_hint: str = "",
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def connect(src: str, dst: str,
             out_index: int = 0, in_index: int = 0) -> str:
     """Соединить выход блока src с входом блока dst линией связи.
@@ -226,7 +226,7 @@ def connect(src: str, dst: str,
         out_index: номер выходного порта источника (0-based).
         in_index: номер входного порта приёмника (0-based).
     """
-    page = session._ensure_project().get_main_page()
+    page = session.ensure_project().get_main_page()
     b1 = page.find_block(src)
     b2 = page.find_block(dst)
     if b1 is None:
@@ -242,7 +242,7 @@ def connect(src: str, dst: str,
         # (access violation), см. `Page.create_wire`. Оставлена как страховка:
         # пропустить ноль нельзя — агент счёл бы вход подключённым, тогда как
         # дальше по стеку отказ не виден (`NormalizeWire` на неверном WireId
-        # молча возвращает 0). Отказ приходит до записи в `_WIRES`.
+        # молча возвращает 0). Отказ приходит до записи в `WIRES`.
         raise ToolError(
             f"Линия {src}[{out_index}] -> {dst}[{in_index}] не создана: "
             f"среда вернула id=0 (такое бывает, если порты принадлежат разным "
@@ -251,7 +251,7 @@ def connect(src: str, dst: str,
         )
     # Храним и концы связи: по ним `layout_place` выравнивает блоки так, чтобы
     # линия шла без лишнего излома.
-    session._WIRES.append((wire, src, out_index, dst, in_index))
+    session.WIRES.append((wire, src, out_index, dst, in_index))
     return f"Соединено {src} -> {dst} (wire={wire.id})"
 
 
@@ -356,19 +356,19 @@ def _run_contour_body(body: str, *, failed: str) -> ContourOutcome:
     `ScriptBridgeError` означает неопределённое состояние проекта: тело
     могло не установиться, а могло и отработать. Поэтому он выходит отказом,
     а не исходом — тот же контракт, что у инструментов языкового слоя.
-    Контурный файл результата убирается на любом пути (`_discard_result`).
+    Контурный файл результата убирается на любом пути (`discard_result`).
     """
-    path = _result_path()
+    path = result_path()
     try:
-        run = _bridge().run_page_script(body, path)
+        run = bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
-        _discard_result(path)
+        discard_result(path)
         raise ToolError(
             f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
             "расчёт должен сдвинуть модельное время: проверьте, что модель "
             "считает — неподключённый вход останавливает расчёт всей модели "
             "молча.") from exc
-    _discard_result(path)
+    discard_result(path)
     return run.outcome
 
 
@@ -421,7 +421,7 @@ def _block_caption(page: Any, block_id: int) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def disconnect_wire(src: str, dst: str,
                     out_index: int = 0, in_index: int = 0) -> str:
     """Снять линию связи, идущую из выхода src во вход dst.
@@ -454,7 +454,7 @@ def disconnect_wire(src: str, dst: str,
     **Модель перезапускается контуром.** Тело идёт в секцию `initialization`:
     расчёт стартует заново, прежний скрипт страницы возвращается на место,
     изменения живут в памяти до `save_project`. Снятая линия убирается и из
-    реестра сессии (`session._forget_wire`, а при уходе нескольких линий — по
+    реестра сессии (`session.forget_wire`, а при уходе нескольких линий — по
     всем исчезнувшим) — `layout_place` больше не считает их опорой.
 
     **Несколько линий в один вход.** Среда это допускает. Снимается та, что
@@ -483,7 +483,7 @@ def disconnect_wire(src: str, dst: str,
         out_index: номер выходного порта источника (0-based).
         in_index: номер входного порта приёмника (0-based).
     """
-    project = session._ensure_project()
+    project = session.ensure_project()
     page = project.get_main_page()
     b1 = page.find_block(src)
     b2 = page.find_block(dst)
@@ -523,7 +523,7 @@ def disconnect_wire(src: str, dst: str,
         # Перечисление не удалось — реестр не трогается: «не знаем» не даёт
         # права забывать (отказ об этом и так говорит).
         for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
-            session._forget_wire(wire_id)
+            session.forget_wire(wire_id)
         detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
                   if outcome.lines else "")
         raise ToolError(
@@ -592,9 +592,9 @@ def disconnect_wire(src: str, dst: str,
     # сестре тоже мертва. Названную линию забываем и сверх разницы — тело
     # сообщило «removed», а перечислиться страница могла и не успеть.
     for wire_id in vanished:
-        session._forget_wire(wire_id)
+        session.forget_wire(wire_id)
     if reply.wire_id not in vanished:
-        session._forget_wire(reply.wire_id)
+        session.forget_wire(reply.wire_id)
     notes: List[str] = []
     if reply.port_left:
         notes.append(
@@ -616,7 +616,7 @@ def disconnect_wire(src: str, dst: str,
     tail = "\n" + "\n".join(notes) if notes else ""
     return (f"Связь {src}[{out_index}] → {dst}[{in_index}] снята "
             f"(wire={reply.wire_id}).\n"
-            f"{_describe_outcome(outcome, what='Вердикт')}{tail}")
+            f"{describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
 # ─── Скрипт блока «Язык программирования» ────────────────────────────────────
@@ -688,7 +688,7 @@ def _block_script_snapshot(project: Any) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_block_script(block: str) -> str:
     """Прочитать скрипт блока — например, «Языка программирования».
 
@@ -706,7 +706,7 @@ def get_block_script(block: str) -> str:
     Args:
         block: имя блока (автоимя из `list_blocks`).
     """
-    project = session._ensure_project()
+    project = session.ensure_project()
     target = project.get_main_page().find_block(block)
     if target is None:
         return _missing_block(block)
@@ -827,7 +827,7 @@ def _set_block_script_body(block_name: str, script: str, token: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_block_script(block: str, script: str) -> str:
     """Записать скрипт в блок «Язык программирования» и пересобрать его пины.
 
@@ -876,7 +876,7 @@ def set_block_script(block: str, script: str) -> str:
             "такого текста рвёт разбор ответа. Соберите маркер в тексте "
             "конкатенацией (например, `\"CTX\" + \"_END\"`), если он нужен "
             "как содержание, и повторите.")
-    project = session._ensure_project()
+    project = session.ensure_project()
     target = project.get_main_page().find_block(block)
     if target is None:
         return _missing_block(block)
@@ -915,14 +915,14 @@ def set_block_script(block: str, script: str) -> str:
             else "\nПрежний скрипт был пуст.")
     return (f"Скрипт блока '{block}' записан. Портов: {reply.ports_before} → "
             f"{reply.ports_after}.\n"
-            f"{_describe_outcome(outcome, what='Вердикт')}{tail}")
+            f"{describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def list_blocks() -> str:
     """Вывести список блоков текущей страницы проекта."""
-    blocks = session._ensure_project().get_main_page().get_blocks()
+    blocks = session.ensure_project().get_main_page().get_blocks()
     if not blocks:
         return "Блоков на странице нет"
     lines = []
@@ -937,7 +937,7 @@ def list_blocks() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def list_wires() -> str:
     """Перечислить линии связи текущей страницы проекта.
 
@@ -959,7 +959,7 @@ def list_wires() -> str:
     по-прежнему читает только COM и пару «откуда → куда» не выдумывает.
     Подробности — README, «Ограничения», и §10.20 журнала.
     """
-    page = session._ensure_project().get_main_page()
+    page = session.ensure_project().get_main_page()
     wires = page.get_wires()
     if not wires:
         return "Линий связи на странице нет"
@@ -973,7 +973,7 @@ def list_wires() -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_block_params(block: str) -> str:
     """Прочитать параметры блока.
 
@@ -998,7 +998,7 @@ def get_block_params(block: str) -> str:
         block: имя блока на главной странице — автоматическое (их даёт
             `list_blocks`); переименование через COM недоступно.
     """
-    page = session._ensure_project().get_main_page()
+    page = session.ensure_project().get_main_page()
     target = page.find_block(block)
     if target is None:
         return _missing_block(block)
@@ -1028,7 +1028,7 @@ def get_block_params(block: str) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_block_param(block: str, param: str, value: str,
                     allow_unknown: bool = False) -> str:
     """Установить параметр блока и переинициализировать блок.
@@ -1070,14 +1070,14 @@ def set_block_param(block: str, param: str, value: str,
         allow_unknown: True — не сверять имя с каталогом (для параметров,
             которых в каталоге нет).
     """
-    page = session._ensure_project().get_main_page()
+    page = session.ensure_project().get_main_page()
     target = page.find_block(block)
     if target is None:
         return _missing_block(block)
     notes: List[str] = []
     try:
-        catalog._check_params(target.class_name, [param],
-                              allow_unknown=allow_unknown, notes=notes)
+        catalog.check_params(target.class_name, [param],
+                             allow_unknown=allow_unknown, notes=notes)
         target.set_property(param, _coerce_param_value(value))
         target.init()
     except ToolError:
@@ -1193,7 +1193,7 @@ def _port_required_height(name: str, target) -> Optional[int]:
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_block_size(block: str, width: float, height: float) -> str:
     """Задать размер блока в пикселях схемы.
 
@@ -1243,7 +1243,7 @@ def set_block_size(block: str, width: float, height: float) -> str:
             f"Ширина {_size_value(width)} вне пределов: ширина — в пикселях, "
             f"больше 0 и не больше {MAX_BLOCK_SIZE} (отсечка ошибок единиц "
             f"измерения: настоящий размер блока — десятки-сотни пикселей).")
-    project = session._ensure_project()
+    project = session.ensure_project()
     page = project.get_main_page()
     target = page.find_block(block)
     if target is None:

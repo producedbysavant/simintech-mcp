@@ -50,7 +50,7 @@ MAX_STEP_COUNT = 1000
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def run(to_time: Optional[float] = None,
         wait_timeout: float = CALC_WAIT_SECONDS,
         stall_seconds: float = CALC_STALL_SECONDS) -> str:
@@ -112,7 +112,7 @@ def run(to_time: Optional[float] = None,
             f"проектами, хотя расчёт шёл штатно. Дольше ждать нельзя и потому, "
             f"что единственный COM-поток остался бы занят опросом, пока вызов "
             f"не завершится.")
-    sim = session._ensure_project().simulation()
+    sim = session.ensure_project().simulation()
     sim.start()
     if to_time is None:
         sim.run()
@@ -139,7 +139,7 @@ def run(to_time: Optional[float] = None,
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def step(count: int = 1) -> str:
     """Выполнить указанное число шагов расчёта.
 
@@ -161,7 +161,7 @@ def step(count: int = 1) -> str:
             f"выделенный поток. Разбейте на несколько вызовов `step` или "
             f"продвигайте время через `run(to_time=…)`."
         )
-    sim = session._ensure_project().simulation()
+    sim = session.ensure_project().simulation()
     sim.start()
     before = sim.get_time()
     for _ in range(count):
@@ -182,7 +182,7 @@ def step(count: int = 1) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def stop() -> str:
     """Остановить расчёт.
 
@@ -190,15 +190,15 @@ def stop() -> str:
     сообщает об успехе и на стоящем проекте. Состояние проверяйте по
     `get_time`.
     """
-    session._ensure_project().simulation().stop()
+    session.ensure_project().simulation().stop()
     return "Расчёт остановлен"
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_time() -> float:
     """Вернуть текущее модельное время проекта."""
-    return session._ensure_project().simulation().get_time()
+    return session.ensure_project().simulation().get_time()
 
 
 # ─── Сигналы ──────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ def _signals_section(title: str, items: list) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def list_signals() -> str:
     """Вывести читаемые сигналы проекта и имена блоков отдельно.
 
@@ -238,7 +238,7 @@ def list_signals() -> str:
     Оба списка могут быть длиннее ответа: показываются первые
     `MAX_SIGNAL_NAMES` имён, а рядом стоит, сколько их всего.
     """
-    prj = session._ensure_project()
+    prj = session.ensure_project()
     signals = prj.list_signals()
     if not signals:
         return ("Сигналов нет. Обмен идёт через базу сигналов проекта; у этой "
@@ -274,7 +274,7 @@ def _array_types() -> tuple:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def get_signal(block: str, max_items: int = 20,
                index: Optional[int] = None) -> str:
     """Прочитать значение сигнала — он адресуется именем блока.
@@ -300,7 +300,7 @@ def get_signal(block: str, max_items: int = 20,
             f"элемент массива — отдельный COM-вызов, и такой запрос надолго "
             f"занял бы единственный COM-поток.")
     try:
-        sig = session._ensure_project().signal(block)
+        sig = session.ensure_project().signal(block)
         if sig.data_type not in _array_types():
             if index is not None:
                 raise ToolError(
@@ -325,7 +325,7 @@ def get_signal(block: str, max_items: int = 20,
 
 
 @mcp.tool()
-@runtime._com_threaded(mutates_project=True)
+@runtime.com_threaded(mutates_project=True)
 def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
     """Записать значение в сигнал (адресуется именем блока).
 
@@ -342,7 +342,7 @@ def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
         index: индекс элемента массива; без него — скалярная запись.
     """
     try:
-        sig = session._ensure_project().signal(block)
+        sig = session.ensure_project().signal(block)
         if index is None:
             sig.write(value)
             return f"{block} = {value}"
@@ -366,7 +366,7 @@ def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
 
 
 @mcp.tool()
-@runtime._com_threaded
+@runtime.com_threaded
 def export_signal_db(path: str = "signals.xml") -> str:
     """Выгрузить базу сигналов проекта в XML и показать сводку.
 
@@ -383,8 +383,8 @@ def export_signal_db(path: str = "signals.xml") -> str:
     """
     from simintech_api.sdb import SignalDatabase
 
-    destination = sandbox._resolve_output_path(path)
-    session._ensure_project().export_db_to_xml(destination)
+    destination = sandbox.resolve_output_path(path)
+    session.ensure_project().export_db_to_xml(destination)
     try:
         database = SignalDatabase.from_xml(destination)
     except Exception as exc:

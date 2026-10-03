@@ -88,7 +88,7 @@ def test_change_report_names_added_objects():
     вызывающий, поэтому отчёт проверяется без моста и не подменяет собой
     проверку инструментов.
     """
-    report = page_script._change_report(
+    report = page_script.change_report(
         ["k_0"], ["k_0", "Субмодель_0"], "// прежний скрипт")
 
     assert "было 1" in report and "стало 2" in report
@@ -102,7 +102,7 @@ def test_change_report_does_not_call_replaced_object_new():
     Среда сама переименовывает объекты (`kx_0`), поэтому «стало больше» и
     «добавлен объект X» — разные утверждения, и склеивать их нельзя.
     """
-    report = page_script._change_report(["k_0", "kx_0"], ["k_0"], "")
+    report = page_script.change_report(["k_0", "kx_0"], ["k_0"], "")
 
     assert "стало 1" in report
     assert "добавленных объектов нет" in report
@@ -114,7 +114,7 @@ def test_change_report_truncates_long_list():
     before = []
     after = [f"k_{index}" for index in range(page_script.MAX_REPORTED_OBJECTS + 5)]
 
-    report = page_script._change_report(before, after, "x")
+    report = page_script.change_report(before, after, "x")
 
     assert "и ещё 5" in report, "хвост списка скрыт без предупреждения"
 
