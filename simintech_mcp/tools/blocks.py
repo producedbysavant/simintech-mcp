@@ -688,7 +688,9 @@ def get_block_script(block: str) -> str:
 
     Скрипт есть у блока класса «Язык программирования» (запись `Script` в
     свойствах блока). У блока без такой записи ответ — «скрипта нет», а не
-    отказ: это состояние блока, а не ошибка вызова.
+    отказ: это состояние блока, а не ошибка вызова. Ищется блок **главной
+    страницы** (как у `connect`): у субмодели своей записи `Script` нет, и
+    скрипт вложенного в неё блока за её собственный не выдаётся.
 
     Args:
         block: имя блока (автоимя из `list_blocks`).
@@ -702,7 +704,14 @@ def get_block_script(block: str) -> str:
     except Exception:                                             # noqa: BLE001
         class_name = ""
     marked = f"'{block}'" + (f" [{class_name}]" if class_name else "")
-    script = parse_xprt_block_script(_block_script_snapshot(project), block)
+    try:
+        script = parse_xprt_block_script(_block_script_snapshot(project), block)
+    except ScriptBridgeError as exc:
+        raise ToolError(
+            f"прочитать скрипт блока {marked} не удалось: {exc}. Снимок "
+            f"выгрузки не разобран или значение записи не той формы — "
+            f"повторный вызов после `save_project`/переоткрытия может помочь; "
+            f"проект этим вызовом не тронут.") from exc
     if script is None:
         return (f"У блока {marked} скрипта нет: в выгрузке проекта у него нет "
                 f"записи `Script`. Скрипт есть у блоков «Язык "

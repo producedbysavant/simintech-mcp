@@ -13,8 +13,11 @@ from simintech_mcp.tools import page_script
 
 from _support import _ConnectingBlock, _error, _text
 
-#: Фрагмент выгрузки с записью `Script` (форма измерена 03.10.2026).
+#: Фрагмент выгрузки с записью `Script` (форма измерена 03.10.2026):
+#: объекты главной страницы — прямые дети первого `<page>`.
 XPRT_WITH_SCRIPT = """<project>
+  <page>
+    <name>`Схема`</name>
   <object>
     <name>`LangBlock_0`</name>
     <class_name>`Язык программирования`</class_name>
@@ -26,9 +29,12 @@ XPRT_WITH_SCRIPT = """<project>
       </data>
     </visual_props>
   </object>
+  </page>
 </project>"""
 
 XPRT_WITHOUT_SCRIPT = """<project>
+  <page>
+    <name>`Схема`</name>
   <object>
     <name>`k_0`</name>
     <class_name>`Константа`</class_name>
@@ -36,6 +42,7 @@ XPRT_WITHOUT_SCRIPT = """<project>
       <data><name>`a`</name><mode>`1`</mode><value>`1`</value></data>
     </custom_props>
   </object>
+  </page>
 </project>"""
 
 
@@ -263,3 +270,22 @@ async def test_set_block_script_refuses_when_body_does_not_compile(
 
     assert "не собралось" in message
     assert "не изменён" in message
+
+
+@pytest.mark.anyio
+async def test_get_block_script_refuses_broken_snapshot(monkeypatch, tmp_path):
+    """Повреждённый снимок — отказ, а не «скрипта нет».
+
+    Парсер библиотеки повреждённый XML не глотает (`ScriptBridgeError`):
+    «снимок не разобрался» и «у блока записи нет» — разные состояния, и
+    выдать первое за второе значило бы соврать о модели.
+    """
+    project = _ScriptProject(
+        {"LangBlock_0": _ScriptBlock("LangBlock_0", 1)},
+        xprt="<project><page>")
+    _install(monkeypatch, tmp_path, project)
+
+    message = await _error("get_block_script", {"block": "LangBlock_0"})
+
+    assert "не удалось" in message
+    assert "скрипта нет" not in message
