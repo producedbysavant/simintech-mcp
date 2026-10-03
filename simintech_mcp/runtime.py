@@ -105,6 +105,11 @@ def _report_contract_drift(result: str) -> None:
 def _append_mutation_note(result: Any) -> Any:
     """Дописать к успешному ответу правки адресата: «Изменения внесены в: …».
 
+    Здесь же сессия узнаёт, что у текущего проекта есть **несохранённые**
+    правки (`session._mark_mutated`): успешная правка — единственный признак,
+    и точка эта одна на все мутирующие инструменты (issue #18) — заведи её
+    инструменты сами, новый мутирующий выпал бы из счёта.
+
     Импорт `session` ленивый: обвязке незачем тянуть домен при импорте модуля
     (тесты runtime не обязаны знать `simintech_api`), а «какому проекту
     принадлежит правка» всё равно решает сессия — единственное место, где
@@ -113,6 +118,7 @@ def _append_mutation_note(result: Any) -> Any:
     if not isinstance(result, str):
         return result
     from . import session
+    session._mark_mutated()
     note = session._mutation_note()
     return result + note if note else result
 

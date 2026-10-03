@@ -113,7 +113,9 @@ def test_mutating_tool_response_names_the_project():
             return "Правка сделана"
 
         assert tool() == ("Правка сделана\n"
-                          "Изменения внесены в: «Model.prt» (id=9)")
+                          "Изменения внесены в: «Model.prt» (id=9)\n"
+                          "Не сохранено: `save_project` запишет, "
+                          "`reload_project` откатит.")
     finally:
         session._set_project(prev_project, source_path=prev_path)
 

@@ -261,6 +261,70 @@ def open_project(path: str) -> str:
 
 
 @mcp.tool()
+@runtime._com_threaded
+def reload_project() -> str:
+    """Переоткрыть текущий проект из файла — откат несохранённых правок.
+
+    Закрывает текущий проект **без сохранения** и открывает заново из того же
+    файла: правки, не записанные `save_project`, отбрасываются — это тот
+    откат, который раньше делали вручную переоткрытием (issue #18). Ответ
+    называет прежний и новый экземпляры и говорит, были ли несохранённые
+    правки: счёт ведёт сессия — правку помечают мутирующие инструменты
+    (их ответы заканчиваются «Не сохранено: …»), снимает `save_project`.
+
+    Отказы называют выход:
+
+    * проект **создан из шаблона** (файла нет) — переоткрывать нечего;
+    * текущий проект — **участник пакета**: закрытие исключило бы его из
+      состава (живой замер 01.10.2026) — переоткрывается пакет целиком;
+    * **файл проекта не найден** — откатывать не к чему (файл мог быть
+      удалён или переименован после открытия).
+    """
+    session._ensure_project()
+    membership = session._pack_membership()
+    if membership is not False:
+        if membership is None:
+            raise ToolError(
+                "Принадлежность текущего проекта к открытому пакету "
+                "проверить не удалось (состав пакета не читается): "
+                "переоткрывать вслепую нельзя — если проект участник, "
+                "закрытие исключит его из состава пакета (живой замер "
+                "01.10.2026). Повторите `list_pack_projects`.")
+        raise ToolError(
+            f"Текущий проект — участник пакета {session._pack_label()}: "
+            f"переоткрыть его отдельно нельзя — закрытие исключило бы его "
+            f"из состава пакета (живой замер 01.10.2026). Переоткройте пакет "
+            f"целиком (`close_pack`, затем `open_pack`) — это откатит всех "
+            f"участников.")
+    source = session._opened_from()
+    if source is None:
+        raise ToolError(
+            "Текущий проект создан из шаблона (файла нет) — переоткрывать "
+            "нечего. Откат без файла: `close_project` и `create_project` "
+            "заново.")
+    if not source:
+        raise ToolError(
+            "Источник файла текущего проекта среда не назвала — переоткрыть "
+            "нечем. Сохраните проект в файл (`save_project`) и откройте его "
+            "(`open_project`).")
+    if not os.path.isfile(source):
+        raise ToolError(
+            f"Файл проекта не найден: «{source}» — переоткатывать не к чему "
+            f"(файл мог быть удалён или переименован после открытия). "
+            f"Сохраните проект (`save_project`) или откройте другой "
+            f"(`open_project`).")
+    had_unsaved = session._unsaved_changes()
+    prj = Project.open(session._ensure_client(), source)
+    replaced = session._replace_project(
+        prj, source_path=source,
+        header="ТЕКУЩИЙ ПРОЕКТ ПЕРЕОТКРЫТ ИЗ ФАЙЛА")
+    tail = (" Несохранённые правки прежнего экземпляра отброшены."
+            if had_unsaved else
+            " Несохранённых правок не было — файл перечитан как есть.")
+    return f"Проект переоткрыт из файла: {source}" + replaced + tail
+
+
+@mcp.tool()
 @runtime._plain_tool
 def project_network_role() -> str:
     """Показать роль проекта в распределённом (сетевом) расчёте.
@@ -548,6 +612,11 @@ def save_project(path: str, binary: bool = False,
     нормализации Win32: хвостовые точки и пробелы система отбрасывает сама
     (`m.prt ` — это файл `m.prt`).
 
+    **Запись снимает счёт несохранённого.** Ответы мутирующих инструментов
+    заканчиваются «Не сохранено: …», а `reload_project` отличает «правки были
+    отброшены» от «перечитан тот же файл»; успешная запись — момент, когда
+    счёт обнуляется (`session._clear_unsaved`).
+
     Args:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
@@ -567,10 +636,12 @@ def save_project(path: str, binary: bool = False,
         before = _file_state(path)
         project.save_binary(path)
         _verify_saved(path, before)
+        session._clear_unsaved()
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
     before = _file_state(path)
     project.save_xml(path)
     _verify_saved(path, before)
+    session._clear_unsaved()
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 

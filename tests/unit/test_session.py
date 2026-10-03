@@ -163,12 +163,39 @@ def test_replace_project_without_previous_has_no_switch_note(monkeypatch):
 
 
 def test_mutation_note_names_current_project():
-    """Хвост ответа правки: «Изменения внесены в: <метка>»."""
+    """Хвост ответа правки: адресат и постоянная строка о несохранённом.
+
+    Строка о несохранённости стоит в каждом ответе правки, и это не
+    оговорка: сразу после правки она истинна по определению — записать её
+    может `save_project`, откатить `reload_project` (issue #18).
+    """
     restore = _with_project(_WireProject({}, project_id=3),
                             source_path=r"C:\work\CoolInt.prt")
     try:
         assert session._mutation_note() == (
-            "\nИзменения внесены в: «CoolInt.prt» (id=3)")
+            "\nИзменения внесены в: «CoolInt.prt» (id=3)\n"
+            "Не сохранено: `save_project` запишет, `reload_project` откатит.")
+    finally:
+        restore()
+
+
+def test_unsaved_flag_tracks_mutations_and_resets():
+    """Счёт несохранённых правок: ставит правка, снимают сохранение и смена.
+
+    Счёт читает `reload_project` («правки отброшены» против «перечитан тот
+    же файл»), а ставит его обвязка правок — здесь проверяется сама
+    механика: `_mark_mutated` и оба сброса.
+    """
+    restore = _with_project(_WireProject({}, project_id=3))
+    try:
+        assert not session._unsaved_changes()
+        session._mark_mutated()
+        assert session._unsaved_changes()
+        session._clear_unsaved()
+        assert not session._unsaved_changes()
+        session._mark_mutated()
+        session._set_project(_WireProject({}, project_id=4))
+        assert not session._unsaved_changes(), "смена проекта снимает счёт"
     finally:
         restore()
 
