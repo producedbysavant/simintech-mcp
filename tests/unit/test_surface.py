@@ -73,7 +73,7 @@ def _denied_names(text: str) -> set[str]:
 #: проект), лишний — соврёт о правке у инструмента чтения.
 _MUTATING_TOOLS = {
     "add_block", "connect", "disconnect_wire", "set_block_param",
-    "set_block_size", "layout_place",
+    "set_block_size", "set_block_script", "layout_place",
     "import_model_text", "set_page_script", "run_page_script",
     "inject_submodel_script", "set_signal", "set_calc_time",
     "set_project_config",
@@ -115,6 +115,7 @@ async def test_all_tools_registered():
         "export_model_text", "import_model_text",
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",
+        "get_block_script", "set_block_script",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
 
