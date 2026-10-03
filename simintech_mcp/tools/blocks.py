@@ -7,9 +7,14 @@
 
 from __future__ import annotations
 
+import re
+import tempfile
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 from fastmcp.exceptions import ToolError
+from simintech_api.catalog import decode_xprt, parse_xprt_block_script
 from simintech_api.constants import standard_block_size
 from simintech_api.exceptions import PortError, ScriptBridgeError
 from simintech_api.script_probe import (
@@ -345,12 +350,13 @@ def _parse_drop_reply(lines: List[str]) -> _DropReply:
     return _DropReply("unknown")
 
 
-def _run_drop_body(body: str) -> ContourOutcome:
-    """Выполнить тело снятия линии контуром; отказ моста — наружу.
+def _run_contour_body(body: str, *, failed: str) -> ContourOutcome:
+    """Выполнить тело правки контуром; отказ моста — наружу.
 
     `ScriptBridgeError` означает неопределённое состояние проекта: тело
     могло не установиться, а могло и отработать. Поэтому он выходит отказом,
     а не исходом — тот же контракт, что у инструментов языкового слоя.
+    Контурный файл результата убирается на любом пути (`_discard_result`).
     """
     path = _result_path()
     try:
@@ -358,10 +364,10 @@ def _run_drop_body(body: str) -> ContourOutcome:
     except ScriptBridgeError as exc:
         _discard_result(path)
         raise ToolError(
-            f"снять линию не удалось: {exc}. Тело идёт в секцию "
-            "`initialization`, поэтому расчёт должен сдвинуть модельное "
-            "время: проверьте, что модель считает — неподключённый вход "
-            "останавливает расчёт всей модели молча.") from exc
+            f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
+            "расчёт должен сдвинуть модельное время: проверьте, что модель "
+            "считает — неподключённый вход останавливает расчёт всей модели "
+            "молча.") from exc
     _discard_result(path)
     return run.outcome
 
@@ -498,8 +504,9 @@ def disconnect_wire(src: str, dst: str,
             f"схеме.") from exc
 
     before_ids = _page_wire_ids(page)
-    outcome = _run_drop_body(
-        _disconnect_wire_body(b1.id, out_index, b2.id, in_index))
+    outcome = _run_contour_body(
+        _disconnect_wire_body(b1.id, out_index, b2.id, in_index),
+        failed="снять линию не удалось")
     if outcome.kind == OUTCOME_NOT_COMPILED:
         raise ToolError(
             "связь не снята: тело не собралось (текст ошибки — в окне "
@@ -605,6 +612,266 @@ def disconnect_wire(src: str, dst: str,
     return (f"Связь {src}[{out_index}] → {dst}[{in_index}] снята "
             f"(wire={reply.wire_id}).\n"
             f"{_describe_outcome(outcome, what='Вердикт')}{tail}")
+
+
+# ─── Скрипт блока «Язык программирования» ────────────────────────────────────
+
+#: Имя свойства скрипта блока в языке и выгрузке.
+_BLOCK_SCRIPT_PROP = "script"
+
+
+def _normalize_script(text: str) -> str:
+    """Переводы строк — к CRLF: в такой форме их несёт среда.
+
+    Литерал встроенного языка не может содержать перевод строки, поэтому
+    текст собирается построчно (`_runtime_literal`), а обратное чтение
+    сравнивается с запрошенным после этой же нормализации: клиент вправе
+    прислать текст с LF.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+
+
+def _runtime_literal(text: str) -> str:
+    """Литерал встроенного языка для **рантайма**: chr(34) и chr(13)+chr(10).
+
+    `CLRF` здесь не годится: измерено 01.10.2026 — это константа
+    декларативного текста, в рантайме её нет (скрипт с `clrf` не компилируется).
+    """
+    if not text:
+        return '""'
+    parts: List[str] = []
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        for piece_index, piece in enumerate(line.split('"')):
+            if piece_index:
+                parts.append("chr(34)")
+            if piece:
+                parts.append('"' + piece + '"')
+        if index < len(lines) - 1:
+            parts.append("chr(13) + chr(10)")
+    return " + ".join(parts) if parts else '""'
+
+
+def _block_script_snapshot(project: Any) -> str:
+    """Снимок проекта в `.xprt` как текст — без запуска расчёта.
+
+    `SaveProjectXML` — тот же путь, которым мост читает скриптовые записи:
+    выгрузка не запускает расчёт и не сдвигает модельное время (в отличие от
+    чтения скрипта контуром — `getpropasstring` перезапускает модель).
+    Каталог временный: файл уходит вместе с ним.
+    """
+    with tempfile.TemporaryDirectory(
+            prefix="simintech-block-script-",
+            ignore_cleanup_errors=True) as tmp:
+        path = Path(tmp) / "page.xprt"
+        project.save_xml(str(path))
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ToolError(
+                f"выгрузка проекта не создана: SaveProjectXML сообщил об "
+                f"успехе, но файла {path} нет ({exc}). Снимок — путь чтения "
+                f"скрипта блока без запуска расчёта, и продолжать без него "
+                f"нельзя.") from exc
+    return decode_xprt(raw)
+
+
+@mcp.tool()
+@runtime._com_threaded
+def get_block_script(block: str) -> str:
+    """Прочитать скрипт блока — например, «Языка программирования».
+
+    Скрипт читается **снимком выгрузки** (`SaveProjectXML`), как скрипт
+    страницы у `get_page_script`: расчёт не запускается и модельное время не
+    сдвигается. Контурный путь (`getpropasstring`) для чтения не годится — он
+    перезапускает модель и уничтожает результаты вызывающего.
+
+    Скрипт есть у блока класса «Язык программирования» (запись `Script` в
+    свойствах блока). У блока без такой записи ответ — «скрипта нет», а не
+    отказ: это состояние блока, а не ошибка вызова.
+
+    Args:
+        block: имя блока (автоимя из `list_blocks`).
+    """
+    project = session._ensure_project()
+    target = project.get_main_page().find_block(block)
+    if target is None:
+        return _missing_block(block)
+    try:
+        class_name = target.class_name
+    except Exception:                                             # noqa: BLE001
+        class_name = ""
+    marked = f"'{block}'" + (f" [{class_name}]" if class_name else "")
+    script = parse_xprt_block_script(_block_script_snapshot(project), block)
+    if script is None:
+        return (f"У блока {marked} скрипта нет: в выгрузке проекта у него нет "
+                f"записи `Script`. Скрипт есть у блоков «Язык "
+                f"программирования»; состав блоков — `list_blocks`.")
+    if not script.strip():
+        return (f"Скрипт блока {marked} пуст: запись `Script` есть, значение "
+                f"пустое.")
+    return f"Скрипт блока {marked}:\n{script}"
+
+
+class _ScriptReply(NamedTuple):
+    """Разобранный ответ тела записи скрипта.
+
+    `kind` — «written» | «no-block» | «unknown»; `old`/`new` — прежний и
+    перечитанный скрипт, `ports_before`/`ports_after` — число портов блока.
+    """
+
+    kind: str
+    old: str = ""
+    new: str = ""
+    ports_before: int = 0
+    ports_after: int = 0
+
+
+#: Строка ответа тела с числом портов: `ports=2->4`.
+_PORTS_RE = re.compile(r"ports=(\d+)->(\d+)")
+
+
+def _parse_script_reply(lines: List[str], token: str) -> _ScriptReply:
+    """Разобрать строки тела: скрипты между маркерами, число портов.
+
+    Маркеры уникальны на вызов (токен), поэтому текст скрипта не может
+    подделать границу: строки маркеров ищутся точным совпадением.
+    """
+    if "err=no-block" in [line.strip() for line in lines]:
+        return _ScriptReply("no-block")
+
+    def between(which: str) -> Optional[str]:
+        begin = f"{token}_{which}_BEGIN"
+        end = f"{token}_{which}_END"
+        try:
+            first = lines.index(begin)
+            last = lines.index(end)
+        except ValueError:
+            return None
+        if last < first:
+            return None
+        return "\n".join(lines[first + 1:last])
+
+    old = between("OLD")
+    new = between("NEW")
+    if old is None or new is None:
+        return _ScriptReply("unknown")
+    ports = _PORTS_RE.search("\n".join(lines))
+    before = int(ports.group(1)) if ports else 0
+    after = int(ports.group(2)) if ports else 0
+    return _ScriptReply("written", old=old, new=new,
+                        ports_before=before, ports_after=after)
+
+
+def _set_block_script_body(block_name: str, script: str, token: str) -> str:
+    """Тело записи скрипта блока — форма, проверенная живым прогоном.
+
+    Рецепт (замеры 01.10.2026 и 03.10.2026): `setprop(obj, "script", …)`,
+    затем `reinitlangblock(obj)` — без второго шага пины не пересобираются
+    (свежий блок остаётся с дефолтным портом, провода к другим пинам —
+    половинками), а `set_block_param("script")` молча не применяется.
+    Прежний скрипт читается до записи, новый — после: это подтверждение
+    записи. Число портов до/после показывает, что пересборка пинов прошла.
+    """
+    literal_name = _runtime_literal(block_name)
+    literal_script = _runtime_literal(script)
+    return (
+        f"obj = findobjectbyname({literal_name});\n"
+        'if obj = 0 then writelnutf8(fid, "err=no-block");\n'
+        "if obj <> 0 then begin\n"
+        f'  old_script = getpropasstring(obj, "{_BLOCK_SCRIPT_PROP}");\n'
+        "  ports_before = getblockportcount(obj);\n"
+        f'  setprop(obj, "{_BLOCK_SCRIPT_PROP}", {literal_script});\n'
+        "  reinitlangblock(obj);\n"
+        f'  new_script = getpropasstring(obj, "{_BLOCK_SCRIPT_PROP}");\n'
+        "  ports_after = getblockportcount(obj);\n"
+        f'  writelnutf8(fid, "{token}_OLD_BEGIN");\n'
+        "  writelnutf8(fid, old_script);\n"
+        f'  writelnutf8(fid, "{token}_OLD_END");\n'
+        f'  writelnutf8(fid, "{token}_NEW_BEGIN");\n'
+        "  writelnutf8(fid, new_script);\n"
+        f'  writelnutf8(fid, "{token}_NEW_END");\n'
+        '  writelnutf8(fid, "ports=" + inttostr(ports_before) + "->" + '
+        "inttostr(ports_after));\n"
+        "end;\n"
+    )
+
+
+@mcp.tool()
+@runtime._com_threaded(mutates_project=True)
+def set_block_script(block: str, script: str) -> str:
+    """Записать скрипт в блок «Язык программирования» и пересобрать его пины.
+
+    **Прежний скрипт — в ответе** (как у `set_page_script`): запись о прежнем
+    содержимом не сообщает, и клиент должен иметь возможность его вернуть.
+
+    **Как это устроено.** Запись — пара «`setprop(obj, "script", …)` +
+    `reinitlangblock(obj)`» через контур (замеры 01.10.2026 и 03.10.2026):
+    без второго шага пины не пересобираются — свежий блок остаётся с
+    дефолтным портом, а провода к остальным пинам создаются половинками;
+    `set_block_param("script")` при этом молча не применяется. После записи
+    текст перечитывается — ответ подтверждает запись фактом, а не строкой
+    тела.
+
+    **Об ошибках компиляции среда молчит** — текст ошибки виден только в окне
+    сообщений редактора SimInTech. Признака «скрипт не собрался» у инструмента
+    нет: пины пересобираются и у скрипта с синтаксической ошибкой (замер:
+    4 → 2), поэтому «валидность» по числу портов не проверяется. Ответ
+    называет число портов до и после — по нему видно, что пересборка прошла.
+
+    **Пустой скрипт отвергается**: он оставляет блок без портов (замер:
+    2 → 0) и рвёт соединения. Если цель — осознанная очистка, передайте текст
+    с комментарием — так она видна и в модели.
+
+    Args:
+        block: имя блока (автоимя из `list_blocks`).
+        script: новый текст скрипта (канон: секции `input`/`output`/`var` и
+            тело; переводы строк — любые, нормализуются к CRLF).
+    """
+    if not script.strip():
+        raise ToolError(
+            "скрипт пуст: пустой текст оставляет блок без портов (замер: "
+            "2 → 0) и рвёт соединения. Если цель — очистка, передайте текст "
+            "с одним комментарием — так она видна и в модели.")
+    project = session._ensure_project()
+    target = project.get_main_page().find_block(block)
+    if target is None:
+        return _missing_block(block)
+    normalized = _normalize_script(script)
+    token = "BLK" + uuid.uuid4().hex[:12]
+    outcome = _run_contour_body(
+        _set_block_script_body(block, normalized, token),
+        failed="записать скрипт блока не удалось")
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            "скрипт не записан: тело не собралось (текст ошибки — в окне "
+            "сообщений редактора SimInTech; через COM он не читается). "
+            "Проект не изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"запись скрипта не подтверждена: тело оборвалось на "
+            f"исполнении.{detail} Скрипт блока мог измениться — проверьте "
+            f"его `get_block_script`.")
+    reply = _parse_script_reply(outcome.lines, token)
+    if reply.kind == "no-block":
+        raise ToolError(
+            f"скрипт не записан: блок '{block}' не найден при исполнении "
+            f"тела — он мог исчезнуть со страницы. Проект не изменён.")
+    if reply.kind != "written":
+        raise ToolError(
+            "запись скрипта не подтверждена: тело отработало, но не оставило "
+            "распознаваемого ответа. Проверьте скрипт блока `get_block_script`.")
+    if _normalize_script(reply.new) != normalized:
+        raise ToolError(
+            f"запись не подтверждена: перечитанный скрипт не совпал с "
+            f"запрошенным. В блоке теперь:\n{reply.new}\nВерните нужный текст "
+            f"повторным вызовом — записи «наполовину» молча не проходят.")
+    tail = (f"\n---- прежний скрипт ----\n{reply.old}" if reply.old
+            else "\nПрежний скрипт был пуст.")
+    return (f"Скрипт блока '{block}' записан. Портов: {reply.ports_before} → "
+            f"{reply.ports_after}.{tail}")
 
 
 @mcp.tool()
