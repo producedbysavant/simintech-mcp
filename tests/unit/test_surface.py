@@ -25,6 +25,7 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
     "help_text", "project_network_role", "create_pack",
+    "search_language_functions", "get_language_function",
 }
 
 
@@ -109,11 +110,31 @@ async def test_all_tools_registered():
         "list_signals", "get_signal", "set_signal", "export_signal_db",
         "read_output_file", "summarize_output_file", "inspect_project_file",
         "layout_place", "check_model_layout", "help_text",
+        "search_language_functions", "get_language_function",
         "export_model_text", "import_model_text",
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",
     }
     assert expected <= names, f"Не хватает: {expected - names}"
+
+
+@pytest.mark.anyio
+async def test_readme_tool_count_matches_registry():
+    """Число инструментов в README совпадает с фактическим (находка ревью).
+
+    Тест на перечисление имён (ниже) не ловит числа: README успел пожить с
+    «44 при 45» и «47 при 48». Число — обещание полноты состава, и оно
+    обязано быть правдой или отсутствовать (в `help_text` числа нет намеренно).
+    """
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(
+        encoding="utf-8")
+    found = re.search(r"Всего инструментов — (\d+)", readme)
+    assert found, "в README нет строки «Всего инструментов — N»"
+
+    tools = await mcp.list_tools()
+
+    assert int(found.group(1)) == len(tools), (
+        f"README говорит {found.group(1)}, а инструментов {len(tools)}")
 
 
 @pytest.mark.anyio

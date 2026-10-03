@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 from fastmcp.exceptions import ToolError
 from simintech_api import language as language_api
@@ -16,6 +16,7 @@ from simintech_api.constants import SUPPORTED_COM_BLOCK_CLASSES
 from . import catalog, sandbox, skills
 from .app import mcp
 from .tools import blocks as blocks_tools
+from .tools import help as help_tools
 from .tools import project as project_tools
 
 
@@ -158,71 +159,45 @@ def resource_skill(name: str) -> str:
 
 @mcp.resource("simintech://language/functions")
 def resource_language_functions() -> str:
-    """Реестр функций встроенного языка: сколько их и как проверить имя.
+    """Реестр функций встроенного языка: объём, разделы и как искать.
 
     Источник — `simintech_api/data/language_functions.json`, собранный из
-    справки поставки. Реестр знает **имя, категорию и назначение**, но не
-    сигнатуры: существование имени по нему проверить можно, состав и порядок
-    аргументов — нет (за ними в справку `help.simintech.ru`). Это важно
-    потому, что знаниевый контент описывает около 5% имён, а правдоподобное
-    имя функции в языке может отсутствовать.
+    справки поставки. Схема 2 реестра несёт **синтаксис и аргументы**, а не
+    только имя с назначением: по нему функцию можно позвать, не открывая
+    справку. Разделы «Графические и системные» (объекты, порты блоков и
+    линии связи) — замена отсутствующих COM-методов: правка модели живёт
+    только в языке.
 
-    Существование конкретного имени проверяет
-    `simintech://language/functions/<имя>`.
+    Форму текста собирает `tools.help.format_language_registry` — тот же, что
+    у инструмента с пустым запросом: два текста об одном реестре разошлись
+    бы при первой же правке.
     """
     try:
         functions = language_api.language_functions()
         meta = language_api.registry_meta()
     except OSError as exc:
         return f"ERROR: реестр функций языка недоступен: {exc}"
-    unique = len({function.name for function in functions})
-    counts: Dict[str, int] = {}
-    for function in functions:
-        counts[function.category] = counts.get(function.category, 0) + 1
-    help_version = str(meta.get("help_version") or "")
-    head = (f"Реестр функций встроенного языка SimInTech: {len(functions)} "
-            f"записей, {unique} уникальных имён")
-    if help_version:
-        head += f" (справка поставки {help_version})"
-    lines = [f"{head}."]
-    for category, count in sorted(counts.items()):
-        lines.append(f"  {category} — {count}")
-    lines.append("Реестр даёт существование и назначение имени, но не "
-                 "сигнатуры: состав и порядок аргументов смотрите в справке "
-                 "(https://help.simintech.ru/, раздел языка).")
-    lines.append("Проверить имя — ресурс simintech://language/functions/<имя>.")
-    return "\n".join(lines)
+    return help_tools.format_language_registry(functions, meta)
 
 
 @mcp.resource("simintech://language/functions/{name}")
 def resource_language_function(name: str) -> str:
-    """Существует ли функция встроенного языка, и что она делает.
+    """Карточка функции: синтаксис, аргументы, назначение.
 
-    Реестр даёт **имя, категорию и назначение — без сигнатур**: ресурс
-    отвечает, есть ли такое имя, но не как расположить аргументы (за этим —
-    в справку поставки). Имени нет в реестре — это ответ, а не отказ чтения:
-    ресурс не место для исключений.
+    Отвечает и на «есть ли такое имя»: имени нет — это ответ, а не отказ
+    чтения (ресурс не место для исключений). Форму карточки собирает
+    `tools.help.format_language_function` — та же, что у инструмента
+    `get_language_function`.
     """
     try:
         found = language_api.find_function(name)
     except OSError as exc:
         return f"ERROR: реестр функций языка недоступен: {exc}"
     if found is None:
-        return (f"Функции «{name}» нет в реестре встроенного языка SimInTech. "
-                f"Реестр даёт существование и назначение имени, но не "
-                f"сигнатуры: если имя кажется верным, проверьте его по "
-                f"справке (https://help.simintech.ru/, раздел языка).")
-    lines = [f"Функция «{found.name}»:",
-             f"  категория: {found.full_category}"]
-    if found.purpose:
-        lines.append(f"  назначение: {found.purpose}")
-    else:
-        lines.append("  назначение: в справке не указано")
-    if found.graphics_only:
-        lines.append("  доступна только в графическом контейнере")
-    lines.append("  сигнатуры в реестре нет: состав и порядок аргументов "
-                 "смотрите в справке (https://help.simintech.ru/)")
-    return "\n".join(lines)
+        return (f"Функции «{name}» нет в реестре встроенного языка SimInTech — "
+                f"правдоподобное имя в языке может отсутствовать. Полный "
+                f"поиск — инструмент search_language_functions.")
+    return help_tools.format_language_function(found)
 
 
 @mcp.resource("simintech://model/checklist")
