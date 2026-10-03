@@ -122,6 +122,27 @@ async def test_open_project_refuses_missing_file_before_com(
 
 
 @pytest.mark.anyio
+async def test_open_project_requires_absolute_path(monkeypatch):
+    """Относительный путь — отказ до COM (находка ревью).
+
+    Предпроверка раскрыла бы его от рабочего каталога процесса сервера, а
+    среда — от своего; на этом они расходятся, и проверка либо пропустила бы
+    чужой файл, либо отказала бы там, где среда открыла бы.
+    """
+
+    def _must_not_be_called(*args, **kwargs):
+        raise AssertionError("COM трогать нельзя: путь не абсолютный")
+
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(_must_not_be_called))
+    monkeypatch.setattr(session, "_ensure_client", _must_not_be_called)
+
+    text = await _error("open_project", {"path": "model.prt"})
+
+    assert "абсолют" in text
+
+
+@pytest.mark.anyio
 async def test_open_project_directory_gets_hint(tmp_path):
     """Каталог вместо файла — отказ с подсказкой.
 
