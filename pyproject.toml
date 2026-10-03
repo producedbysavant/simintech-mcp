@@ -56,8 +56,13 @@ dependencies = [
     # (PR #38 `637976a`), фикс моста — запертый файл результата (PR #35
     # `5d0b3d7`, он тоже после v0.12.0), доки/клеймы (PR #36 `778b645`);
     # выпускной коммит `b88d005`.
-    # sha: b88d005d9b130584840d06ec62d6634ab86a07c3
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.0",
+    # v0.13.1 — релизный тег simintech-code (библиотека 0.13.1):
+    # `parse_xprt_block_script` — чтение скрипта блока «Язык программирования»
+    # из выгрузки `.xprt` (обе конвенции кавычек, первая страница, отказ на
+    # повреждённом снимке и неполном остатке; squash-коммит PR #41 `addbd0f`);
+    # выпускной коммит `003f6b0`.
+    # sha: 003f6b0f97aba0956a041209ad0acb47fdc8fb3e
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.1",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
