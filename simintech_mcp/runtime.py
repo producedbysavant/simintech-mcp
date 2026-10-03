@@ -25,7 +25,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from typing import Any, Callable, Dict, Tuple
+from types import FunctionType
+from typing import Any, Callable, Dict, Tuple, cast
 
 from fastmcp.exceptions import ToolError
 
@@ -171,10 +172,14 @@ def log_event(event: str, **fields: Any) -> None:
         pass
 
 
-def _log_args(fn, args, kwargs) -> Dict[str, str]:
+def _log_args(fn: Callable[..., Any], args: Tuple[Any, ...],
+              kwargs: Dict[str, Any]) -> Dict[str, str]:
     """Аргументы вызова для журнала: имена из сигнатуры, значения урезаны."""
     try:
-        names = fn.__code__.co_varnames[:fn.__code__.co_argcount]
+        # `__code__` есть у функции (инструменты — обычные `def`), а не у
+        # произвольного `Callable` — сужаем до `FunctionType` явно.
+        code = cast(FunctionType, fn).__code__
+        names = code.co_varnames[:code.co_argcount]
         pairs = dict(zip(names, args))
         pairs.update(kwargs)
         return {name: str(value)[:120] for name, value in pairs.items()}

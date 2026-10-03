@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 from fastmcp.exceptions import ToolError
+from simintech_api import Block
 from simintech_api.catalog import decode_xprt, parse_xprt_block_script
 from simintech_api.constants import standard_block_size
 from simintech_api.exceptions import PortError, ScriptBridgeError
@@ -120,7 +121,7 @@ def add_block(class_name: str, name_hint: str = "",
     # Параметры разбираются и проверяются ДО создания блока: иначе отказ
     # оставил бы на схеме блок, которого нет в ответе инструмента.
     pairs: Dict[str, ParamValue] = {}
-    ignored = []
+    ignored: list[str] = []
     if props:
         for pair in _split_props(props):
             if "=" in pair:
@@ -407,6 +408,7 @@ def _block_caption(page: Any, block_id: int) -> str:
     источник линии может лежать на другой странице, и выдать id за имя было
     бы догадкой.
     """
+    blocks: list[Block] = []
     try:
         blocks = page.get_blocks()
     except Exception:                                             # noqa: BLE001
@@ -925,7 +927,7 @@ def list_blocks() -> str:
     blocks = session.ensure_project().get_main_page().get_blocks()
     if not blocks:
         return "Блоков на странице нет"
-    lines = []
+    lines: list[str] = []
     for b in blocks[:50]:
         try:
             nm = b.get_name()
@@ -1003,7 +1005,9 @@ def get_block_params(block: str) -> str:
     if target is None:
         return _missing_block(block)
     try:
-        props = target.get_properties()
+        # `get_properties` в библиотеке принимает неаннотированный
+        # `catalog` (block.py:85) — pyright видит метод частично неизвестным.
+        props = target.get_properties()  # pyright: ignore
         class_name = target.class_name
     except Exception as exc:
         return f"ERROR: {exc}"
@@ -1120,7 +1124,7 @@ def _size_value(value: float) -> str:
     return f"{value:g}"
 
 
-def _size_text(sizes) -> str:
+def _size_text(sizes: tuple[float, float]) -> str:
     """Размер для ответов: `360x120` — формат среды (`GetBlockPropAsString`)."""
     width, height = sizes
     return f"{_size_value(width)}x{_size_value(height)}"
@@ -1140,7 +1144,7 @@ _PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")
 PORT_ROW_HEIGHT = 16
 
 
-def _port_signal_count(target) -> Optional[int]:
+def _port_signal_count(target: Block) -> Optional[int]:
     """Число сигналов порт-блока по `PortNames`; `None` — прочитать не удалось.
 
     Пустой список — тот же `None`, а не ноль сигналов: у порт-блока имя есть
@@ -1155,7 +1159,7 @@ def _port_signal_count(target) -> Optional[int]:
     return len(names) or None
 
 
-def _port_required_height(name: str, target) -> Optional[int]:
+def _port_required_height(name: str, target: Block) -> Optional[int]:
     """Обязательная высота порт-блока (`PORT_ROW_HEIGHT` × число строк).
 
     `None` — класс, к правилу не относящийся. «Не знаю» записью не
@@ -1283,8 +1287,9 @@ def set_block_size(block: str, width: float, height: float) -> str:
     before = target.get_size()
     requested = (float(width), float(height))
     try:
-        target.set_graph_prop("Width", _size_value(width))
-        target.set_graph_prop("Height", _size_value(height))
+        # `set_graph_prop` в библиотеке — `value` без аннотации (block.py:169).
+        target.set_graph_prop("Width", _size_value(width))  # pyright: ignore
+        target.set_graph_prop("Height", _size_value(height))  # pyright: ignore
     except Exception as exc:                                  # noqa: BLE001
         return f"ERROR: {exc}"
     # Порядок как у расстановки: изменённая геометрия → перерисовка →

@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 from fastmcp.exceptions import ToolError
+from simintech_api import Block
 from simintech_api.catalog import NON_BLOCK_CLASSES
 
 from .. import runtime, session
@@ -40,8 +41,10 @@ PORT_STACK_CLASSES = ("Порт входа", "Порт выхода")
 LABEL_CLASSES = NON_BLOCK_CLASSES
 
 
-def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
-                       available: dict) -> int:
+def _flush_port_stacks(tokens: list[str],
+                       centers: dict[str, tuple[float, float]],
+                       sizes: dict[str, tuple[float, float]],
+                       available: dict[str, Block]) -> int:
     """Стыковать порт-блоки одного класса в слое вплотную.
 
     Стандарт оформления (#24, п.2): блоки одного вида — стопкой без зазоров,
@@ -53,16 +56,16 @@ def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
     следующий центр — предыдущий + (h1 + h2)/2. Блоки без читаемого класса не
     трогаются; возвращается число сдвинутых.
     """
-    layers: dict = {}
+    layers: dict[float, list[str]] = {}
     for token in tokens:
         layers.setdefault(centers[token][0], []).append(token)
     moved = 0
     for column in layers.values():
         ordered = sorted(column, key=lambda t: centers[t][1])
-        runs: list = []
+        runs: list[tuple[str | None, list[str]]] = []
         for token in ordered:
             try:
-                cls = available[token].class_name
+                cls: str | None = available[token].class_name
             except Exception:                                     # noqa: BLE001
                 cls = None
             if cls is not None and runs and runs[-1][0] == cls:
@@ -79,7 +82,7 @@ def _flush_port_stacks(tokens: list, centers: dict, sizes: dict,
     return moved
 
 
-def _snap_centers(centers: dict) -> None:
+def _snap_centers(centers: dict[str, tuple[float, float]]) -> None:
     """Поставить центры блоков на разметку 8 px (и порты — тоже на сетку).
 
     Выравнивание по портам после этого сетку сохраняет **не всегда**: смещение
@@ -197,7 +200,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
 
     project = session.ensure_project()
     page = project.get_main_page()
-    available = {}
+    available: dict[str, Block] = {}
     for block in page.get_blocks():
         available[str(block.id)] = block
         try:
@@ -226,8 +229,8 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
 
     # Подписи — не блоки: их «габарит» (якорь текста + типовая карточка)
     # расстановке не подлежит, иначе подпись уезжает от своего блока.
-    dropped_labels = []
-    kept = []
+    dropped_labels: list[str] = []
+    kept: list[str] = []
     for token in tokens:
         try:
             cls = available[token].class_name
@@ -268,8 +271,8 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
                 by_name.setdefault(available[token].get_name(), token)
             except Exception:                                 # noqa: BLE001
                 continue
-        links = []
-        seen_pairs: set = set()
+        links: list[tuple[str, str]] = []
+        seen_pairs: set[tuple[str, str]] = set()
         for _wire, src, _out, dst, _in in session.WIRES:
             src_token = by_name.get(src)
             dst_token = by_name.get(dst)
@@ -335,11 +338,11 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     # «Сумматора» входы на четверти и трёх четвертях высоты, а выход
     # «Усилителя» посередине, и прямой участок не получается. Координаты
     # берём у самих портов, поэтому считаем по фактической геометрии.
-    unaligned = []
+    unaligned: list[str] = []
     # Смещения портов относительно центров читаем один раз: дальше блоки
     # двигаются, а COM отдаёт координаты портов только после перерисовки —
     # повторное чтение вернуло бы устаревшие значения.
-    offsets = {}
+    offsets: dict[tuple[str, int, bool], float] = {}
     for _wire, src_name, out_index, dst_name, in_index in session.WIRES:
         src_token = aliases.get(src_name, src_name)
         dst_token = aliases.get(dst_name, dst_name)
@@ -430,14 +433,14 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
     # раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
     # наложения — не наша правка, но расставленный поверх чужого обязан быть
     # виден.
-    placed = set()
+    placed: set[str] = set()
     for token in tokens:
         try:
             placed.add(available[token].get_name())
         except Exception:                                     # noqa: BLE001
             placed.add(str(available[token].id))
-    rects = []
-    no_geometry = []
+    rects: list[tuple[str, tuple[float, float, float, float]]] = []
+    no_geometry: list[str] = []
     for block in page.get_blocks():
         try:
             name = block.get_name()
@@ -462,7 +465,7 @@ def layout_place(block_ids: str = "", connections: str = "") -> str:
             no_geometry.append(name)
         else:
             rects.append((name, rect))
-    overlaps = []
+    overlaps: list[tuple[str, str]] = []
     for index, (name_a, rect_a) in enumerate(rects):
         for name_b, rect_b in rects[index + 1:]:
             if (name_a in placed or name_b in placed) \
