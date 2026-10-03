@@ -47,6 +47,7 @@ from .page_script import (
     RESULT_FILE,
     _change_report,
     _describe_outcome,
+    _discard_result,
     _fresh_name,
     _object_names,
 )
@@ -71,16 +72,21 @@ def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     Отказ моста (`ScriptBridgeError`) означает неопределённое состояние проекта,
     поэтому он выходит наружу отдельным `ToolError` с рецептом проверки; исходы
     же разбирает вызывающий — у выгрузки и сборки разный набор допустимых.
+    Контурный файл результата убирается на любом пути: строки тела уже
+    прочитаны мостом (`page_script._discard_result`).
     """
+    path = _result_path()
     try:
-        run = _bridge().run_page_script(body, _result_path())
+        run = _bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
+        _discard_result(path)
         raise ToolError(
             f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
             "расчёт должен сдвинуть модельное время: проверьте, что модель "
             "считает — неподключённый вход останавливает расчёт всей модели "
             "молча."
         ) from exc
+    _discard_result(path)
     return run.outcome, run.restored_script
 
 

@@ -315,6 +315,35 @@ async def test_run_page_script_returns_outcome_and_body_lines(
 
 
 @pytest.mark.anyio
+async def test_run_page_script_discards_result_file(monkeypatch, tmp_path):
+    """Контурный файл результата удаляется после прогона (находка ревью #54).
+
+    Строки тела приходят ответом, файл после прогона не нужен; без удаления
+    долгая сессия копила бы `page-script-result-*.txt` без предела. Подделка
+    моста создаёт файл так же, как настоящий, — проверяется переход, а не
+    договорённость.
+    """
+    from simintech_api.script_probe import OUTCOME_OK
+
+    class _Writes(_BridgeRuns):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[])
+        path: Path | None = None
+
+        def run_page_script(self, body: str, result_path: Path):
+            Path(result_path).write_text("CTX_BEGIN\nx\nCTX_END",
+                                         encoding="utf-8")
+            type(self).path = Path(result_path)
+            return super().run_page_script(body, result_path)
+
+    _install(monkeypatch, tmp_path, _Writes, project=_FakeProject(["k_0"]))
+
+    await mcp.call_tool("run_page_script", {"script": "x();"})
+
+    assert _Writes.path is not None, "мост не был вызван"
+    assert not _Writes.path.exists(), "контурный файл копится в песочнице"
+
+
+@pytest.mark.anyio
 async def test_run_page_script_reports_objects_added(monkeypatch, tmp_path):
     """Отчёт об изменениях собирается инструментом: снимки до и после различаются.
 
