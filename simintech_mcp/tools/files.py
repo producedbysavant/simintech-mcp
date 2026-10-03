@@ -148,7 +148,7 @@ def summarize_output_file(path: str, column: int = -1) -> str:
         lines.append(f"  средний наклон: {(series[-1] - series[0]) / span:g} "
                      f"за секунду (по концам ряда)")
     if table.skipped or ragged or table.too_wide or table.partial_dropped:
-        notes = []
+        notes: list[str] = []
         if table.skipped:
             notes.append(f"нечисловых {table.skipped}")
         if ragged:
@@ -251,7 +251,7 @@ def inspect_project_file(path: str) -> str:
                 if classes else "в файле нет блоков схемы.")
         )
     if classes:
-        lines = []
+        lines: list[str] = []
         for cls in sorted(classes):
             computed = readonly.get(cls) or []
             tail = (f" [вычисляемые, задавать нельзя: {', '.join(computed)}]"

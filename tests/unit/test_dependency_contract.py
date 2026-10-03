@@ -22,6 +22,9 @@ REQUIRED = [
     ("simintech_api", "SessionOwnership"),
     ("simintech_api", "Project"),
     ("simintech_api", "Wire"),
+    # Блоки и сигналы — типы аннотаций инструментов (layout/blocks/simulation).
+    ("simintech_api", "Block"),
+    ("simintech_api", "Signal"),
     ("simintech_api", "ComCallError"),
     ("simintech_api", "ComConnectionError"),
     # `language` — подмодуль: атрибутом пакета он становится лишь после

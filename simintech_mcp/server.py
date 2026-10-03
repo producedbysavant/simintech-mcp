@@ -17,7 +17,9 @@
 
 from __future__ import annotations
 
-from . import prompts, resources, stdio, tools  # noqa: F401
+# Импорт ради регистрации инструментов/ресурсов/промптов при импорте
+# модуля — не «мёртвый код» (reportUnusedImport pyright).
+from . import prompts, resources, stdio, tools  # noqa: F401  # pyright: ignore
 from .app import mcp
 
 

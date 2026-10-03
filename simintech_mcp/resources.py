@@ -87,7 +87,7 @@ def resource_blocks_catalog() -> str:
                 "(Windows, mmain.exe /regserver).")
     ordered = _catalog_order(classes)
     shown = ordered[:MAX_CATALOG_CLASSES]
-    lines = []
+    lines: list[str] = []
     for cls in shown:
         props = ", ".join(cat.props_for(cls))
         readonly = cat.readonly_for(cls)
@@ -117,7 +117,7 @@ def resource_skills() -> str:
     if not entries:
         return (f"В каталоге «{root}» скиллов нет: нужны подкаталоги с файлом "
                 f"{skills.SKILL_FILE}.")
-    lines = []
+    lines: list[str] = []
     for name, summary in entries:
         if summary is None:
             # Ошибку чтения показываем явно: иначе она неотличима от скилла

@@ -430,7 +430,7 @@ def check_model_layout() -> str:
                          "(тело оборвалось до конца).")
         if wire_ids:
             received = straight + len(bent) + unparsed_total
-            tail = []
+            tail: list[str] = []
             if bent:
                 shown = ", ".join(bent[:MAX_REPORTED])
                 more = (f" (и ещё {len(bent) - MAX_REPORTED})"

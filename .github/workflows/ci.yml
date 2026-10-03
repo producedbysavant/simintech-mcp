@@ -34,6 +34,14 @@ jobs:
       - name: Типы
         run: mypy
 
+      - name: pyright (strict)
+        # Строгий режим по `simintech_mcp` (`pyrightconfig.json`). Версия
+        # закреплена: набор правил strict меняется между выпусками, и «ноль»
+        # обязан значить одно и то же. `--pythonpath` — чтобы pyright взял
+        # `simintech-api` (и `fastmcp`) из установленного окружения: локально
+        # то же даёт `extraPaths` (соседний чекаут), в CI — установка из пина.
+        run: npx --yes "pyright@1.1.414" --pythonpath "$(python -c 'import sys; print(sys.executable)')"
+
       - name: Тесты
         run: pytest tests/unit -q
 

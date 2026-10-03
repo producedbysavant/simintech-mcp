@@ -192,8 +192,8 @@ def create_pack(path: str, projects: List[str],
             raise ToolError(
                 f"{label}: позиции {bad} вне списка projects (в нём "
                 f"{len(projects)} записей, допустимо 0…{len(projects) - 1}).")
-    missing = []
-    entries = []
+    missing: list[str] = []
+    entries: list[PackEntry] = []
     for index, project in enumerate(projects):
         candidate = project
         if not os.path.isabs(project):
@@ -213,9 +213,9 @@ def create_pack(path: str, projects: List[str],
     except Exception as exc:                                  # noqa: BLE001
         raise ToolError(
             f"пакет не собран: {type(exc).__name__}: {exc}") from exc
-    lines = []
+    lines: list[str] = []
     for index, item in enumerate(pack.projects):
-        marks = []
+        marks: list[str] = []
         if not item.active:
             marks.append("неактивен")
         if not item.time_sync:
@@ -344,7 +344,7 @@ def list_pack_projects() -> str:
             f"если состав не читается и дальше, пакет, вероятно, повреждён.")
     members = [(pid, _member_name(pack, pid)) for pid in ids]
     times = _member_times(pack, ids)
-    lines = []
+    lines: list[str] = []
     for index, (pid, name) in enumerate(members):
         lines.append(f"  [{index}] id={pid} «{_file_label(name)}» — модельное "
                      f"время {_fmt_time(times[index])}")

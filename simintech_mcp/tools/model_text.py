@@ -100,7 +100,7 @@ def result_path() -> Path:
                              fresh_name(PROBE_RESULT_FILE)))
 
 
-def _refuse_on_bad_outcome(outcome, *, action: str) -> None:
+def _refuse_on_bad_outcome(outcome: ContourOutcome, *, action: str) -> None:
     """Отказать, если тело не отработало: `not-compiled` и `aborted` — не успех."""
     if outcome.kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
         return

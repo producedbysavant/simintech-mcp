@@ -101,7 +101,7 @@ def _skill_summary(path: Path) -> Optional[str]:
 
 def list_skills(root: str) -> List[Tuple[str, Optional[str]]]:
     """Скиллы каталога: пары (имя, краткое описание или None при ошибке)."""
-    result = []
+    result: List[Tuple[str, Optional[str]]] = []
     for entry in sorted(Path(root).iterdir()):
         if not entry.is_dir() or not SKILL_NAME_RE.match(entry.name):
             continue

@@ -7,12 +7,20 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 from fastmcp.exceptions import ToolError
+from simintech_api import Signal
 
 from .. import runtime, sandbox, session
 from ..app import mcp
+
+if TYPE_CHECKING:
+    # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
+    # нет) — нужен только для аннотации; `DataType` — только для аннотации
+    # `_array_types`, рантайм-импорт остаётся локальным в самой функции.
+    from simintech_api.constants import DataType
+    from simintech_api.model import SignalInfo
 
 
 # ─── Расчёт ───────────────────────────────────────────────────────
@@ -210,7 +218,7 @@ def get_time() -> float:
 MAX_SIGNAL_NAMES = 50
 
 
-def _signals_section(title: str, items: list) -> str:
+def _signals_section(title: str, items: list[SignalInfo]) -> str:
     """Заголовок со счётом, первые `MAX_SIGNAL_NAMES` имён и хвост «… и ещё N».
 
     Счёт печатается всегда, чтобы «сигналов ровно 50» и «показано 50 из 300»
@@ -247,7 +255,7 @@ def list_signals() -> str:
     readable = [s for s in signals if s.readable]
     names_only = [s for s in signals if not s.readable]
 
-    parts = []
+    parts: list[str] = []
     if readable:
         parts.append(_signals_section("Читаемые сигналы", readable))
     else:
@@ -266,7 +274,7 @@ def list_signals() -> str:
 MAX_ARRAY_ITEMS = 100
 
 
-def _array_types() -> tuple:
+def _array_types() -> tuple[DataType, DataType]:
     """Типы-массивы (`ARRAY`, `INT_ARRAY`) — импорт здесь, а не наверху."""
     from simintech_api.constants import DataType
 
@@ -300,7 +308,12 @@ def get_signal(block: str, max_items: int = 20,
             f"элемент массива — отдельный COM-вызов, и такой запрос надолго "
             f"занял бы единственный COM-поток.")
     try:
-        sig = session.ensure_project().signal(block)
+        # Возврат `Project.signal` виден pyright частично неизвестным до
+        # TYPE_CHECKING-импорта `Signal` в simintech-code (project.py:471,
+        # `noqa: F821`); `cast` сужает достоверно — объект делает сама
+        # библиотека.
+        sig = cast(Signal,
+                   session.ensure_project().signal(block))  # pyright: ignore
         if sig.data_type not in _array_types():
             if index is not None:
                 raise ToolError(
@@ -342,7 +355,12 @@ def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
         index: индекс элемента массива; без него — скалярная запись.
     """
     try:
-        sig = session.ensure_project().signal(block)
+        # Возврат `Project.signal` виден pyright частично неизвестным до
+        # TYPE_CHECKING-импорта `Signal` в simintech-code (project.py:471,
+        # `noqa: F821`); `cast` сужает достоверно — объект делает сама
+        # библиотека.
+        sig = cast(Signal,
+                   session.ensure_project().signal(block))  # pyright: ignore
         if index is None:
             sig.write(value)
             return f"{block} = {value}"

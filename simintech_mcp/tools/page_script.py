@@ -80,7 +80,7 @@ def object_names() -> list[str]:
     где работа идёт внутри субмодели.
     """
     page = session.ensure_project().get_current_page()
-    names = []
+    names: list[str] = []
     for obj in page.get_blocks():
         try:
             names.append(obj.get_name())
