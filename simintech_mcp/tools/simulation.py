@@ -7,10 +7,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Optional
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Signal
 
 from .. import runtime, sandbox, session
 from ..app import mcp
@@ -308,12 +307,7 @@ def get_signal(block: str, max_items: int = 20,
             f"элемент массива — отдельный COM-вызов, и такой запрос надолго "
             f"занял бы единственный COM-поток.")
     try:
-        # Возврат `Project.signal` виден pyright частично неизвестным до
-        # TYPE_CHECKING-импорта `Signal` в simintech-code (project.py:471,
-        # `noqa: F821`); `cast` сужает достоверно — объект делает сама
-        # библиотека.
-        sig = cast(Signal,
-                   session.ensure_project().signal(block))  # pyright: ignore
+        sig = session.ensure_project().signal(block)
         if sig.data_type not in _array_types():
             if index is not None:
                 raise ToolError(
@@ -355,12 +349,7 @@ def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
         index: индекс элемента массива; без него — скалярная запись.
     """
     try:
-        # Возврат `Project.signal` виден pyright частично неизвестным до
-        # TYPE_CHECKING-импорта `Signal` в simintech-code (project.py:471,
-        # `noqa: F821`); `cast` сужает достоверно — объект делает сама
-        # библиотека.
-        sig = cast(Signal,
-                   session.ensure_project().signal(block))  # pyright: ignore
+        sig = session.ensure_project().signal(block)
         if index is None:
             sig.write(value)
             return f"{block} = {value}"

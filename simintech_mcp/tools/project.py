@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
-from typing import Optional, Tuple, cast
+from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Project
@@ -126,9 +126,7 @@ def disconnect() -> str:
         # exact PID и точечное завершение своего процесса (shutdown из
         # simintech-code v0.11.0).
         try:
-            # `shutdown` в библиотеке принимает неаннотированный `kill_pids`
-            # (com_client.py:218) — pyright видит метод частично неизвестным.
-            client.shutdown()  # pyright: ignore
+            client.shutdown()
         except Exception as exc:                              # noqa: BLE001
             failed += (f" ВНИМАНИЕ: процесс mmain.exe (PID {pid}) завершить "
                        f"не удалось ({type(exc).__name__}: {exc}) — он мог "
@@ -398,10 +396,7 @@ def get_project_config() -> str:
     шаблона). Пустой ответ — у проекта без расчётного слоя: тогда расчёт в нём
     не идёт вообще, и это не «настройки по умолчанию», а их отсутствие.
     """
-    # `calc_settings` в библиотеке возвращает bare `dict` (project.py:196) —
-    # сужаем до фактического содержимого (имена и значения — строки).
-    settings = cast(dict[str, str],
-                    session.ensure_project().calc_settings())  # pyright: ignore
+    settings = session.ensure_project().calc_settings()
     if not settings:
         raise ToolError(
             "В проекте нет параметров расчётного слоя: сам слой отсутствует. "

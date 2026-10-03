@@ -1021,9 +1021,7 @@ def get_block_params(block: str) -> str:
     if target is None:
         return _missing_block(block)
     try:
-        # `get_properties` в библиотеке принимает неаннотированный
-        # `catalog` (block.py:85) — pyright видит метод частично неизвестным.
-        props = target.get_properties()  # pyright: ignore
+        props = target.get_properties()
         class_name = target.class_name
     except Exception as exc:
         return f"ERROR: {exc}"
@@ -1303,9 +1301,8 @@ def set_block_size(block: str, width: float, height: float) -> str:
     before = target.get_size()
     requested = (float(width), float(height))
     try:
-        # `set_graph_prop` в библиотеке — `value` без аннотации (block.py:169).
-        target.set_graph_prop("Width", _size_value(width))  # pyright: ignore
-        target.set_graph_prop("Height", _size_value(height))  # pyright: ignore
+        target.set_graph_prop("Width", _size_value(width))
+        target.set_graph_prop("Height", _size_value(height))
     except Exception as exc:                                  # noqa: BLE001
         return f"ERROR: {exc}"
     # Порядок как у расстановки: изменённая геометрия → перерисовка →
