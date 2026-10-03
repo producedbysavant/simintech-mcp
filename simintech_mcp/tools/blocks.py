@@ -7,13 +7,20 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 from fastmcp.exceptions import ToolError
 from simintech_api.constants import standard_block_size
+from simintech_api.exceptions import PortError, ScriptBridgeError
+from simintech_api.script_probe import (
+    OUTCOME_ABORTED,
+    OUTCOME_NOT_COMPILED,
+    ContourOutcome,
+)
 
 from .. import catalog, runtime, session
 from ..app import mcp
+from .page_script import _bridge, _describe_outcome, _result_path
 
 
 # ─── Блоки и связи ────────────────────────────────────────────────
@@ -236,6 +243,286 @@ def connect(src: str, dst: str,
     # линия шла без лишнего излома.
     session._WIRES.append((wire, src, out_index, dst, in_index))
     return f"Соединено {src} -> {dst} (wire={wire.id})"
+
+
+def _disconnect_wire_body(src_id: int, out_index: int,
+                          dst_id: int, in_index: int) -> str:
+    """Тело снятия линии для контура — форма, проверенная живым прогоном.
+
+    Рецепт (замер 03.10.2026, поставка 2.26.6.23, пробы
+    `probe_disconnect_body.py` и `probe_disconnect_body2.py`):
+    `getportwireid(вход)` — линия, приходящая во вход; `findstartport(вход)` —
+    выходной порт её начала; `removeprimitiv(id)` снимает линию, и старт
+    расчёта это переживает — в отличие от БЛОКА, где `removeprimitiv` роняет
+    `ProjectStart` (дефект вендора, воспроизводитель отправлен ему).
+
+    Линия удаляется, только если её начало — тот самый выход `src`: «снять не
+    ту связь» хуже отказа, а по COM начало линии не читается вовсе. Ответ —
+    строки через `fid` (дескриптор результата контура): их видит
+    `outcome.lines`, и они уцелевают при частичном обрыве.
+
+    Защита от нулевых портов — на случай, когда тело исполнилось не на той
+    странице, где искали блоки: `getportwireid(0)` не измерен, и вызов с
+    нулевым портом мог бы оборвать тело посреди работы.
+    """
+    return (
+        f"p_in = getinportid({dst_id}, {in_index});\n"
+        f"p_out = getoutportid({src_id}, {out_index});\n"
+        'if p_in = 0 then writelnutf8(fid, "err=no-in-port");\n'
+        'if p_out = 0 then writelnutf8(fid, "err=no-out-port");\n'
+        "if p_in <> 0 then begin\n"
+        "  if p_out <> 0 then begin\n"
+        "    w = getportwireid(p_in);\n"
+        '    if w = 0 then writelnutf8(fid, "err=not-connected");\n'
+        "    if w <> 0 then begin\n"
+        "      fs = findstartport(p_in);\n"
+        "      if fs = p_out then begin\n"
+        "        removeprimitiv(w);\n"
+        '        writelnutf8(fid, "removed=" + inttostr(w) + " pw=" + '
+        "inttostr(getportwireid(p_in)));\n"
+        "      end;\n"
+        "      if fs <> p_out then begin\n"
+        '        writelnutf8(fid, "err=other-src blk=" + '
+        "inttostr(getportblockid(fs)));\n"
+        "      end;\n"
+        "    end;\n"
+        "  end;\n"
+        "end;\n"
+    )
+
+
+class _DropReply(NamedTuple):
+    """Разобранный ответ тела: что снято — или почему не стало.
+
+    `kind` — «removed» | «not-connected» | «other-src» | «no-in-port» |
+    «no-out-port» | «unknown». `wire_id` — снятая линия, `port_left` — линия,
+    которую вход всё ещё видит после снятия, `block_id` — фактический
+    источник линии при «other-src».
+    """
+
+    kind: str
+    wire_id: int = 0
+    port_left: int = 0
+    block_id: int = 0
+
+
+def _parse_drop_reply(lines: List[str]) -> _DropReply:
+    """Разобрать строки тела в исход.
+
+    «unknown» — не «ничего не произошло»: тело ответа не оставило, и решать
+    по молчанию нечем (вызывающий на него отказывает).
+    """
+    for line in lines:
+        text = line.strip()
+        if text == "err=not-connected":
+            return _DropReply("not-connected")
+        if text == "err=no-in-port":
+            return _DropReply("no-in-port")
+        if text == "err=no-out-port":
+            return _DropReply("no-out-port")
+        if "=" not in text:
+            continue
+        fields = dict(part.split("=", 1) for part in text.split() if "=" in part)
+        if text.startswith("removed="):
+            # Отдельно от прочих: строка содержит и `removed`, и `pw`, и
+            # словарь собирается целиком — частичный разбор молча показал бы
+            # нули там, где значения есть.
+            try:
+                return _DropReply("removed", wire_id=int(fields["removed"]),
+                                  port_left=int(fields.get("pw", "0")))
+            except (KeyError, ValueError):
+                continue
+        if text.startswith("err=other-src"):
+            try:
+                return _DropReply("other-src", block_id=int(fields["blk"]))
+            except (KeyError, ValueError):
+                continue
+    return _DropReply("unknown")
+
+
+def _run_drop_body(body: str) -> ContourOutcome:
+    """Выполнить тело снятия линии контуром; отказ моста — наружу.
+
+    `ScriptBridgeError` означает неопределённое состояние проекта: тело
+    могло не установиться, а могло и отработать. Поэтому он выходит отказом,
+    а не исходом — тот же контракт, что у инструментов языкового слоя.
+    """
+    try:
+        run = _bridge().run_page_script(body, _result_path())
+    except ScriptBridgeError as exc:
+        raise ToolError(
+            f"снять линию не удалось: {exc}. Тело идёт в секцию "
+            "`initialization`, поэтому расчёт должен сдвинуть модельное "
+            "время: проверьте, что модель считает — неподключённый вход "
+            "останавливает расчёт всей модели молча.") from exc
+    return run.outcome
+
+
+def _page_wire_count(page: Any) -> Optional[int]:
+    """Число линий страницы или None — перечислить не удалось.
+
+    Счёт читается до и после правки: снятие линии может задеть не одну —
+    случается, во вход сходится несколько линий (среда это допускает), и
+    тогда удаление одной уносит связку. Молчать об этом нельзя, а объявить
+    «ровно одна» без чтения — тем более.
+    """
+    try:
+        return len(page.get_wires())
+    except Exception:                                             # noqa: BLE001
+        return None
+
+
+def _block_caption(page: Any, block_id: int) -> str:
+    """Имя блока по id для отказа «линия идёт от другого». Никогда не бросает.
+
+    Не нашли блок среди блоков страницы — называем id и говорим об этом:
+    источник линии может лежать на другой странице, и выдать id за имя было
+    бы догадкой.
+    """
+    try:
+        blocks = page.get_blocks()
+    except Exception:                                             # noqa: BLE001
+        blocks = []
+    for block in blocks:
+        try:
+            if block.id == block_id:
+                return f"'{block.get_name()}' (id={block_id})"
+        except Exception:                                         # noqa: BLE001
+            continue
+    return f"id={block_id} (имя среди блоков страницы не найдено)"
+
+
+@mcp.tool()
+@runtime._com_threaded(mutates_project=True)
+def disconnect_wire(src: str, dst: str,
+                    out_index: int = 0, in_index: int = 0) -> str:
+    """Снять линию связи, идущую из выхода src во вход dst.
+
+    Это парная операция к `connect`: переподключение — это `disconnect_wire`,
+    затем `connect` с новыми концами, два вызова.
+
+    **Снимается только та связь, которую назвали.** Перед удалением среда
+    сообщает начало линии, приходящей во вход `dst[in_index]`
+    (`findstartport`), и если оно — не выход `src[out_index]`, инструмент
+    отказывает, ничего не тронув: снять чужую связь хуже отказа. Концы линий
+    через COM не читаются, поэтому проверка живёт в теле скрипта — как и само
+    удаление: удаления линий в COM API нет вовсе, а у объектов есть только
+    `removeprimitiv` встроенного языка (`DeleteObjectPoint` — про точки).
+
+    **Удаление линии безопасно, удаление блока — нет.** Живой замер
+    03.10.2026 (поставка 2.26.6.23): линия снимается `removeprimitiv`, и
+    следующий старт расчёта это переживает; у БЛОКА тот же вызов роняет
+    `ProjectStart` (access violation в `mbtylib.dll`) — дефект вендора, и
+    инструмента удаления блоков нет, пока он не исправлен.
+
+    **Модель запускается на несколько шагов.** Тело идёт в секцию
+    `initialization` через контурный режим: расчёт сдвинет модельное время,
+    прежний скрипт страницы вернётся на место, изменения живут в памяти до
+    `save_project`. Снятая линия убирается и из реестра сессии — `layout_place`
+    больше не считает её опорой для расстановки.
+
+    **Несколько линий в один вход.** Среда допускает, чтобы во вход сходилось
+    несколько линий; видимая часть — одна из них, и удаление одной может
+    унести связку (замер: удаление первой из двух снесло обе). Ответ честно
+    называет и остаток на входе (`pw`), и изменение числа линий страницы —
+    если расходится с «минус одна», там будет предупреждение. Итог в любом
+    случае стоит проверить по схеме.
+
+    Args:
+        src: имя блока-источника (автоимя из `list_blocks`).
+        dst: имя блока-приёмника.
+        out_index: номер выходного порта источника (0-based).
+        in_index: номер входного порта приёмника (0-based).
+    """
+    project = session._ensure_project()
+    page = project.get_main_page()
+    b1 = page.find_block(src)
+    b2 = page.find_block(dst)
+    if b1 is None:
+        return _missing_block(src)
+    if b2 is None:
+        return _missing_block(dst)
+    # Порты проверяются до контура: тело получило бы нулевой порт на
+    # несуществующем номере, а расчёт уже был бы запущен и остановлен.
+    try:
+        b1.get_out_port(out_index)
+    except PortError as exc:
+        raise ToolError(
+            f"у блока '{src}' нет выходного порта {out_index}: {exc}. Номера "
+            f"портов — с нуля, как у `connect`; состав портов уточните по "
+            f"схеме.") from exc
+    try:
+        b2.get_in_port(in_index)
+    except PortError as exc:
+        raise ToolError(
+            f"у блока '{dst}' нет входного порта {in_index}: {exc}. Номера "
+            f"портов — с нуля, как у `connect`; состав портов уточните по "
+            f"схеме.") from exc
+
+    wires_before = _page_wire_count(page)
+    outcome = _run_drop_body(
+        _disconnect_wire_body(b1.id, out_index, b2.id, in_index))
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            "связь не снята: тело не собралось (текст ошибки — в окне "
+            "сообщений редактора SimInTech; через COM он не читается). "
+            "Проект не изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"снятие не подтверждено: тело оборвалось на исполнении.{detail} "
+            "Успело ли удаление выполниться — по этому исходу не определить: "
+            "проверьте схему (`list_wires` — число линий, `export_model_text` "
+            "— концы). Прежний скрипт страницы возвращён.")
+    reply = _parse_drop_reply(outcome.lines)
+    if reply.kind == "not-connected":
+        raise ToolError(
+            f"связь не снята: во вход {dst}[{in_index}] не приходит ни одной "
+            f"линии — снимать нечего, проект не изменён. Проверьте пару "
+            f"блоков и номера портов (концы линий через COM не читаются; "
+            f"`export_model_text` покажет их выгрузкой).")
+    if reply.kind == "other-src":
+        source = _block_caption(page, reply.block_id)
+        raise ToolError(
+            f"связь не снята: во вход {dst}[{in_index}] приходит линия от "
+            f"блока {source}, а не от '{src}'[{out_index}]: снять её значило "
+            f"бы убрать чужую связь. Проект не изменён. Цель — снять линию, "
+            f"которая приходит в этот вход: назовите источником блок "
+            f"{source}; цель — снять связь '{src}'[{out_index}] → "
+            f"'{dst}'[{in_index}]: её в этом входе нет, проверьте пару.")
+    if reply.kind in ("no-in-port", "no-out-port"):
+        which = "входной" if reply.kind == "no-in-port" else "выходной"
+        raise ToolError(
+            f"связь не снята: среда не нашла {which} порт у блока, хотя через "
+            f"COM он читается. Так выглядит расхождение страниц: блоки ищутся "
+            f"на главной, а контур исполняет тело в текущей. Проект не "
+            f"изменён; перейдите на главную страницу и повторите.")
+    if reply.kind != "removed":
+        raise ToolError(
+            "снятие не подтверждено: тело отработало, но не оставило ответа "
+            "— что оно успело сделать, по этому признаку не определить. "
+            "Проверьте схему (`list_wires`, `export_model_text`).")
+
+    session._forget_wire(reply.wire_id)
+    notes: List[str] = []
+    if reply.port_left:
+        notes.append(
+            f"ВНИМАНИЕ: во входе {dst}[{in_index}] после снятия ещё видна "
+            f"линия (id={reply.port_left}): во вход сходится несколько линий "
+            f"(среда это допускает) — проверьте схему.")
+    wires_after = _page_wire_count(page)
+    if wires_before is not None and wires_after is not None:
+        note = f"Линий связи на странице: {wires_before} → {wires_after}."
+        if wires_before - wires_after != 1:
+            note += (" Удаление затронуло не одну линию — вероятно, во вход "
+                     "сходилось несколько (среда связывает их); проверьте "
+                     "схему.")
+        notes.append(note)
+    tail = "\n" + "\n".join(notes) if notes else ""
+    return (f"Связь {src}[{out_index}] → {dst}[{in_index}] снята "
+            f"(wire={reply.wire_id}).\n"
+            f"{_describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
 @mcp.tool()

@@ -331,6 +331,25 @@ async def test_disconnect_reports_failed_close(monkeypatch):
     assert "ВНИМАНИЕ" in text
 
 
+def test_forget_wire_removes_only_named_wire():
+    """Реестр теряет именно снятую линию: прочие записи целы.
+
+    Линия теперь может умереть раньше проекта (`disconnect_wire`), и запись о
+    ней обязана уйти вместе с ней — иначе `layout_place` выравнивал бы блоки
+    по мёртвой связи, считая её живой.
+    """
+    saved = list(session._WIRES)
+    first, second = _FakeWire(1), _FakeWire(2)
+    session._WIRES[:] = [(first, "k_0", 0, "kx_0", 0),
+                         (second, "k_0", 0, "k_1", 1)]
+    try:
+        session._forget_wire(1)
+
+        assert [record[0] for record in session._WIRES] == [second]
+    finally:
+        session._WIRES[:] = saved
+
+
 def test_set_project_clears_wires():
     """Смена проекта сбрасывает линии: их COM-идентификаторы мертвы.
 

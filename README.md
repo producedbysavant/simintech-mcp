@@ -48,10 +48,12 @@ MCP-сервер (FastMCP) для управления средой динами
   поэтому инструменты языкового слоя (`import_model_text`, `run_page_script`,
   `inject_submodel_script`) ставят тело именно в эту секцию, а не под
   `if firststep then`, как старая проба.
-- **Удаление объектов не поддерживается.** `removeprimitiv` объект убирает, но
+- **Удаление БЛОКОВ не поддерживается.** `removeprimitiv` объект убирает, но
   следующий `ProjectStart` падает (access violation в `mbtylib.dll`; замер
   2026-09-29, воспроизведён на четырёх прогонах). Пока дефект не исправлен,
-  модель правят заново, а не удалением.
+  модель правят заново, а не удалением. На **линии** дефект не
+  распространяется: `disconnect_wire` снимает линию языковым путём, и старт
+  расчёта это переживает (замер 03.10.2026).
 - **Инструменты языкового слоя исполняют код, переданный клиентом.**
   `run_page_script`, `inject_submodel_script` и `import_model_text` принимают
   текст встроенного языка как есть (у `import_model_text` это декларативная
@@ -117,7 +119,7 @@ claude mcp add simintech -- simintech-mcp
 | Проекты | `create_project`, `open_project`, `reload_project`, `save_project`, `close_project`, `set_calc_time` |
 | Пакет проектов | `create_pack`, `open_pack`, `close_pack`, `list_pack_projects`, `select_pack_project`, `pack_run`, `pack_step`, `pack_stop` |
 | Настройки проекта | `get_project_config`, `set_project_config` |
-| Блоки и связи | `add_block`, `connect`, `list_blocks`, `list_wires` |
+| Блоки и связи | `add_block`, `connect`, `disconnect_wire`, `list_blocks`, `list_wires` |
 | Параметры | `get_block_params`, `set_block_param`, `set_block_size` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
@@ -128,7 +130,7 @@ claude mcp add simintech -- simintech-mcp
 | Layout | `layout_place`, `check_model_layout` |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 
-Всего инструментов — 48. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 49. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):
