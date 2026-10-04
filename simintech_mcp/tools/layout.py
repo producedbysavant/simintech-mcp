@@ -26,6 +26,14 @@ MAX_REPORTED_OVERLAPS = 10
 #: стоят в `cx±16, cy`, поэтому кратность 8 у центров даёт сетку и портам).
 GRID_STEP = 8.0
 
+#: Полотно снимка схемы (живой замер 04.10.2026): `savescreenshot` отдаёт PNG
+#: 1026x580. По нему считается масштаб подгонки кадра.
+CANVAS_W = 1026.0
+CANVAS_H = 580.0
+
+#: Поля подгонки кадра: доля полотна, оставляемая по краям.
+FIT_PADDING = 0.06
+
 #: Классы, стыкующиеся стопкой вплотную (стандарт: «входные порты единой
 #: колонкой без зазоров»).
 PORT_STACK_CLASSES = ("Порт входа", "Порт выхода")
@@ -98,6 +106,34 @@ def _snap_centers(centers: dict[str, tuple[float, float]]) -> None:
                           round(cy / GRID_STEP) * GRID_STEP)
 
 
+#: Отступ раскладки от начала координат: блок с центром x=0 теряет левую
+#: половину — она уходит в минус и на лист не попадает, и снимок показывает
+#: обрезанные блоки (живой замер 04.10.2026: полотно 1026x580, схема прижата
+#: к левому верхнему углу, два блока срезаны краем). Кратен шагу разметки,
+#: чтобы сетка пережила сдвиг.
+MARGIN = 48.0
+
+
+def _shift_to_margin(centers: dict[str, tuple[float, float]],
+                     sizes: dict[str, tuple[float, float]]) -> None:
+    """Отодвинуть раскладку от начала координат на `MARGIN`.
+
+    Габарит считается по фактическим размерам блоков (центр плюс-минус
+    половина размера), сдвиг — кратно `GRID_STEP`: `_snap_centers` идёт
+    следом и обязан оставить центры на сетке. Пустая раскладка не трогается.
+    """
+    if not centers:
+        return
+    left = min(centers[t][0] - sizes[t][0] / 2.0 for t in centers)
+    top = min(centers[t][1] - sizes[t][1] / 2.0 for t in centers)
+    dx = round((MARGIN - left) / GRID_STEP) * GRID_STEP
+    dy = round((MARGIN - top) / GRID_STEP) * GRID_STEP
+    if dx == 0 and dy == 0:
+        return
+    for token, (cx, cy) in centers.items():
+        centers[token] = (cx + dx, cy + dy)
+
+
 def _rect_of(points_text: str, size: "tuple[float, float]") -> \
         "tuple[float, float, float, float] | None":
     """Габарит блока: центр из `Points` ± половина размера.
@@ -115,6 +151,38 @@ def _rect_of(points_text: str, size: "tuple[float, float]") -> \
     cx, cy = float(pairs[0][0]), float(pairs[0][1])
     w, h = size
     return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+
+
+def _model_frame(page: Page) -> "tuple[float, float, float, float] | None":
+    """Рамка модели: объединение габаритов блоков страницы.
+
+    Считается по тем же данным, что и метрика наложений: центр из `Points`
+    (первая точка — центр блока), размер — `get_size`. Подписи
+    (`NON_BLOCK_CLASSES`) пропускаются: их карточка 60x40 накрывает блок и
+    растянула бы рамку. `None` — ни одного блока с читаемыми габаритами.
+    """
+    left = top = None
+    right = bottom = None
+    for block in page.get_blocks():
+        try:
+            if block.class_name in LABEL_CLASSES:
+                continue
+        except Exception:                                     # noqa: BLE001
+            pass
+        try:
+            size = block.get_size()
+            rect = _rect_of(block.get_points(), size) if size else None
+        except Exception:                                     # noqa: BLE001
+            rect = None
+        if rect is None:
+            continue
+        left = rect[0] if left is None else min(left, rect[0])
+        top = rect[1] if top is None else min(top, rect[1])
+        right = rect[2] if right is None else max(right, rect[2])
+        bottom = rect[3] if bottom is None else max(bottom, rect[3])
+    if left is None or top is None or right is None or bottom is None:
+        return None
+    return (left, top, right, bottom)
 
 
 def _overlaps(rect_a: "tuple[float, float, float, float]",
@@ -394,6 +462,7 @@ def layout_place(block_ids: str = "", connections: str = "",
     # идёт последним и порт-блоки не трогает (см. ниже); у остальных
     # приёмников смещение может увести центр с сетки (четверти трёхвходового
     # «Сумматора» — 12 px) — это назовёт проверка разметки.
+    _shift_to_margin(centers, sizes)
     _snap_centers(centers)
     flushed = _flush_port_stacks(tokens, centers, sizes, available)
     for token in tokens:
@@ -546,3 +615,81 @@ def layout_place(block_ids: str = "", connections: str = "",
         routes += (f"\nГеометрию прочитать не удалось у {len(no_geometry)} "
                    f"блоков: {', '.join(no_geometry[:MAX_REPORTED_OVERLAPS])}")
     return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def fit_view() -> str:
+    """Показать схему целиком: посчитать рамку модели и выставить кадр страницы.
+
+    Готовой функции «показать целиком» в языке среды нет — проверено по справке
+    04.10.2026: `changeprojectzoom` это загрузка проекта из файла, а раздел «слои
+    схемного окна» про видимость слоёв. Поэтому рамку считает сам инструмент,
+    а кадр пишется в свойства страницы.
+
+    **Как считается.** Габариты всех блоков страницы объединяются в одну рамку
+    (центр из `Points` плюс `get_size`; подписи пропускаются), её центр
+    становится `x_center`/`y_center`, а масштаб — отношением полотна снимка к
+    рамке с полями `FIT_PADDING`. Полотно 1026x580 — живой замер PNG от
+    `savescreenshot`.
+
+    **Как пишется.** Через блок свойств в `createmodel` — тот же путь, что у
+    `import_model_text`: `x_center`, `y_center`, `x_scale`, `y_scale` это
+    свойства страницы. Объекты не добавляются, прежний скрипт страницы
+    возвращается на место.
+
+    Проверено живьём 04.10.2026: после записи `x_scale = 4` снимок той же
+    модели стал другим (4473 байта до, 7923 после) — свойства кадра управляют
+    отрисовкой.
+    """
+    project = session.ensure_project()
+    page = project.get_main_page()
+    frame = _model_frame(page)
+    if frame is None:
+        raise ToolError(
+            "На странице нет блоков с читаемыми габаритами — подгонять кадр "
+            "не по чему: габариты читаются из `Points` и `get_size`."
+        )
+    left, top, right, bottom = frame
+    width = max(right - left, 1.0)
+    height = max(bottom - top, 1.0)
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+    scale = min(CANVAS_W * (1.0 - 2.0 * FIT_PADDING) / width,
+                CANVAS_H * (1.0 - 2.0 * FIT_PADDING) / height)
+    # Семантика свойств кадра по живому замеру 04.10.2026 (разбор пикселей
+    # снимков): экран = модель * scale + center. То есть `x_center`/`y_center`
+    # это смещение В ПИКСЕЛЯХ, а не координата модели. Замер: при 0/0 и scale 1
+    # снимок совпал с координатами модели точка в точку (габарит тёмных точек
+    # 48..561 при модели 48..560); при scale 4 левый край встал на 192 = 48*4.
+    # Поэтому центр рамки переводится в смещение: половина полотна минус
+    # середина рамки, уже умноженная на масштаб.
+    view_x = CANVAS_W / 2.0 - cx * scale
+    view_y = CANVAS_H / 2.0 - cy * scale
+
+    from simintech_api.model_operations import build_import_model_text_body
+
+    from .model_text import _run_contour
+    from .page_script import refuse_on_bad_outcome
+
+    props = (
+        "(\n"
+        f"  x_center = {view_x:g},\n"
+        f"  y_center = {view_y:g},\n"
+        f"  x_scale = {scale:g},\n"
+        f"  y_scale = {scale:g}\n"
+        ")\n"
+    )
+    outcome, _restored = _run_contour(
+        build_import_model_text_body(props),
+        failed="выставить кадр страницы не удалось")
+    refuse_on_bad_outcome(outcome, action="подгонка кадра")
+    return (
+        f"Кадр выставлен по рамке модели: {width:.0f}x{height:.0f} px.\n"
+        f"  центр рамки (координаты модели): ({cx:.1f}, {cy:.1f})\n"
+        f"  записано: x_center = {view_x:.1f}, y_center = {view_y:.1f} "
+        f"— это смещение в пикселях, экран = модель * масштаб + смещение\n"
+        f"  масштаб: {scale:.3f}\n"
+        f"Проверьте снимком `save_screenshot`: в кадр обязана попасть вся "
+        f"модель целиком, без обрезки по краям."
+    )
