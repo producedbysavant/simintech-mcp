@@ -219,6 +219,28 @@ def _install_reload(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_reload_project_without_project_names_the_way_out(monkeypatch):
+    """Проекта нет — отказ называет причину и ведёт к `open_project`.
+
+    Живой случай 04.10.2026: после перезапуска SimInTech сессия отвечала
+    «подключён», а reload звал к `create_project` — хотя файл проекта есть, и
+    правильный выход другой: открыть его заново. Причина «проект не переживает
+    смену инстанса» обязана быть названа, иначе отказ читается как «проекта не
+    бывало».
+    """
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(None)
+    try:
+        text = await _error("reload_project", {})
+
+        assert "откатывать нечего" in text
+        assert "open_project" in text
+        assert "create_project" not in text
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_reload_project_reopens_from_file(monkeypatch, tmp_path):
     """reload_project закрывает текущий экземпляр и открывает файл заново.
 
