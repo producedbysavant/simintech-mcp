@@ -57,12 +57,35 @@ def test_replace_project_closes_previous(monkeypatch):
     mmain.exe, а инструменты молча работали бы с последним.
     """
 
-    previous, fresh = _ClosableProject(), _ClosableProject()
+    # id разные: совпадение — особый случай, он проверяется отдельным тестом.
+    previous, fresh = _ClosableProject(project_id=7), _ClosableProject(project_id=8)
     monkeypatch.setattr(session, "_project", previous)
 
     session.replace_project(fresh)
 
     assert previous.closed, "предыдущий проект не закрыт"
+    assert session.current_project() is fresh
+
+
+def test_replace_project_keeps_same_id_project_open(monkeypatch):
+    """Совпал COM id прежнего и нового — прежний НЕ закрываем.
+
+    Среда переиспользует идентификаторы: при совпадении «прежний» и «новый»
+    для среды — один объект, и `CloseProject` бьёт по текущему проекту.
+    Живой замер 04.10.2026 (минимум вендорского дефекта): такое закрытие
+    отвечает «успешно», а сессия после него сломана — уже не пишет
+    («SaveProjectXML: успех, файла нет»), следующий `save_project` падает
+    Access Violation в `FormShow`.
+    """
+    previous = _ClosableProject(project_id=7)
+    fresh = _ClosableProject(project_id=7)
+    monkeypatch.setattr(session, "_project", previous)
+
+    note = session.replace_project(fresh)
+
+    assert not previous.closed, \
+        "закрытие при совпавшем id — удар по текущему проекту"
+    assert "тот же id" in note, "причина пропуска обязана быть названа"
     assert session.current_project() is fresh
 
 
@@ -302,8 +325,8 @@ def test_replace_project_reports_failed_close(monkeypatch):
     """Неудачное закрытие предыдущего проекта не выдаётся за успех."""
 
     monkeypatch.setattr(session, "_project",
-                        _ClosableProject(raises=True))
-    fresh = _ClosableProject()
+                        _ClosableProject(raises=True, project_id=7))
+    fresh = _ClosableProject(project_id=8)
 
     note = session.replace_project(fresh)
 
