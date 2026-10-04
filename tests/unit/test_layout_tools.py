@@ -246,6 +246,8 @@ async def test_layout_place_normalize_only_routes_without_moving_blocks(
         "normalize_only сдвинул блоки — расстановки в этом режиме быть не должно"
     assert "Блоки не двигались" in text
     assert "нормализовано 1" in text
+    assert "сверяйте снимком" in text, \
+        "ответ обязан звать к отрисовке: ортогональность инструмент не измеряет"
 
 
 @pytest.mark.anyio

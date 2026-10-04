@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Block
+from simintech_api import Block, Page
 from simintech_api.catalog import NON_BLOCK_CLASSES
 
 from .. import runtime, session
@@ -124,6 +124,33 @@ def _overlaps(rect_a: "tuple[float, float, float, float]",
             and rect_a[1] < rect_b[3] and rect_b[1] < rect_a[3])
 
 
+def _normalize_page_wires(page: Page) -> str:
+    """Трассировать все линии страницы — общий шаг обоих режимов.
+
+    Трассируем все линии страницы, а не только созданные этой сессией:
+    `page.get_wires()` их перечисляет (так же поступает `list_wires`), а
+    `normalize()` безопасен и на линии открытого проекта — выравнивание
+    остаётся только для связей текущей сессии: концы чужих линий через COM
+    не читаются. Порядок «перерисовка → трассировка» — на вызывающих: у
+    `normalize_only` перерисовка своя, в расстановке — условная (`if
+    shifted`).
+
+    Текст один на оба режима намеренно: копия разошлась бы молча (находка
+    ревью 04.10.2026), а «участки ортогональные» — утверждение, которого
+    инструмент не измеряет: `NormalizeWire` в библиотеке отказ проглатывает
+    (`Wire.normalize`), и нормализация видна отрисовкой, а не выгрузкой
+    (живой замер 03.10.2026) — потому ответ зовёт к снимку.
+    """
+    wires = page.get_wires()
+    for wire in wires:
+        wire.normalize()
+    if not wires:
+        return "\nЛиний связи на странице нет — трассировать нечего"
+    return (f"\nЛинии связи: нормализовано {len(wires)} линий страницы "
+            "(NormalizeWire) — ортогональность видна отрисовкой: сверяйте "
+            "снимком (`save_screenshot`), выгрузка покажет прежние точки")
+
+
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def layout_place(block_ids: str = "", connections: str = "",
@@ -234,15 +261,8 @@ def layout_place(block_ids: str = "", connections: str = "",
                 "нормализация без раскладки, либо расстановка со связями."
             )
         project.repaint()
-        wires = page.get_wires()
-        for wire in wires:
-            wire.normalize()
-        if not wires:
-            return ("Блоки не двигались: normalize_only.\n"
-                    "Линий связи на странице нет — трассировать нечего.")
-        return ("Блоки не двигались: normalize_only.\n"
-                f"Линии связи: нормализовано {len(wires)} линий страницы — "
-                "участки ортогональные")
+        return ("Блоки не двигались: normalize_only."
+                + _normalize_page_wires(page))
 
     available: dict[str, Block] = {}
     for block in page.get_blocks():
@@ -446,17 +466,7 @@ def layout_place(block_ids: str = "", connections: str = "",
     # нужна ещё раз, уже перед трассировкой.
     if shifted:
         project.repaint()
-    # Трассируем все линии страницы, а не только созданные этой сессией:
-    # `page.get_wires()` их перечисляет (так же поступает `list_wires`), а
-    # `normalize()` безопасен и на линии открытого проекта. Выравнивание выше
-    # остаётся только для связей текущей сессии: концы чужих линий через COM
-    # не читаются.
-    wires = page.get_wires()
-    for wire in wires:
-        wire.normalize()
-    routes = (f"\nЛинии связи: нормализовано {len(wires)} линий страницы — "
-              f"участки ортогональные" if wires
-              else "\nЛиний связи на странице нет — трассировать нечего")
+    routes = _normalize_page_wires(page)
     if bare_call and not links:
         routes += ("\nСвязи: ни одной пары не известно (реестр `connect` пуст)"
                    " — связи не учтены, блоки встали одной колонкой; концы"
