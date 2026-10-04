@@ -30,10 +30,15 @@ def test_replace_project_clears_wire_registry(monkeypatch):
     dst = _ConnectingBlock("kx_0", 2)
     _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
     session.WIRES.append(_FakeWire(99))  # запись целиком не важна
+    previous = session.current_project()
 
-    session.replace_project(_WireProject({}))
+    # id разные: при совпадении гвард пропустил бы закрытие (соседний тест),
+    # и этот тест молча шёл бы мимо пути «смена закрывает прежний».
+    session.replace_project(_WireProject({}, project_id=8))
 
     assert session.WIRES == []
+    assert previous is not None and previous.closed, \
+        "прежний проект обязан быть закрыт — тест не должен обходить гвардом"
 
 
 @pytest.mark.anyio
@@ -61,8 +66,9 @@ def test_replace_project_closes_previous(monkeypatch):
     previous, fresh = _ClosableProject(project_id=7), _ClosableProject(project_id=8)
     monkeypatch.setattr(session, "_project", previous)
 
-    session.replace_project(fresh)
+    note = session.replace_project(fresh)
 
+    assert note.previous_closed, "признак обязан называть закрытие выполненным"
     assert previous.closed, "предыдущий проект не закрыт"
     assert session.current_project() is fresh
 
@@ -86,6 +92,8 @@ def test_replace_project_keeps_same_id_project_open(monkeypatch):
     assert not previous.closed, \
         "закрытие при совпавшем id — удар по текущему проекту"
     assert "тот же id" in note, "причина пропуска обязана быть названа"
+    assert not note.previous_closed, \
+        "пропущенное закрытие не выдаётся за выполненное"
     assert session.current_project() is fresh
 
 
@@ -327,6 +335,8 @@ def test_replace_project_reports_failed_close(monkeypatch):
     note = session.replace_project(fresh)
 
     assert "ВНИМАНИЕ" in note
+    assert not note.previous_closed, \
+        "сорвавшееся закрытие не выдаётся за выполненное"
     assert session.current_project() is fresh
 
 
