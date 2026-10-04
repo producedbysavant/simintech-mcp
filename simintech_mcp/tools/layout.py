@@ -193,6 +193,20 @@ def _overlap_report(page: Page, moved_names: set[str]) -> str:
     return text
 
 
+def _wires_word(count: int) -> str:
+    """Согласовать слово с числом: «1 линия», «2 линии», «5 линий».
+
+    Ответ читает человек (и агент): «нормализовано 1 линий» живьём резало
+    глаз (живой замер 04.10.2026), а форма «найдено N …» с правильной
+    словоформой — обычай интерфейсов, согласовывать глагол не приходится.
+    """
+    if count % 10 == 1 and count % 100 != 11:
+        return "линия"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "линии"
+    return "линий"
+
+
 def _normalize_page_wires(page: Page) -> str:
     """Трассировать все линии страницы — общий шаг обоих режимов.
 
@@ -215,9 +229,10 @@ def _normalize_page_wires(page: Page) -> str:
         wire.normalize()
     if not wires:
         return "\nЛиний связи на странице нет — трассировать нечего"
-    return (f"\nЛинии связи: нормализовано {len(wires)} линий страницы "
-            "(NormalizeWire) — ортогональность видна отрисовкой: сверяйте "
-            "снимком (`save_screenshot`), выгрузка покажет прежние точки")
+    return (f"\nЛинии связи: нормализовано {len(wires)} "
+            f"{_wires_word(len(wires))} страницы (NormalizeWire) — "
+            "ортогональность видна отрисовкой: сверяйте снимком "
+            "(`save_screenshot`), выгрузка покажет прежние точки")
 
 
 @mcp.tool()

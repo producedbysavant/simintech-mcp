@@ -301,7 +301,7 @@ async def test_layout_place_routes_wires_of_opened_project(monkeypatch):
 
     assert wire.normalized == 1, "линия открытого проекта не трассирована"
     assert ("normalize", wire.id) in events
-    assert "линий страницы" in text
+    assert "нормализовано 1 линия страницы" in text
 
 
 @pytest.mark.anyio
@@ -1188,3 +1188,15 @@ def test_parse_moves_rejects_bad_tokens():
         _parse_moves("k_0=1,1; k_0=2,2")
     with pytest.raises(ToolError):
         _parse_moves("k_0=nan,1")
+
+
+def test_wires_word_agrees_with_count():
+    """Слово при числе согласуется: «1 линия», «2 линии», «5 линий»."""
+    from simintech_mcp.tools.layout import _wires_word
+
+    assert _wires_word(1) == "линия"
+    assert _wires_word(2) == "линии"
+    assert _wires_word(5) == "линий"
+    assert _wires_word(21) == "линия"
+    assert _wires_word(112) == "линий"
+    assert _wires_word(14) == "линий"
