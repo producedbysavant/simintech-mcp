@@ -220,6 +220,64 @@ async def test_layout_place_repaints_before_routing(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_normalize_only_routes_without_moving_blocks(
+        monkeypatch):
+    """normalize_only — трассировка всех линий страницы без расстановки.
+
+    Режим объявлен явно после живого замера 03.10.2026: проект из одних
+    порт-блоков раскладывать нельзя (широкие порты накрывают соседние
+    колонки), а линии должны быть ортогональны. Прежде то же делали трюком —
+    вызовом по не-блочному объекту, — и он опирался на побочное свойство
+    фильтра подписей.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    events = _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+    wire = src.wires[0][0]
+
+    text = _text(await mcp.call_tool("layout_place",
+                                     {"normalize_only": True}))
+
+    assert events == [("repaint", None), ("normalize", 1)], \
+        "перерисовка должна идти до трассировки"
+    assert wire.normalized == 1, "линия не трассирована"
+    assert src.center is None and dst.center is None, \
+        "normalize_only сдвинул блоки — расстановки в этом режиме быть не должно"
+    assert "Блоки не двигались" in text
+    assert "нормализовано 1" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_normalize_only_rejects_explicit_scope(monkeypatch):
+    """normalize_only с block_ids/connections — отказ, а не тихий выбор одного.
+
+    Режим «только нормализация» и расстановка взаимоисключающие; молчаливое
+    предпочтение одного из них вернуло бы класс ошибок «подтверждение не того,
+    что просили».
+    """
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = await _error("layout_place",
+                        {"block_ids": "k_0", "normalize_only": True})
+
+    assert "не сочетается" in text
+    assert "block_ids" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_normalize_only_reports_no_wires(monkeypatch):
+    """Страница без линий — состояние, а не отказ (как в обычном режиме)."""
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = _text(await mcp.call_tool("layout_place",
+                                     {"normalize_only": True}))
+
+    assert "Блоки не двигались" in text
+    assert "Линий связи на странице нет" in text
+
+
+@pytest.mark.anyio
 async def test_layout_place_routes_wires_of_opened_project(monkeypatch):
     """Линии открытого проекта тоже трассируются: их перечисляет `get_wires`.
 
