@@ -30,10 +30,15 @@ def test_replace_project_clears_wire_registry(monkeypatch):
     dst = _ConnectingBlock("kx_0", 2)
     _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
     session.WIRES.append(_FakeWire(99))  # запись целиком не важна
+    previous = session.current_project()
 
-    session.replace_project(_WireProject({}))
+    # id разные: при совпадении гвард пропустил бы закрытие (соседний тест),
+    # и этот тест молча шёл бы мимо пути «смена закрывает прежний».
+    session.replace_project(_WireProject({}, project_id=8))
 
     assert session.WIRES == []
+    assert previous is not None and previous.closed, \
+        "прежний проект обязан быть закрыт — тест не должен обходить гвардом"
 
 
 @pytest.mark.anyio
@@ -57,23 +62,38 @@ def test_replace_project_closes_previous(monkeypatch):
     mmain.exe, а инструменты молча работали бы с последним.
     """
 
-    previous, fresh = _ClosableProject(), _ClosableProject()
+    # id разные: совпадение — особый случай, он проверяется отдельным тестом.
+    previous, fresh = _ClosableProject(project_id=7), _ClosableProject(project_id=8)
     monkeypatch.setattr(session, "_project", previous)
 
-    session.replace_project(fresh)
+    note = session.replace_project(fresh)
 
+    assert note.previous_closed, "признак обязан называть закрытие выполненным"
     assert previous.closed, "предыдущий проект не закрыт"
     assert session.current_project() is fresh
 
 
-def test_replace_project_tolerates_already_closed(monkeypatch):
-    """Уже закрытый средой проект не должен ломать смену."""
+def test_replace_project_keeps_same_id_project_open(monkeypatch):
+    """Совпал COM id прежнего и нового — прежний НЕ закрываем.
 
-    monkeypatch.setattr(session, "_project", _ClosableProject(raises=True))
-    fresh = _ClosableProject()
+    Среда переиспользует идентификаторы: при совпадении «прежний» и «новый»
+    для среды — один объект, и `CloseProject` бьёт по текущему проекту.
+    Живой замер 04.10.2026 (минимум вендорского дефекта): такое закрытие
+    отвечает «успешно», а сессия после него сломана — уже не пишет
+    («SaveProjectXML: успех, файла нет»), следующий `save_project` падает
+    Access Violation в `FormShow`.
+    """
+    previous = _ClosableProject(project_id=7)
+    fresh = _ClosableProject(project_id=7)
+    monkeypatch.setattr(session, "_project", previous)
 
-    session.replace_project(fresh)
+    note = session.replace_project(fresh)
 
+    assert not previous.closed, \
+        "закрытие при совпавшем id — удар по текущему проекту"
+    assert "тот же id" in note, "причина пропуска обязана быть названа"
+    assert not note.previous_closed, \
+        "пропущенное закрытие не выдаётся за выполненное"
     assert session.current_project() is fresh
 
 
@@ -299,15 +319,24 @@ async def test_close_project_names_what_was_closed(monkeypatch):
 
 
 def test_replace_project_reports_failed_close(monkeypatch):
-    """Неудачное закрытие предыдущего проекта не выдаётся за успех."""
+    """Уже закрытый средой проект не ломает смену — и это не выдаётся за успех.
+
+    Раньше рядом жил отдельный тест «терпит закрытый проект»; после гварда по
+    совпавшему id он уходил в ранний возврат и проверял уже не свою ветку
+    (находка ревью 04.10.2026) — сценарий у него тот же, что здесь, и слит
+    сюда: «не бросило», «проект сменился» и «ВНИМАНИЕ в примечании» — один
+    сценарий, одна проверка.
+    """
 
     monkeypatch.setattr(session, "_project",
-                        _ClosableProject(raises=True))
-    fresh = _ClosableProject()
+                        _ClosableProject(raises=True, project_id=7))
+    fresh = _ClosableProject(project_id=8)
 
     note = session.replace_project(fresh)
 
     assert "ВНИМАНИЕ" in note
+    assert not note.previous_closed, \
+        "сорвавшееся закрытие не выдаётся за выполненное"
     assert session.current_project() is fresh
 
 
