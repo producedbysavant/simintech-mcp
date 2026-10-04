@@ -89,17 +89,6 @@ def test_replace_project_keeps_same_id_project_open(monkeypatch):
     assert session.current_project() is fresh
 
 
-def test_replace_project_tolerates_already_closed(monkeypatch):
-    """Уже закрытый средой проект не должен ломать смену."""
-
-    monkeypatch.setattr(session, "_project", _ClosableProject(raises=True))
-    fresh = _ClosableProject()
-
-    session.replace_project(fresh)
-
-    assert session.current_project() is fresh
-
-
 def test_replace_project_without_previous(monkeypatch):
     """Первый проект в сессии — закрывать нечего."""
 
@@ -322,7 +311,14 @@ async def test_close_project_names_what_was_closed(monkeypatch):
 
 
 def test_replace_project_reports_failed_close(monkeypatch):
-    """Неудачное закрытие предыдущего проекта не выдаётся за успех."""
+    """Уже закрытый средой проект не ломает смену — и это не выдаётся за успех.
+
+    Раньше рядом жил отдельный тест «терпит закрытый проект»; после гварда по
+    совпавшему id он уходил в ранний возврат и проверял уже не свою ветку
+    (находка ревью 04.10.2026) — сценарий у него тот же, что здесь, и слит
+    сюда: «не бросило», «проект сменился» и «ВНИМАНИЕ в примечании» — один
+    сценарий, одна проверка.
+    """
 
     monkeypatch.setattr(session, "_project",
                         _ClosableProject(raises=True, project_id=7))
