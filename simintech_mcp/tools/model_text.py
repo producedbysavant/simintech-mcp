@@ -37,7 +37,6 @@ from simintech_api.model_operations import (
 )
 from simintech_api.script_probe import (
     OUTCOME_MODEL_NOT_RUNNING,
-    OUTCOME_OK,
     ContourOutcome,
 )
 
@@ -50,6 +49,7 @@ from .page_script import (
     discard_result,
     fresh_name,
     object_names,
+    refuse_on_bad_outcome,
 )
 
 #: Базы имён файлов внутри каталога результатов. Клиенту они не нужны: путь
@@ -100,19 +100,6 @@ def result_path() -> Path:
                              fresh_name(PROBE_RESULT_FILE)))
 
 
-def _refuse_on_bad_outcome(outcome: ContourOutcome, *, action: str) -> None:
-    """Отказать, если тело не отработало: `not-compiled` и `aborted` — не успех."""
-    if outcome.kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
-        return
-    detail = (f", последняя строка тела: {outcome.lines[-1]!r}"
-              if outcome.lines else "")
-    raise ToolError(
-        f"{action} не выполнена: исход «{outcome.kind}»{detail}. Текст ошибки "
-        "компиляции — в окне сообщений редактора SimInTech: через COM он не "
-        "читается."
-    )
-
-
 @mcp.tool()
 @runtime.com_threaded
 def export_model_text() -> str:
@@ -152,7 +139,7 @@ def export_model_text() -> str:
     outcome, _restored = _run_contour(
         build_export_model_text_body(text_path),
         failed="выгрузка текста модели не удалась")
-    _refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
+    refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
 
     data, truncated, error = sandbox.load_result_file(
         text_path, sandbox.MAX_OUTPUT_BYTES, sandbox.MISSING_RESULT_FILE
@@ -313,7 +300,7 @@ def import_model_text(model_text: str) -> str:
     outcome, restored = _run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
-    _refuse_on_bad_outcome(outcome, action="сборка модели")
+    refuse_on_bad_outcome(outcome, action="сборка модели")
     after = object_names()
     wires_after = _wire_count()
     return (

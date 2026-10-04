@@ -18,24 +18,21 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Dict
 
 from fastmcp.exceptions import ToolError
 from simintech_api.exceptions import ScriptBridgeError
-from simintech_api.script_probe import (
-    OUTCOME_MODEL_NOT_RUNNING,
-    OUTCOME_OK,
-)
+from simintech_api.script_probe import OUTCOME_MODEL_NOT_RUNNING
 
 from .. import runtime, sandbox
 from ..app import mcp
 from .model_text import bridge
 from .page_script import (
-    RESULT_FILE,
     describe_outcome,
     discard_result,
     fresh_name,
+    refuse_on_bad_outcome,
+    result_path,
 )
 
 #: Форматы `savescreenshot`: имя → код типа в вызове (справка поставки).
@@ -99,7 +96,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
 
     root = sandbox.output_root()
     shot_path = os.path.join(root, fresh_name(f"screenshot.{key}"))
-    contour_path = Path(os.path.join(root, fresh_name(RESULT_FILE)))
+    contour_path = result_path()
     body = build_screenshot_body(shot_path, type_code)
 
     try:
@@ -113,12 +110,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
         ) from exc
     discard_result(contour_path)
     outcome = run.outcome
-    if outcome.kind not in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
-        raise ToolError(
-            f"снимок не сделан: исход «{outcome.kind}». Текст ошибки "
-            "компиляции — в окне сообщений редактора SimInTech: через COM он "
-            "не читается."
-        )
+    refuse_on_bad_outcome(outcome, action="съёмка схемы")
 
     # Файла может не быть, даже если тело «отработало»: на неподходящем типе
     # savescreenshot молча ничего не создаёт (замер 03.10.2026: тип 0) — это

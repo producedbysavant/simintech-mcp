@@ -164,13 +164,16 @@ async def test_save_screenshot_refuses_when_script_did_not_compile(
         monkeypatch, tmp_path):
     """`not-compiled` — отказ: снимка нет, и это не «модель не считает»."""
     class _Broken(_BridgeShoots):
-        outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED, lines=[])
+        outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED,
+                                 lines=["savescreenshot(...)"])
 
     _install(monkeypatch, tmp_path, _Broken)
 
     text = await _error("save_screenshot", {})
 
     assert "not-compiled" in text
+    assert "последняя строка тела" in text, \
+        "диагноз из строк тела — единственный доступный, обязан прийти"
 
 
 @pytest.mark.anyio
