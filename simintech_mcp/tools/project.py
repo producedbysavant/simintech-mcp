@@ -314,13 +314,25 @@ def reload_project() -> str:
             f"Сохраните проект (`save_project`) или откройте другой "
             f"(`open_project`).")
     had_unsaved = session.unsaved_changes()
+    previous = session.current_project()
     prj = Project.open(session.ensure_client(), source)
     replaced = session.replace_project(
         prj, source_path=source,
         header="ТЕКУЩИЙ ПРОЕКТ ПЕРЕОТКРЫТ ИЗ ФАЙЛА")
-    tail = (" Несохранённые правки прежнего экземпляра отброшены."
-            if had_unsaved else
-            " Несохранённых правок не было — файл перечитан как есть.")
+    if had_unsaved and previous is not None and previous.id == prj.id:
+        # Гвард `replace_project` при совпавшем COM id не закрывает прежний
+        # экземпляр — утверждать «правки отброшены» тогда нельзя (ложный
+        # успех — тот же класс, что закрыт фиксом #73; находка ревью
+        # 04.10.2026). Обычный путь (id разошлись), проверено живым замером
+        # R2 3/3: правки действительно откатываются — переоткрытие даёт
+        # «Блоков нет» после add_block.
+        tail = (" ВНИМАНИЕ: среда вернула тот же id проекта — прежний экземпляр "
+                "не закрыт; откат правок не подтверждён — проверьте состояние "
+                "проекта.")
+    elif had_unsaved:
+        tail = " Несохранённые правки прежнего экземпляра отброшены."
+    else:
+        tail = " Несохранённых правок не было — файл перечитан как есть."
     return f"Проект переоткрыт из файла: {source}" + replaced + tail
 
 

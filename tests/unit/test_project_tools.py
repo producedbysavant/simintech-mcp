@@ -219,6 +219,37 @@ def _install_reload(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_reload_project_does_not_claim_drop_on_same_id(monkeypatch,
+                                                             tmp_path):
+    """Совпал COM id — «правки отброшены» не утверждаем (гвард не закрыл прежний).
+
+    Находка ревью 04.10.2026: при совпадении id `replace_project` пропускает
+    закрытие прежнего экземпляра, и хвост «отброшены» был бы ложью — состояние
+    прежнего объекта не измерено. Обычный путь (id разошлись) проверен живым
+    замером: правки действительно откатываются.
+    """
+    target = tmp_path / "CoolInt.prt"
+    target.write_text("x", encoding="utf-8")
+    previous = _WireProject({}, project_id=7)
+    opened = _WireProject({}, project_id=7)        # тот же id — случай гварда
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(lambda client, path: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous, source_path=str(target))
+    session.mark_mutated()
+    try:
+        text = _text(await mcp.call_tool("reload_project", {}))
+
+        assert "тот же id" in text
+        assert "откат правок не подтверждён" in text
+        assert "правки прежнего экземпляра отброшены" not in text, \
+            "ложное «отброшены» при несостоявшемся закрытии"
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_reload_project_reopens_from_file(monkeypatch, tmp_path):
     """reload_project закрывает текущий экземпляр и открывает файл заново.
 
