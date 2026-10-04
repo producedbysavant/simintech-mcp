@@ -222,6 +222,25 @@ def describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
     return f"{what}: исход «{outcome.kind}»."
 
 
+def refuse_on_bad_outcome(outcome: ContourOutcome, *, action: str) -> None:
+    """Отказать, если тело не отработало: `not-compiled` и `aborted` — не успех.
+
+    Общий хелпер контурных инструментов (`export_model_text`,
+    `import_model_text`, `save_screenshot`): «не сделано» не имеет права
+    вернуться успехом, а последняя строка тела — единственный доступный
+    диагноз: ошибки компиляции среда через COM не отдаёт.
+    """
+    if outcome.kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
+        return
+    detail = (f", последняя строка тела: {outcome.lines[-1]!r}"
+              if outcome.lines else "")
+    raise ToolError(
+        f"{action} не выполнена: исход «{outcome.kind}»{detail}. Текст ошибки "
+        "компиляции — в окне сообщений редактора SimInTech: через COM он не "
+        "читается."
+    )
+
+
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def set_page_script(script: str) -> str:

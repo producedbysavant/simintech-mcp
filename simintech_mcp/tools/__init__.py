@@ -6,7 +6,7 @@
 """
 
 from . import (blocks, check_model, files, help, layout, model_text, pack,
-               page_script, project, simulation)
+               page_script, project, screenshot, simulation)
 
 __all__ = [
     "blocks",
@@ -18,5 +18,6 @@ __all__ = [
     "pack",
     "page_script",
     "project",
+    "screenshot",
     "simulation",
 ]
