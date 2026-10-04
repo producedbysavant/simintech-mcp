@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+from typing import Optional
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
@@ -98,6 +100,18 @@ def _snap_centers(centers: dict[str, tuple[float, float]]) -> None:
                           round(cy / GRID_STEP) * GRID_STEP)
 
 
+def _first_point(points_text: str) -> "tuple[float, float] | None":
+    """Первая точка `Points` — центр блока (замер 02.10.2026).
+
+    `None` — свойство пусто или не разбирается: вызывающий обязан назвать
+    такой блок, а не счесть его стоящим в (0, 0).
+    """
+    pairs = re.findall(r"\(([-\d.]+)\s*,\s*([-\d.]+)\)", points_text or "")
+    if not pairs:
+        return None
+    return float(pairs[0][0]), float(pairs[0][1])
+
+
 def _rect_of(points_text: str, size: "tuple[float, float]") -> \
         "tuple[float, float, float, float] | None":
     """Габарит блока: центр из `Points` ± половина размера.
@@ -109,10 +123,10 @@ def _rect_of(points_text: str, size: "tuple[float, float]") -> \
     или размер недоступен: проверка обязана назвать такой блок, а не молча
     счесть его непересекающимся.
     """
-    pairs = re.findall(r"\(([-\d.]+)\s*,\s*([-\d.]+)\)", points_text or "")
-    if not pairs:
+    center = _first_point(points_text)
+    if center is None:
         return None
-    cx, cy = float(pairs[0][0]), float(pairs[0][1])
+    cx, cy = center
     w, h = size
     return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
 
@@ -122,6 +136,61 @@ def _overlaps(rect_a: "tuple[float, float, float, float]",
     """Пересекаются ли прямоугольники (строго, касание — не наложение)."""
     return (rect_a[0] < rect_b[2] and rect_b[0] < rect_a[2]
             and rect_a[1] < rect_b[3] and rect_b[1] < rect_a[3])
+
+
+def _overlap_report(page: Page, moved_names: set[str]) -> str:
+    """Строки о наложениях: пары с участием перемещённых блоков.
+
+    Контракт «без наложений» проверяется фактом — по габаритам из `Points`
+    всех блоков страницы, прочитанным **после** перерисовки. Пары считаются
+    с участием перемещённых (любой из двух): чужой блок, перечисленный
+    раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
+    наложения — не наша правка, но подвинутый поверх чужого обязан быть
+    виден. Подписи (`LABEL_CLASSES`) пропускаются: карточка 60×40 накрывает
+    край своего блока — это не наложение (замер 02.10.2026).
+    """
+    rects: list[tuple[str, tuple[float, float, float, float]]] = []
+    no_geometry: list[str] = []
+    for block in page.get_blocks():
+        try:
+            name = block.get_name()
+        except Exception:                                     # noqa: BLE001
+            name = str(block.id)
+        try:
+            if block.class_name in LABEL_CLASSES:
+                continue
+        except Exception:                                     # noqa: BLE001
+            pass
+        try:
+            size = block.get_size()
+        except Exception:                                     # noqa: BLE001
+            size = None
+        try:
+            rect = _rect_of(block.get_points(), size) if size else None
+        except Exception:                                     # noqa: BLE001
+            rect = None
+        if rect is None:
+            no_geometry.append(name)
+        else:
+            rects.append((name, rect))
+    overlaps: list[tuple[str, str]] = []
+    for index, (name_a, rect_a) in enumerate(rects):
+        for name_b, rect_b in rects[index + 1:]:
+            if (name_a in moved_names or name_b in moved_names) \
+                    and _overlaps(rect_a, rect_b):
+                overlaps.append((name_a, name_b))
+    if overlaps:
+        shown = ", ".join(f"{a}—{b}"
+                          for a, b in overlaps[:MAX_REPORTED_OVERLAPS])
+        more = (f" (и ещё {len(overlaps) - MAX_REPORTED_OVERLAPS})"
+                if len(overlaps) > MAX_REPORTED_OVERLAPS else "")
+        text = f"\nВНИМАНИЕ: наложения блоков: {shown}{more}"
+    else:
+        text = "\nНаложений блоков нет."
+    if no_geometry:
+        text += (f"\nГеометрию прочитать не удалось у {len(no_geometry)} "
+                 f"блоков: {', '.join(no_geometry[:MAX_REPORTED_OVERLAPS])}")
+    return text
 
 
 def _normalize_page_wires(page: Page) -> str:
@@ -489,60 +558,154 @@ def layout_place(block_ids: str = "", connections: str = "",
         routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
                    f"связей: {', '.join(unaligned)}")
 
-    # Наложения: контракт «без наложений» проверяется фактом — по габаритам из
-    # `Points` всех блоков страницы, прочитанным после перерисовки. Пары — с
-    # участием расставленных блоков (любой из двух): чужой блок, перечисленный
-    # раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
-    # наложения — не наша правка, но расставленный поверх чужого обязан быть
-    # виден.
+    # Наложения: контракт «без наложений» виден фактом — пары с участием
+    # расставленных блоков считает `_overlap_report` (в нём же — почему
+    # участие, а подписи пропускаются).
     placed: set[str] = set()
     for token in tokens:
         try:
             placed.add(available[token].get_name())
         except Exception:                                     # noqa: BLE001
             placed.add(str(available[token].id))
-    rects: list[tuple[str, tuple[float, float, float, float]]] = []
-    no_geometry: list[str] = []
-    for block in page.get_blocks():
-        try:
-            name = block.get_name()
-        except Exception:                                     # noqa: BLE001
-            name = str(block.id)
-        try:
-            if block.class_name in LABEL_CLASSES:
-                # Подпись «следует» за своим блоком и её карточка 60×40
-                # накрывает его край — это не наложение (замер 02.10.2026).
-                continue
-        except Exception:                                     # noqa: BLE001
-            pass
-        try:
-            size = block.get_size()
-        except Exception:                                     # noqa: BLE001
-            size = None
-        try:
-            rect = _rect_of(block.get_points(), size) if size else None
-        except Exception:                                     # noqa: BLE001
-            rect = None
-        if rect is None:
-            no_geometry.append(name)
-        else:
-            rects.append((name, rect))
-    overlaps: list[tuple[str, str]] = []
-    for index, (name_a, rect_a) in enumerate(rects):
-        for name_b, rect_b in rects[index + 1:]:
-            if (name_a in placed or name_b in placed) \
-                    and _overlaps(rect_a, rect_b):
-                overlaps.append((name_a, name_b))
-    if overlaps:
-        shown = ", ".join(f"{a}—{b}"
-                          for a, b in overlaps[:MAX_REPORTED_OVERLAPS])
-        more = (f" (и ещё {len(overlaps) - MAX_REPORTED_OVERLAPS})"
-                if len(overlaps) > MAX_REPORTED_OVERLAPS else "")
-        routes += (f"\nВНИМАНИЕ: наложения блоков (нет свободного буфера): "
-                   f"{shown}{more}")
-    else:
-        routes += "\nНаложений блоков нет."
-    if no_geometry:
-        routes += (f"\nГеометрию прочитать не удалось у {len(no_geometry)} "
-                   f"блоков: {', '.join(no_geometry[:MAX_REPORTED_OVERLAPS])}")
+    routes += _overlap_report(page, moved_names=placed)
     return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
+
+
+def _parse_moves(moves: str) -> "list[tuple[str, float, float]]":
+    """Разобрать пачку «блок=x,y; блок=x,y» — строго, без догадок.
+
+    Токен без `=`, с пустым именем, не парой чисел или нечисловой парой —
+    отказ с указанием токена: молчаливый пропуск оставил бы блок на старом
+    месте, а ответ утверждал бы переезд. Повтор имени — тоже отказ: какая из
+    точек победила, решал бы порядок разбора, а не запрос.
+    """
+    order: list[tuple[str, float, float]] = []
+    seen: set[str] = set()
+    for raw in moves.split(";"):
+        token = raw.strip()
+        if not token:
+            continue
+        name, eq, coords = token.partition("=")
+        name = name.strip()
+        parts = [part.strip() for part in coords.split(",")] if eq else []
+        numbers = None
+        if name and len(parts) == 2:
+            try:
+                numbers = (float(parts[0]), float(parts[1]))
+            except ValueError:
+                numbers = None
+        if numbers is None or not all(map(math.isfinite, numbers)):
+            raise ToolError(
+                f"токен пачки не разобран: «{token}» — формат «блок=x,y», "
+                f"координаты — конечные числа.")
+        if name in seen:
+            raise ToolError(
+                f"блок {name} назван в пачке дважды — оставьте одну точку.")
+        seen.add(name)
+        order.append((name, numbers[0], numbers[1]))
+    if not order:
+        raise ToolError(
+            "пачка пуста: формат «блок=x,y; блок=x,y», например "
+            "«k_0=200,100; kx_0=400,120».")
+    return order
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def set_block_center(block: str = "", x: Optional[float] = None,
+                     y: Optional[float] = None, moves: str = "") -> str:
+    """Двинуть блоки центрами в заданные точки — линии перетрассируются.
+
+    Две формы, ровно одна за вызов:
+
+    * одиночная: `block` + `x`, `y` — центр одного блока;
+    * пачка: `moves` — строкой «блок=x,y; блок=x,y»; все точки применяются
+      одним ходом: одна перерисовка и одна трассировка на всю пачку
+      (раскладка «под пины» из десятков блоков — один вызов, а не десятки).
+
+    Координаты — **центр блока**: первая точка `Points` (то же значение
+    хранит среда; его читают `layout_place` и проверка разметки).
+
+    **Проверка до перемещения.** Все имена сверяются со страницей заранее:
+    неизвестное имя — отказ, и тогда не двинут ни один блок — частичное
+    применение оставило бы схему в состоянии, которого нет в ответе (сбой
+    COM в середине пачки — исключение: откатить его нечем, уцелевшие
+    перемещения назовёт следующая сверка).
+
+    После перемещения — перерисовка и трассировка (`NormalizeWire`): порядок
+    обязателен и тот же, что в `layout_place`; без перерисовки среда
+    прокладывает провода по прежним прямоугольникам блоков (живой замер
+    15.09.2026). Нормализация — свойство отрисовки: выгрузка покажет прежние
+    точки, проверка — снимком (`save_screenshot`). Ответ называет переход
+    центра каждого блока, число обработанных линий и наложения среди
+    подвинутых.
+
+    Инструмент **точечный**: размеры блоков не меняются (`set_center`
+    сохраняет родной размер класса), стопки порт-блоков не смыкаются —
+    расстановку целиком делает `layout_place`.
+
+    Args:
+        block: имя блока (автоимя из `list_blocks`) или числовой id —
+            одиночная форма.
+        x, y: координаты центра — одиночная форма (задаются вместе с
+            `block`).
+        moves: пачка «блок=x,y; блок=x,y» — не сочетается с `block`.
+    """
+    project = session.ensure_project()
+    page = project.get_main_page()
+    available: dict[str, Block] = {}
+    for current in page.get_blocks():
+        available[str(current.id)] = current
+        try:
+            available[current.get_name()] = current
+        except Exception:                                     # noqa: BLE001
+            continue
+
+    single = bool(block.strip())
+    if single and moves.strip():
+        raise ToolError(
+            "не сочетается: либо block с x, y, либо moves — назовите одну "
+            "форму.")
+    if single:
+        if x is None or y is None:
+            raise ToolError(
+                "для одиночной формы задайте оба числа: block, x, y (или "
+                "передайте пачку `moves`).")
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ToolError(
+                f"координаты должны быть конечными числами: ({x}, {y}).")
+        order: list[tuple[str, float, float]] = [(block.strip(), x, y)]
+    elif moves.strip():
+        order = _parse_moves(moves)
+    else:
+        raise ToolError(
+            "нечего двигать: назовите блок (block, x, y) или пачку "
+            "(moves = «блок=200,100; kx_0=400,120»).")
+
+    missing = [name for name, _x, _y in order if name not in available]
+    if missing:
+        raise ToolError(
+            f"блоки не найдены на странице: {', '.join(missing)} — ничего не "
+            f"перемещено. Актуальные имена и id даёт `list_blocks`.")
+
+    lines = [f"Перемещено блоков: {len(order)}"]
+    moved_names: set[str] = set()
+    for name, cx, cy in order:
+        target = available[name]
+        before = None
+        try:
+            before = _first_point(target.get_points())
+        except Exception:                                     # noqa: BLE001
+            before = None
+        target.set_center(cx, cy)
+        try:
+            moved_names.add(target.get_name())
+        except Exception:                                     # noqa: BLE001
+            moved_names.add(str(target.id))
+        move = (f"({before[0]:g}, {before[1]:g}) → ({cx:g}, {cy:g})"
+                if before is not None else
+                f"(центр до не прочитан) → ({cx:g}, {cy:g})")
+        lines.append(f"  {name}: центр {move}")
+    project.repaint()
+    routes = _normalize_page_wires(page) + _overlap_report(page, moved_names)
+    return "\n".join(lines) + routes
