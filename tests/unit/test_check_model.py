@@ -523,7 +523,6 @@ def test_outside_sheet_flags_negative_edges():
     assert _outside_sheet((0.0, 0.0, 32.0, 16.0)) is False
 
 
-
 # ── Аудит маршрутов (ТЗ п.1, инструмент audit_routing) ─────────────
 
 
@@ -578,3 +577,16 @@ def test_audit_routing_clean_is_empty():
     assert not (problems.crossings or problems.coincident
                 or problems.block_hits or problems.port_order
                 or problems.unchecked)
+
+
+def test_audit_wire_report_requires_done():
+    """Отчёт без `DONE` — оборванный: парсер отдаёт None, а не часть линий.
+
+    `DONE` пишет `_check_script` последней строкой именно затем, чтобы полный
+    отчёт отличался от оборванного (находка ревью 02.10.2026). Без этой
+    проверки вердикт `readable` мог бы выйти по половине линий: оборванное
+    тело не отличить от «линий меньше, чем есть».
+    """
+    assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\nDONE\n") == {
+        1: ((0.0, 0.0), (100.0, 0.0))}
+    assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\n") is None

@@ -603,6 +603,39 @@ def audit_routing_segments(
                            _port_order_violations(rects, wires), unchecked)
 
 
+def _parse_wire_report(
+        text: str
+) -> "Optional[Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]]":
+    """Разобрать отчёт контура: концы линий. `None` — отчёт оборван.
+
+    `DONE` — признак полного отчёта (его пишет `_check_script` последней
+    строкой): без него часть `W`-строк могла не записаться, и вердикт по
+    такому отчёту не выдаётся — та же защита, что у `check_model_layout`
+    (находка ревью 02.10.2026). Строки, которые не разобрались, пропускаются:
+    `DONE` подтверждает, что отчёт пришёл целиком, а число прочитанных линий
+    называет сам вердикт.
+    """
+    wires: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+    complete = False
+    for line in text.splitlines():
+        parts = line.split("|")
+        if parts[0] == "DONE":
+            complete = True
+            continue
+        if parts[0] != "W" or len(parts) != 4:
+            continue
+        start = _parse_point(parts[2])
+        end = _parse_point(parts[3])
+        if start is None or end is None:
+            continue
+        try:
+            wire_id = int(parts[1])
+        except ValueError:
+            continue
+        wires[wire_id] = (start, end)
+    return wires if complete else None
+
+
 @mcp.tool()
 @runtime.com_threaded
 def audit_routing() -> str:
@@ -674,21 +707,12 @@ def audit_routing() -> str:
             f"отчёт контура не прочитан: {error} — концы линий не получены, "
             f"маршруты не проверены.")
 
-    wires: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
-    for line in data.decode("utf-8", errors="replace").splitlines():
-        parts = line.split("|")
-        if parts[0] != "W" or len(parts) != 4:
-            continue
-        start = _parse_point(parts[2])
-        end = _parse_point(parts[3])
-        if start is None or end is None:
-            continue
-        try:
-            wire_id = int(parts[1])
-        except ValueError:
-            continue
-        wires[wire_id] = (start, end)
-
+    wires = _parse_wire_report(data.decode("utf-8", errors="replace"))
+    if wires is None:
+        raise ToolError(
+            "отчёт контура оборван: признака `DONE` в нём нет — концы линий "
+            "прочитаны не все, и вердикт по неполным данным не выдаётся "
+            "(та же защита, что у `check_model_layout`).")
     if not wires:
         raise ToolError(
             "контур вернул отчёт без координат линий — концы не прочитаны, "
