@@ -61,7 +61,7 @@ def build_screenshot_body(path: str, type_code: int) -> str:
 
 @mcp.tool()
 @runtime.com_threaded
-def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
+def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
     """Сохранить снимок текущего вида схемы в файл (PNG/BMP/SVG) — и посмотреть глазами.
 
     Это проверка того, чего не видно в текстовой выгрузке
@@ -82,8 +82,21 @@ def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
     предыдущие. Все три формата подтверждены живым замером: PNG — настоящий
     PNG (в разы легче BMP), SVG — вектор.
 
+    **Кадр подгоняется сам** (`fit=True`). Перед съёмкой считается рамка модели
+    (объединение габаритов блоков) и в свойства страницы пишутся центр и
+    масштаб — тот же шаг, что делает `fit_view`. Без него снимок показывал угол
+    схемы: раскладка начинается с (0, 0), а вид стоял в масштабе 1:1 (живой
+    случай 04.10.2026 — модель занимала около 5% полотна, левые блоки срезаны
+    краем листа).
+
+    `fit=False` — сырой текущий вид: нужен, когда важна именно та картинка, что
+    видит человек, без правки кадра. Если габариты прочитать не удалось, снимок
+    всё равно делается — в ответе будет примечание, а не отказ.
+
     Args:
         format: «png» (по умолчанию), «bmp» или «svg».
+        fit: True (по умолчанию) — подогнать кадр по рамке модели перед
+            съёмкой; False — снять текущий вид как есть.
     """
     key = format.strip().lower()
     type_code = FORMATS.get(key)
@@ -93,6 +106,19 @@ def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
             f"{', '.join(FORMATS)} (коды типов функции savescreenshot: "
             f"{', '.join(f'{name}={code}' for name, code in FORMATS.items())})."
         )
+
+    fit_note = ""
+    if fit:
+        from .layout import apply_fit_view
+
+        try:
+            lines = apply_fit_view().splitlines()
+            fit_note = "\n" + "\n".join(lines[:2])
+        except Exception as exc:  # noqa: BLE001
+            # Подгонка — не условие съёмки: её неудача обязана стать
+            # примечанием, а не отказом. Снимок сырого вида полезнее, чем
+            # ничего, и клиент видит, что кадр не подогнан (и почему).
+            fit_note = f"\nКадр не подогнан: {type(exc).__name__}: {exc}"
 
     root = sandbox.output_root()
     shot_path = os.path.join(root, fresh_name(f"screenshot.{key}"))
@@ -128,5 +154,6 @@ def save_screenshot(format: str = DEFAULT_FORMAT) -> str:
         head = (describe_outcome(outcome, what="Снимок")
                 + " Снимок при этом есть: savescreenshot пишется из секции "
                   "`initialization`, а не из шагов расчёта.\n")
-    return (f"{head}Снимок схемы ({key}): {shot_path} ({size} байт). "
+    return (f"{head}Снимок схемы ({key}): {shot_path} ({size} байт)."
+            f"{fit_note} "
             "Откройте файл как изображение — это фактический вид схемы.")
