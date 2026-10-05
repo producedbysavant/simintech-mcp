@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Union
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Block
+from simintech_api import Block, Page
 from simintech_api.catalog import decode_xprt, parse_xprt_block_script
 from simintech_api.constants import standard_block_size
 from simintech_api.exceptions import PortError, ScriptBridgeError
@@ -219,6 +219,24 @@ def add_block(class_name: str, name_hint: str = "",
             f"{tail}")
 
 
+def _resolve_block(page: Page, token: str) -> Optional[Block]:
+    """Найти блок по имени или по числовому id.
+
+    Имя адресует блок не всегда однозначно: у пары «В память»/«Из памяти» оно
+    одно и то же — имя ячейки (например `#m1`), так её и находят обе половины.
+    `find_block` вернул бы первую попавшуюся, и соединить пару было бы нельзя.
+    Числовой id их различает, а `list_blocks` печатает его рядом с именем.
+    """
+    token = token.strip()
+    if token.isdigit():
+        wanted = int(token)
+        for block in page.get_blocks():
+            if getattr(block, "id", None) == wanted:
+                return block
+        return None
+    return page.find_block(token)
+
+
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def connect(src: str, dst: str,
@@ -244,8 +262,8 @@ def connect(src: str, dst: str,
         in_index: номер входного порта приёмника (0-based).
     """
     page = session.ensure_project().get_main_page()
-    b1 = page.find_block(src)
-    b2 = page.find_block(dst)
+    b1 = _resolve_block(page, src)
+    b2 = _resolve_block(page, dst)
     if b1 is None:
         return _missing_block(src)
     if b2 is None:
