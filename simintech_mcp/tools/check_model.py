@@ -44,7 +44,7 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import (
-    WIRE_PITCH, channel_width, collinear_overlap, cut_sizes, overlaps,
+    STUB, WIRE_PITCH, channel_width, collinear_overlap, cut_sizes, overlaps,
     predicted_polyline, proper_crossing, rect_of, segment_hits_rect,
     segments_of)
 from .page_script import fresh_name
@@ -674,9 +674,13 @@ def _wire_channels(
     Порядок треков детерминирован: связи зазора, которым трек нужен (не
     выровненные в одну горизонталь), сортируются по Y приёмника, при равенстве
     — по Y источника, и получают X = правая граница левой колонки +
-    `(k + 0.5) * WIRE_PITCH`. Связь через несколько колонок берёт трек
-    **первого** зазора: форму такой связи канон не расписывает, это наше явное
-    решение.
+    `STUB + (k + 0.5) * WIRE_PITCH`. STUB — первым слагаемым канона
+    (`channel_w = STUB + WIRE_PITCH * cut`, ТЗ 4.2): вылет из порта в
+    `predicted_polyline` остаётся левее трека, и линия не делает петлю назад.
+    Без этого слагаемого трек ложился **ближе** вылета и полилиния шла
+    вбок-назад (числовая проверка 05.10.2026: треки 36/44 против вылета до 48).
+    Связь через несколько колонок берёт трек **первого** зазора: форму такой
+    связи канон не расписывает, это наше явное решение.
 
     **Предсказание, не замер.** Как среда укладывает треки внутри канала, мы не
     мерили и померить не можем (промежуточные точки линии среда не отдаёт),
@@ -708,7 +712,8 @@ def _wire_channels(
         members.sort(key=lambda wid: (placement[wid][2], placement[wid][3]))
         for index, wire_id in enumerate(members):
             if gap == placement[wire_id][0]:
-                channels[wire_id] = rights[gap] + (index + 0.5) * WIRE_PITCH
+                channels[wire_id] = (rights[gap] + STUB
+                                     + (index + 0.5) * WIRE_PITCH)
     # Выровненной связи трек не нужен: её форма — прямая, канал не
     # задействован. Но канон канал ей даёт, поэтому она проверяема, а не
     # «не проверена».
@@ -725,8 +730,8 @@ def audit_routing_segments(
     """Посчитать проблемы маршрутов по предсказанным полилиниям.
 
     Чистая функция: ни COM, ни контура — потому её и проверяют тесты. Канал
-    для предсказания берётся серединой между концами линии: каналы от
-    `cut_size` — следующий шаг ТЗ, в v1 их нет.
+    каждой связи — её трек в зазоре между колонками (`_wire_channels`, ТЗ 4.2);
+    линии, которым канон канала не даёт, честно уходят в `unchecked`.
 
     Обратная связь (приёмник левее источника) не предсказывается — маршрут
     ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.

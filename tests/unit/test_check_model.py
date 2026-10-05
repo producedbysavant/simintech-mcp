@@ -559,6 +559,34 @@ def test_audit_routing_puts_nets_on_separate_tracks():
     assert problems.unchecked == []
 
 
+def test_audit_routing_tracks_clear_the_stub():
+    """Трек стоит за вылетом STUB — у предсказания нет обратного хода.
+
+    Канон ТЗ 4.2: `channel_w = STUB + WIRE_PITCH * cut` — STUB первым
+    слагаемым, треки после него. Если трек положить ближе вылета, полилиния
+    уходит на `STUB` дальше трека и возвращается назад — петля, которой среда
+    не рисует, а метрики считаются по ней (числовая проверка 05.10.2026:
+    треки 36/44 против вылета до 48).
+    """
+    from simintech_mcp.geometry import predicted_polyline, segments_of
+
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+    wires = {1: ((32.0, 10.0), (300.0, 30.0)),
+             2: ((32.0, 40.0), (300.0, 60.0))}
+
+    column_of, lefts, rights = cm._columns(rects)
+    channels = cm._wire_channels(rects, wires, column_of, lefts, rights)
+
+    for wire_id, (start, end) in wires.items():
+        poly = predicted_polyline(start, end, channels[wire_id])
+        assert poly is not None
+        for (ax, _ay), (bx, _by) in segments_of(poly):
+            assert bx >= ax, (
+                f"линия {wire_id}: сегмент идёт назад по X ({ax} → {bx}) — "
+                "трек лёг ближе вылета STUB")
+
+
 def test_audit_routing_flags_wire_through_block():
     """Линия сквозь чужой габарит названа вместе с блоком."""
     rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
