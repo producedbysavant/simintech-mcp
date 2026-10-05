@@ -11,7 +11,9 @@ from __future__ import annotations
 from simintech_mcp.geometry import (
     STUB,
     WIRE_PITCH,
+    channel_width,
     collinear_overlap,
+    cut_sizes,
     predicted_polyline,
     proper_crossing,
     segment_hits_rect,
@@ -94,3 +96,22 @@ def test_predicted_polyline_back_edge_is_not_guessed():
     """Обратная связь (приёмник левее) не предсказывается — None, не догадка."""
     assert predicted_polyline((200.0, 40.0), (100.0, 120.0), 150.0) is None
     assert predicted_polyline((200.0, 40.0), (200.0, 120.0), 250.0) is None
+
+
+def test_channel_width_never_below_one_track():
+    """Канал не схлопывается: даже при нуле связей в нём один трек."""
+    assert channel_width(0) == STUB + WIRE_PITCH
+    assert channel_width(3) == STUB + 3 * WIRE_PITCH
+
+
+def test_cut_sizes_counts_nets_crossing_each_gap():
+    """В зазор входят связи источник слева, приёмник справа."""
+    nets = [(0, 2, False), (0, 1, False), (1, 2, False)]
+
+    assert cut_sizes(nets, 2) == [2, 2]
+    assert cut_sizes([(0, 1, False)], 3) == [1, 0, 0]
+
+
+def test_cut_sizes_skips_horizontally_aligned_nets():
+    """Выровненная в одну горизонталь связь трека не занимает."""
+    assert cut_sizes([(0, 1, True), (0, 2, False)], 2) == [1, 1]
