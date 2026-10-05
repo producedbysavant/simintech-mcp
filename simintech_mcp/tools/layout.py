@@ -617,6 +617,38 @@ def layout_place(block_ids: str = "", connections: str = "",
     return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
 
 
+def fit_geometry(frame: "tuple[float, float, float, float]",
+                 canvas_w: float = CANVAS_W,
+                 canvas_h: float = CANVAS_H,
+                 padding: float = FIT_PADDING) -> "tuple[float, float, float]":
+    """Кадр по рамке модели: (масштаб, смещение_x, смещение_y).
+
+    Семантика свойств кадра по живому замеру 04.10.2026 (разбор пикселей
+    снимков): **экран = модель * масштаб + смещение**. То есть
+    `x_center`/`y_center` — смещение В ПИКСЕЛЯХ, а не координата модели: при
+    0/0 и масштабе 1 снимок совпал с координатами модели точка в точку
+    (габарит тёмных точек 48..561 при модели 48..560), при масштабе 4 левый
+    край встал на 192 = 48*4.
+
+    Масштаб берётся по меньшей из сторон: модель обязана войти целиком, и
+    растянуть её под полотно нельзя — иначе стороны разъедутся. Поля
+    `padding` (доля полотна) остаются с обоих краёв.
+
+    Функция чистая — ни COM, ни состояния, — поэтому её и проверяют тесты:
+    `tests/unit/test_layout_tools.py`, класс `test_fit_geometry_*`.
+    """
+    left, top, right, bottom = frame
+    width = max(right - left, 1.0)
+    height = max(bottom - top, 1.0)
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+    scale = min(canvas_w * (1.0 - 2.0 * padding) / width,
+                canvas_h * (1.0 - 2.0 * padding) / height)
+    return (scale,
+            canvas_w / 2.0 - cx * scale,
+            canvas_h / 2.0 - cy * scale)
+
+
 def apply_fit_view() -> str:
     """Посчитать рамку модели и выставить кадр страницы — общий шаг подгонки.
 
@@ -660,17 +692,7 @@ def apply_fit_view() -> str:
     height = max(bottom - top, 1.0)
     cx = (left + right) / 2.0
     cy = (top + bottom) / 2.0
-    scale = min(CANVAS_W * (1.0 - 2.0 * FIT_PADDING) / width,
-                CANVAS_H * (1.0 - 2.0 * FIT_PADDING) / height)
-    # Семантика свойств кадра по живому замеру 04.10.2026 (разбор пикселей
-    # снимков): экран = модель * scale + center. То есть `x_center`/`y_center`
-    # это смещение В ПИКСЕЛЯХ, а не координата модели. Замер: при 0/0 и scale 1
-    # снимок совпал с координатами модели точка в точку (габарит тёмных точек
-    # 48..561 при модели 48..560); при scale 4 левый край встал на 192 = 48*4.
-    # Поэтому центр рамки переводится в смещение: половина полотна минус
-    # середина рамки, уже умноженная на масштаб.
-    view_x = CANVAS_W / 2.0 - cx * scale
-    view_y = CANVAS_H / 2.0 - cy * scale
+    scale, view_x, view_y = fit_geometry(frame)
 
     from simintech_api.model_operations import build_import_model_text_body
 

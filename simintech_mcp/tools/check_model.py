@@ -170,6 +170,18 @@ def _script_safe(name: str) -> bool:
     return bool(_SAFE_NAME_RE.fullmatch(name))
 
 
+def _outside_sheet(rect: "tuple[float, float, float, float]") -> bool:
+    """Выходит ли габарит блока за начало листа (левый или верхний край в минусе).
+
+    Раскладка начинается с отступа (`layout_place`, `MARGIN`), поэтому
+    отрицательный левый или верхний край — ровно тот случай, из-за которого
+    схема выглядела срезанной: половина блока уходила за край листа (живой
+    случай 04.10.2026: блоки с центром x=0 теряли левую половину).
+    """
+    left, top, _right, _bottom = rect
+    return left < 0.0 or top < 0.0
+
+
 def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
                   wire_ids: List[int]) -> str:
     """Скрипт контура: концы каждой линии и пустые порты — построчно в отчёт.
@@ -258,6 +270,11 @@ def check_model_layout() -> str:
       критерия разметки (на разметке проверяются центры блоков);
     * пустой порт — это порт без линии; для выходных портов это не всегда
       дефект, решает человек.
+    * **кадр (масштаб и смещение вида) не проверяется**: свойства страницы
+      читаются только выгрузкой текста, а языковой способ чтения живым замером
+      не подтверждён (05.10.2026 — опыт не вернул ответа). Проверка
+      ограничивается тем, что видно без кадра, — «блок выходит за начало
+      листа». Сам кадр подгоняет `save_screenshot` (`fit=True`).
 
     Ничего не меняет в модели: контур ставит свой скрипт и возвращает прежний
     (`run_page_script` — тот же механизм и та же гарантия).
@@ -272,6 +289,7 @@ def check_model_layout() -> str:
     off_grid: List[str] = []
     port_blocks: List[Tuple[str, int]] = []
     port_skipped: List[str] = []
+    outside_sheet: List[str] = []
     for block in page.get_blocks():
         try:
             name = block.get_name()
@@ -298,6 +316,8 @@ def check_model_layout() -> str:
             geometry.append((name, rect))
             if _off_grid(rect):
                 off_grid.append(name)
+            if _outside_sheet(rect):
+                outside_sheet.append(name)
         width = size[0] if size else None
         names = _read_port_names(block)
         if width and names:
@@ -415,6 +435,14 @@ def check_model_layout() -> str:
                      f"{shown}{more}.")
     else:
         lines.append(f"Разметка {GRID_STEP:g} px: центры на сетке.")
+    if outside_sheet:
+        shown = ", ".join(outside_sheet[:MAX_REPORTED])
+        more = (f" (и ещё {len(outside_sheet) - MAX_REPORTED})"
+                if len(outside_sheet) > MAX_REPORTED else "")
+        lines.append(f"ВНИМАНИЕ: блоки выходят за начало листа (левый или "
+                     f"верхний край в минусе): {shown}{more}.")
+    else:
+        lines.append("Блоки в пределах листа: левый и верхний края не в минусе.")
     lines.append(contour_line)
     if not error:
         if empty_ports:

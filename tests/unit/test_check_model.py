@@ -507,3 +507,17 @@ async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
     # Файлы прошлого вызова убираются: уникальные имена не должны копить
     # песочницу (находка ревью #42).
     assert not Path(first).exists(), "файл отчёта прошлого вызова остался"
+
+
+def test_outside_sheet_flags_negative_edges():
+    """Срез листом: отрицательный левый или верхний край габарита — дефект.
+
+    Живой случай 04.10.2026: блоки стояли с центром x=0, и левая половина
+    уходила за край листа — на снимке они выглядели обрезанными.
+    """
+    from simintech_mcp.tools.check_model import _outside_sheet
+
+    assert _outside_sheet((-16.0, 0.0, 16.0, 16.0)) is True
+    assert _outside_sheet((0.0, -8.0, 32.0, 8.0)) is True
+    assert _outside_sheet((48.0, 48.0, 560.0, 112.0)) is False
+    assert _outside_sheet((0.0, 0.0, 32.0, 16.0)) is False
