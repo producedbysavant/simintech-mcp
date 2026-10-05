@@ -527,31 +527,48 @@ def test_outside_sheet_flags_negative_edges():
 
 
 def test_audit_routing_flags_crossing():
-    """Внутреннее пересечение попадает в crossings."""
+    """Пересечение внутренними отрезками попадает в crossings.
+
+    Линия через несколько колонок берёт трек первого зазора, и её дальняя
+    горизонталь пересекает вертикаль линии соседнего зазора — это и есть
+    предсказуемое пересечение.
+    """
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0)),
+             ("U3", (300.0, 0.0, 332.0, 64.0))]
+
     problems = cm.audit_routing_segments(
-        [],
-        {1: ((0.0, 0.0), (200.0, 0.0)),
-         2: ((50.0, -100.0), (150.0, 100.0))})
+        rects,
+        {1: ((32.0, 10.0), (300.0, 40.0)),
+         2: ((132.0, 60.0), (300.0, 20.0))})
+
     assert (1, 2) in problems.crossings
-    assert problems.coincident == []
 
 
-def test_audit_routing_flags_shared_track():
-    """Общий трек длиннее WIRE_PITCH — coincident, а не crossings."""
+def test_audit_routing_puts_nets_on_separate_tracks():
+    """Связи одного зазора получают разные треки — общего трека нет."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+
     problems = cm.audit_routing_segments(
-        [],
-        {1: ((0.0, 0.0), (200.0, 0.0)),
-         2: ((0.0, 0.0), (100.0, 0.0))})
-    assert (1, 2) in problems.coincident
-    assert problems.crossings == []
+        rects,
+        {1: ((32.0, 10.0), (300.0, 30.0)),
+         2: ((32.0, 40.0), (300.0, 60.0))})
+
+    assert problems.coincident == []
+    assert problems.unchecked == []
 
 
 def test_audit_routing_flags_wire_through_block():
     """Линия сквозь чужой габарит названа вместе с блоком."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0)),
+             ("U3", (200.0, 0.0, 232.0, 64.0))]
+
     problems = cm.audit_routing_segments(
-        [("U1", (50.0, -50.0, 150.0, 50.0))],
-        {1: ((0.0, 0.0), (200.0, 0.0))})
-    assert problems.block_hits == [(1, "U1")]
+        rects, {1: ((32.0, 10.0), (200.0, 40.0))})
+
+    assert (1, "U2") in problems.block_hits
 
 
 def test_audit_routing_flags_inverted_port_order():
@@ -572,11 +589,16 @@ def test_audit_routing_marks_feedback_unchecked():
 
 
 def test_audit_routing_clean_is_empty():
-    """Прямая линия без соседей и габаритов — чистый вердикт."""
-    problems = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+    """Прямая выровненная связь — чистый вердикт, и ничего «не проверено»."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((32.0, 30.0), (100.0, 30.0))})
+
     assert not (problems.crossings or problems.coincident
                 or problems.block_hits or problems.port_order
-                or problems.unchecked)
+                or problems.unchecked or problems.channel_overflow)
 
 
 def test_audit_wire_report_requires_done():
@@ -594,10 +616,14 @@ def test_audit_wire_report_requires_done():
 
 def test_audit_routing_deduplicates_shared_pairs():
     """Пара, совпавшая двумя отрезками, стоит в ответе один раз."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (200.0, 0.0, 232.0, 64.0))]
+
     problems = cm.audit_routing_segments(
-        [],
-        {1: ((0.0, 0.0), (100.0, 80.0)),
-         2: ((0.0, 0.0), (80.0, 0.0))})
+        rects,
+        {1: ((32.0, 10.0), (200.0, 10.0)),
+         2: ((32.0, 10.0), (200.0, 50.0))})
+
     assert problems.coincident == [(1, 2)]
 
 
@@ -664,3 +690,10 @@ def test_channel_overflow_ignores_horizontally_aligned_wire():
                2: ((120.0, 70.0), (146.0, 70.0))}
 
     assert cm.channel_overflow(rects, aligned) == []
+
+
+def test_audit_routing_marks_noncanon_wire_unchecked():
+    """Без колонок канон канала не даёт — линия идёт в «не проверено»."""
+    problems = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+
+    assert problems.unchecked == [1]

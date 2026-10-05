@@ -663,29 +663,59 @@ def channel_overflow(
     return found
 
 
-def _channel_x(
-        start: "Tuple[float, float]", end: "Tuple[float, float]",
+def _wire_channels(
         rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]",
         column_of: "Dict[str, int]", lefts: "Dict[int, float]",
         rights: "Dict[int, float]"
-) -> float:
-    """X канала предсказания: середина зазора сразу за колонкой источника.
+) -> "Dict[int, float | None]":
+    """X канала каждой связи — её трек в зазоре между колонками (ТЗ 4.2).
 
-    ТЗ 4.2 задаёт канал раскладкой колонок, а не серединой между концами:
-    линия выходит из колонки источника в зазор справа от неё. Без колонок,
-    либо если конец не привязан к блоку или связь обратная — прежняя
-    середина между концами.
+    Порядок треков детерминирован: связи зазора, которым трек нужен (не
+    выровненные в одну горизонталь), сортируются по Y приёмника, при равенстве
+    — по Y источника, и получают X = правая граница левой колонки +
+    `(k + 0.5) * WIRE_PITCH`. Связь через несколько колонок берёт трек
+    **первого** зазора: форму такой связи канон не расписывает, это наше явное
+    решение.
+
+    **Предсказание, не замер.** Как среда укладывает треки внутри канала, мы не
+    мерили и померить не можем (промежуточные точки линии среда не отдаёт),
+    поэтому порядок — модель. Проверка — снимком (`save_screenshot`):
+    предсказанные треки обязаны визуально совпасть с тем, как линии лежат в
+    канале; если снимок покажет другой порядок (например, среда кладёт от
+    краёв к центру) — порядок уточняется по нему.
+
+    `None` — канон канала не даёт: меньше двух колонок, конец не привязан к
+    блоку, связь обратная или внутриколоночная. Такие линии уходят в «не
+    проверено»: выдуманная середина между концами дала бы ложные метрики.
     """
-    fallback = (start[0] + end[0]) / 2.0
+    channels: "Dict[int, float | None]" = {wid: None for wid in wires}
     if not column_of:
-        return fallback
-    src = _column_at(start, rects, column_of)
-    dst = _column_at(end, rects, column_of)
-    if src is None or dst is None or src >= dst:
-        return fallback
-    if src not in lefts or src + 1 not in lefts:
-        return fallback
-    return (rights[src] + lefts[src + 1]) / 2.0
+        return channels
+    placement: "Dict[int, Tuple[int, int, float, float, bool]]" = {}
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        src = _column_at(start, rects, column_of)
+        dst = _column_at(end, rects, column_of)
+        if src is None or dst is None or src >= dst:
+            continue
+        aligned = abs(start[1] - end[1]) < ALIGN_TOLERANCE
+        placement[wire_id] = (src, dst, end[1], start[1], aligned)
+    for gap in range(max(lefts) if lefts else 0):
+        members = [wid for wid, (src, dst, _ey, _sy, aligned)
+                   in placement.items()
+                   if not aligned and src <= gap < dst]
+        members.sort(key=lambda wid: (placement[wid][2], placement[wid][3]))
+        for index, wire_id in enumerate(members):
+            if gap == placement[wire_id][0]:
+                channels[wire_id] = rights[gap] + (index + 0.5) * WIRE_PITCH
+    # Выровненной связи трек не нужен: её форма — прямая, канал не
+    # задействован. Но канон канал ей даёт, поэтому она проверяема, а не
+    # «не проверена».
+    for wire_id, (src_col, _dst, _ey, _sy, aligned) in placement.items():
+        if aligned:
+            channels[wire_id] = rights[src_col]
+    return channels
 
 
 def audit_routing_segments(
@@ -702,11 +732,15 @@ def audit_routing_segments(
     ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.
     """
     column_of, lefts, rights = _columns(rects)
+    channels = _wire_channels(rects, wires, column_of, lefts, rights)
     segments: List[Tuple[int, Tuple[float, float], Tuple[float, float]]] = []
     unchecked: List[int] = []
     for wire_id in sorted(wires):
         start, end = wires[wire_id]
-        channel = _channel_x(start, end, rects, column_of, lefts, rights)
+        channel = channels.get(wire_id)
+        if channel is None:
+            unchecked.append(wire_id)
+            continue
         polyline = predicted_polyline(start, end, channel)
         if polyline is None:
             unchecked.append(wire_id)
