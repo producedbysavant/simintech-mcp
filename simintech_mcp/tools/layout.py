@@ -649,7 +649,8 @@ def fit_geometry(frame: "tuple[float, float, float, float]",
             canvas_h / 2.0 - cy * scale)
 
 
-def apply_fit_view() -> str:
+def apply_fit_view(canvas_w: float = CANVAS_W,
+                   canvas_h: float = CANVAS_H) -> str:
     """Посчитать рамку модели и выставить кадр страницы — общий шаг подгонки.
 
     Нужен обоим: и инструменту `fit_view`, и `save_screenshot` — снимок обязан
@@ -668,7 +669,9 @@ def apply_fit_view() -> str:
     (центр из `Points` плюс `get_size`; подписи пропускаются), её центр
     становится `x_center`/`y_center`, а масштаб — отношением полотна снимка к
     рамке с полями `FIT_PADDING`. Полотно 1026x580 — живой замер PNG от
-    `savescreenshot`.
+    `savescreenshot`. Фактический размер узнаёт `save_screenshot` по самому
+    снимку (он у среды не постоянен: живой замер 05.10.2026 — 1026x580 у части
+    снимков и 1026x659 у другой) и передаёт его сюда.
 
     **Как пишется.** Через блок свойств в `createmodel` — тот же путь, что у
     `import_model_text`: `x_center`, `y_center`, `x_scale`, `y_scale` это
@@ -692,7 +695,7 @@ def apply_fit_view() -> str:
     height = max(bottom - top, 1.0)
     cx = (left + right) / 2.0
     cy = (top + bottom) / 2.0
-    scale, view_x, view_y = fit_geometry(frame)
+    scale, view_x, view_y = fit_geometry(frame, canvas_w, canvas_h)
 
     from simintech_api.model_operations import build_import_model_text_body
 
@@ -712,7 +715,8 @@ def apply_fit_view() -> str:
         failed="выставить кадр страницы не удалось")
     refuse_on_bad_outcome(outcome, action="подгонка кадра")
     return (
-        f"Кадр выставлен по рамке модели: {width:.0f}x{height:.0f} px.\n"
+        f"Кадр выставлен по рамке модели: {width:.0f}x{height:.0f} px "
+        f"на полотне {canvas_w:.0f}x{canvas_h:.0f}.\n"
         f"  центр рамки (координаты модели): ({cx:.1f}, {cy:.1f})\n"
         f"  записано: x_center = {view_x:.1f}, y_center = {view_y:.1f} "
         f"— это смещение в пикселях, экран = модель * масштаб + смещение\n"

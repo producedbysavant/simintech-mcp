@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict
+from typing import Any, Dict, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.exceptions import ScriptBridgeError
@@ -42,6 +42,32 @@ FORMATS: Dict[str, int] = {"png": 2, "bmp": 1, "svg": 3}
 #: читается мультимодальными клиентами напрямую — снимок делается, чтобы на
 #: него смотрели.
 DEFAULT_FORMAT = "png"
+
+
+#: Фактический размер полотна последнего снимка (ширина, высота).
+#: Размер PNG у среды не постоянен (живой замер 05.10.2026: 1026x580 у части
+#: снимков и 1026x659 у другой), а `container_width`/`container_height` в контуре
+#: не компилируются. Поэтому размер узнаётся по самому снимку, а не угадывается.
+_LAST_CANVAS: "Optional[Tuple[int, int]]" = None
+
+
+def _png_size(path: str) -> "Optional[Tuple[int, int]]":
+    """Размер PNG из заголовка IHDR — без сторонних библиотек.
+
+    Расширение файла формат не выбирает (замер 03.10.2026), поэтому проверяется
+    и подпись PNG, а не только имя: у BMP и SVG размер здесь не читается, и
+    функция честно возвращает `None` — вызывающий тогда ничего не пересчитывает.
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return (int.from_bytes(head[16:20], "big"),
+            int.from_bytes(head[20:24], "big"))
+
 
 
 def build_screenshot_body(path: str, type_code: int) -> str:
@@ -107,12 +133,16 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
             f"{', '.join(f'{name}={code}' for name, code in FORMATS.items())})."
         )
 
+    canvas = _LAST_CANVAS
+    canvas_note = ""
     fit_note = ""
     if fit:
         from .layout import apply_fit_view
 
         try:
-            lines = apply_fit_view().splitlines()
+            kwargs = ({"canvas_w": float(canvas[0]), "canvas_h": float(canvas[1])}
+                      if canvas else {})
+            lines = apply_fit_view(**kwargs).splitlines()
             fit_note = "\n" + "\n".join(lines[:2])
         except Exception as exc:  # noqa: BLE001
             # Подгонка — не условие съёмки: её неудача обязана стать
@@ -121,32 +151,57 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
             fit_note = f"\nКадр не подогнан: {type(exc).__name__}: {exc}"
 
     root = sandbox.output_root()
-    shot_path = os.path.join(root, fresh_name(f"screenshot.{key}"))
-    contour_path = result_path()
-    body = build_screenshot_body(shot_path, type_code)
 
-    try:
-        run = bridge().run_page_script(body, contour_path)
-    except ScriptBridgeError as exc:
-        discard_result(contour_path)
-        raise ToolError(
-            f"снимок не сделан: {exc}. Тело идёт в секцию `initialization`: "
-            "проверьте, что модель считает — неподключённый вход "
-            "останавливает расчёт всей модели молча."
-        ) from exc
-    discard_result(contour_path)
-    outcome = run.outcome
-    refuse_on_bad_outcome(outcome, action="съёмка схемы")
+    def _shoot() -> "Tuple[Any, str]":
+        """Сделать снимок и вернуть (исход контура, путь файла)."""
+        path = os.path.join(root, fresh_name(f"screenshot.{key}"))
+        contour = result_path()
+        try:
+            run = bridge().run_page_script(
+                build_screenshot_body(path, type_code), contour)
+        except ScriptBridgeError as exc:
+            discard_result(contour)
+            raise ToolError(
+                f"снимок не сделан: {exc}. Тело идёт в секцию `initialization`: "
+                "проверьте, что модель считает — неподключённый вход "
+                "останавливает расчёт всей модели молча."
+            ) from exc
+        discard_result(contour)
+        refuse_on_bad_outcome(run.outcome, action="съёмка схемы")
+        # Файла может не быть, даже если тело «отработало»: на неподходящем
+        # типе savescreenshot молча ничего не создаёт (замер 03.10.2026, тип 0).
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise ToolError(
+                f"скрипт отработал, но файла снимка нет: {path}. "
+                f"savescreenshot формата «{key}» ничего не записал — "
+                "проверьте поддержку формата в этой сборке."
+            )
+        return (run.outcome, path)
 
-    # Файла может не быть, даже если тело «отработало»: на неподходящем типе
-    # savescreenshot молча ничего не создаёт (замер 03.10.2026: тип 0) — это
-    # состояние, которое обязано стать отказом, а не «снимок: путь» без файла.
-    if not os.path.isfile(shot_path) or os.path.getsize(shot_path) == 0:
-        raise ToolError(
-            f"скрипт отработал, но файла снимка нет: {shot_path}. "
-            f"savescreenshot формата «{key}» ничего не записал — проверьте "
-            "поддержку формата в этой сборке."
-        )
+    outcome, shot_path = _shoot()
+
+    # Полотно снимка у среды не постоянно (живой замер 05.10.2026: 1026x580 у
+    # части снимков и 1026x659 у другой). Поэтому фактический размер читается из
+    # самого PNG: разошёлся с тем, по которому считали кадр, — кадр
+    # пересчитывается и снимок делается заново, один раз.
+    actual = _png_size(shot_path) if key == "png" else None
+    if actual is not None:
+        if fit and canvas != actual:
+            from .layout import apply_fit_view
+
+            try:
+                lines = apply_fit_view(canvas_w=float(actual[0]),
+                                       canvas_h=float(actual[1])).splitlines()
+                fit_note = "\n" + "\n".join(lines[:2])
+                outcome, shot_path = _shoot()
+                actual = _png_size(shot_path) or actual
+                canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}: "
+                               "кадр пересчитан под него, снимок сделан заново.")
+            except Exception as exc:  # noqa: BLE001
+                canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}, "
+                               "кадр под него пересчитать не удалось: "
+                               f"{type(exc).__name__}: {exc}")
+        globals()["_LAST_CANVAS"] = actual
 
     size = os.path.getsize(shot_path)
     head = ""
@@ -155,5 +210,5 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
                 + " Снимок при этом есть: savescreenshot пишется из секции "
                   "`initialization`, а не из шагов расчёта.\n")
     return (f"{head}Снимок схемы ({key}): {shot_path} ({size} байт)."
-            f"{fit_note} "
+            f"{fit_note}{canvas_note} "
             "Откройте файл как изображение — это фактический вид схемы.")
