@@ -150,6 +150,67 @@ async def test_connect_refuses_zero_wire_id(monkeypatch):
     assert session.WIRES == [], "отказ по нулевому id, а линия запомнена"
 
 
+def test_resolve_block_prefers_name_and_tolerates_non_decimal_digits():
+    """Имя выигрывает у id; «²» — не id, а честное «не найден» (ревью 05.10.2026).
+
+    Блок с числовым именем («5») обязан остаться адресуемым по имени; а
+    `isdigit()`-разбор подавал бы «²» в `int()` — отказ был бы про ValueError
+    вместо дружелюбного «блок не найден».
+    """
+    from _support import _FakePage
+    from simintech_mcp.tools.blocks import _resolve_block
+
+    named_five = _PlacedBlock("5", 99)
+    by_id = _PlacedBlock("k_0", 7)
+    page = _FakePage({"5": named_five, "k_0": by_id})
+
+    assert _resolve_block(page, "5") is named_five, "имя числового блока"
+    assert _resolve_block(page, "7") is by_id, "id — запасной путь"
+    assert _resolve_block(page, " k_0 ") is by_id, "пробелы отбрасываются"
+    assert _resolve_block(page, "²") is None, "«²» — не десятичное число"
+    assert _resolve_block(page, "нет_такого") is None
+
+
+@pytest.mark.anyio
+async def test_connect_addressed_by_id_remembers_names(monkeypatch):
+    """connect принимает числовой id, а в реестр кладёт имена блоков.
+
+    Сырой токен-идентификатор в `WIRES` молча выпал бы из графа
+    `layout_place`, который строит его по именам блоков (находка ревью
+    05.10.2026).
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+
+    text = _text(await mcp.call_tool("connect",
+                                     {"src": "1", "dst": " kx_0 "}))
+
+    assert "Соединено k_0 -> kx_0" in text
+    assert session.WIRES == [(src.wires[0][0], "k_0", 0, "kx_0", 0)], \
+        "в реестре — имена, а не сырые токены"
+
+
+@pytest.mark.anyio
+async def test_connect_resolves_pair_with_shared_name_by_id(monkeypatch):
+    """Половины пары с общим именем различаются по id — обе соединяемы.
+
+    Имя ячейки (`#m1`) у «В память» и «Из памяти» одно: `find_block` вернул
+    бы первую половину всегда, и вторая была бы недостижима (живой случай
+    05.10.2026, issue #80).
+    """
+    first = _ConnectingBlock("#m1", 12)
+    second = _ConnectingBlock("#m1", 13)
+    _install_wire_project(monkeypatch, {"first": first, "second": second})
+
+    text = _text(await mcp.call_tool("connect",
+                                     {"src": "12", "dst": "13"}))
+
+    assert "Соединено #m1 -> #m1" in text
+    assert first.wires and first.wires[0][1] is second, \
+        "соединена не та половина пары"
+
+
 @pytest.mark.anyio
 async def test_layout_place_aligns_port_heights(monkeypatch):
     """Блок сдвигается так, чтобы основной вход лёг на высоту выхода.
@@ -703,6 +764,36 @@ async def test_disconnect_wire_removes_line_and_forgets_it(monkeypatch, tmp_path
         assert [record[0] for record in session.WIRES] == [spare], (
             "запись о снятой линии осталась в реестре (или пропала чужая)")
         assert _Drops.body.count("findstartport") == 1
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_addressed_by_id(monkeypatch, tmp_path):
+    """disconnect принимает id — как и connect: так адресуют половину пары.
+
+    Имя у «В память»/«Из памяти» общее, и снятие по имени уходило бы либо в
+    «блок не найден» (для id), либо в чужую половину (для имени) — связь
+    становилась неснимаемой (находка ревью 05.10.2026).
+    """
+    src = _ConnectingBlock("#m1", 12)
+    dst = _ConnectingBlock("k_0", 3)
+    wire = _FakeWire(77)
+    src.wires.append((wire, dst, 0, 0))
+    saved = list(session.WIRES)
+
+    class _Drops(_BridgeReplies):
+        lines = ["removed=77 pw=0"]
+        on_run = staticmethod(lambda: src.wires.clear())
+
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Drops,
+                            {"first": src, "k_0": dst})
+
+        text = _text(await mcp.call_tool(
+            "disconnect_wire", {"src": "12", "dst": "3"}))
+
+        assert "снята (wire=77)" in text
     finally:
         session.WIRES[:] = saved
 
