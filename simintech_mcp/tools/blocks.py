@@ -226,15 +226,38 @@ def _resolve_block(page: Page, token: str) -> Optional[Block]:
     одно и то же — имя ячейки (например `#m1`), так её и находят обе половины.
     `find_block` вернул бы первую попавшуюся, и соединить пару было бы нельзя.
     Числовой id их различает, а `list_blocks` печатает его рядом с именем.
+
+    Имя проверяется **первым** — блок с числовым именем («5») остаётся
+    адресуемым по имени, а id служит запасным путём (находка ревью
+    05.10.2026). Цифры — `isdecimal()`, а не `isdigit()`: надстрочные «²» и
+    «①» числятся digit, но `int()` на них падает — отказ был бы про ValueError
+    вместо честного «блок не найден».
     """
     token = token.strip()
-    if token.isdigit():
+    found = page.find_block(token)
+    if found is not None:
+        return found
+    if token.isdecimal():
         wanted = int(token)
         for block in page.get_blocks():
             if getattr(block, "id", None) == wanted:
                 return block
-        return None
-    return page.find_block(token)
+    return None
+
+
+def _resolved_name(block: Block, fallback: str) -> str:
+    """Имя блока для реестра связей и ответа; запасной путь — сам токен.
+
+    В реестр (`session.WIRES`) обязан лечь токен, который поймёт `layout_place`
+    (он адресует блоки именами): сырой токен бывает id или с пробелами и молча
+    выпал бы из графа (находка ревью 05.10.2026). `get_name()` у читаемого
+    блока не бросает; запасной путь — на случай сбоя COM уже после создания
+    линии: терять связь из реестра нельзя.
+    """
+    try:
+        return block.get_name()
+    except Exception:                                         # noqa: BLE001
+        return fallback.strip()
 
 
 @mcp.tool()
@@ -256,8 +279,9 @@ def connect(src: str, dst: str,
     #24 п.6); выравнивание по портам делает `layout_place`.
 
     Args:
-        src: имя/алиас блока-источника.
-        dst: имя/алиас блока-приёмника.
+        src: имя/алиас блока-источника или его числовой id (`list_blocks`
+            печатает id рядом с именем).
+        dst: имя/алиас блока-приёмника или его числовой id.
         out_index: номер выходного порта источника (0-based).
         in_index: номер входного порта приёмника (0-based).
     """
@@ -284,10 +308,14 @@ def connect(src: str, dst: str,
             f"страницам/слоям). Связь не запомнена — проверьте порты и "
             f"повторите `connect`."
         )
+    src_name = _resolved_name(b1, src)
+    dst_name = _resolved_name(b2, dst)
     # Храним и концы связи: по ним `layout_place` выравнивает блоки так, чтобы
-    # линия шла без лишнего излома.
-    session.WIRES.append((wire, src, out_index, dst, in_index))
-    return f"Соединено {src} -> {dst} (wire={wire.id})"
+    # линия шла без лишнего излома. Имена — фактические, а не сырой токен:
+    # граф `layout_place` строится по именам блоков, и токен-идентификатор
+    # молча выпал бы из него (находка ревью 05.10.2026).
+    session.WIRES.append((wire, src_name, out_index, dst_name, in_index))
+    return f"Соединено {src_name} -> {dst_name} (wire={wire.id})"
 
 
 def _disconnect_wire_body(src_id: int, out_index: int,
@@ -514,15 +542,16 @@ def disconnect_wire(src: str, dst: str,
     той же странице.
 
     Args:
-        src: имя блока-источника (автоимя из `list_blocks`).
-        dst: имя блока-приёмника.
+        src: имя блока-источника или его числовой id (автоимя и id печатает
+            `list_blocks`).
+        dst: имя блока-приёмника или его числовой id.
         out_index: номер выходного порта источника (0-based).
         in_index: номер входного порта приёмника (0-based).
     """
     project = session.ensure_project()
     page = project.get_main_page()
-    b1 = page.find_block(src)
-    b2 = page.find_block(dst)
+    b1 = _resolve_block(page, src)
+    b2 = _resolve_block(page, dst)
     if b1 is None:
         return _missing_block(src)
     if b2 is None:
@@ -740,10 +769,10 @@ def get_block_script(block: str) -> str:
     скрипт вложенного в неё блока за её собственный не выдаётся.
 
     Args:
-        block: имя блока (автоимя из `list_blocks`).
+        block: имя блока (автоимя из `list_blocks`) или его числовой id.
     """
     project = session.ensure_project()
-    target = project.get_main_page().find_block(block)
+    target = _resolve_block(project.get_main_page(), block)
     if target is None:
         return _missing_block(block)
     try:
@@ -895,7 +924,7 @@ def set_block_script(block: str, script: str) -> str:
     и `get_block_script`).
 
     Args:
-        block: имя блока (автоимя из `list_blocks`).
+        block: имя блока (автоимя из `list_blocks`) или его числовой id.
         script: новый текст скрипта (канон: секции `input`/`output`/`var` и
             тело; переводы строк — любые, нормализуются к CRLF).
     """
@@ -913,7 +942,7 @@ def set_block_script(block: str, script: str) -> str:
             "конкатенацией (например, `\"CTX\" + \"_END\"`), если он нужен "
             "как содержание, и повторите.")
     project = session.ensure_project()
-    target = project.get_main_page().find_block(block)
+    target = _resolve_block(project.get_main_page(), block)
     if target is None:
         return _missing_block(block)
     normalized = _normalize_script(script)
@@ -1032,10 +1061,11 @@ def get_block_params(block: str) -> str:
 
     Args:
         block: имя блока на главной странице — автоматическое (их даёт
-            `list_blocks`); переименование через COM недоступно.
+            `list_blocks`) — или его числовой id; переименование через COM
+            недоступно.
     """
     page = session.ensure_project().get_main_page()
-    target = page.find_block(block)
+    target = _resolve_block(page, block)
     if target is None:
         return _missing_block(block)
     try:
@@ -1100,14 +1130,15 @@ def set_block_param(block: str, param: str, value: str,
     раскладка переживает повторные правки параметров.
 
     Args:
-        block: имя блока на главной странице (автоимя из `list_blocks`).
+        block: имя блока на главной странице (автоимя из `list_blocks`) или
+            его числовой id.
         param: имя параметра блока (см. `get_block_params`).
         value: значение строкой; массивы — в стиле SimInTech, напр. '[1, -1]'.
         allow_unknown: True — не сверять имя с каталогом (для параметров,
             которых в каталоге нет).
     """
     page = session.ensure_project().get_main_page()
-    target = page.find_block(block)
+    target = _resolve_block(page, block)
     if target is None:
         return _missing_block(block)
     notes: List[str] = []
@@ -1270,7 +1301,7 @@ def set_block_size(block: str, width: float, height: float) -> str:
     линий (контракт #24 п.6); ручная раскладка переживает повторные правки.
 
     Args:
-        block: имя блока (автоимя из `list_blocks`).
+        block: имя блока (автоимя из `list_blocks`) или его числовой id.
         width: ширина в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
         height: высота в пикселях (> 0, не больше `MAX_BLOCK_SIZE`).
     """
@@ -1281,7 +1312,7 @@ def set_block_size(block: str, width: float, height: float) -> str:
             f"измерения: настоящий размер блока — десятки-сотни пикселей).")
     project = session.ensure_project()
     page = project.get_main_page()
-    target = page.find_block(block)
+    target = _resolve_block(page, block)
     if target is None:
         return _missing_block(block)
     required = _port_required_height(block, target)
