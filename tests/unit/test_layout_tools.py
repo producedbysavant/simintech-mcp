@@ -1149,3 +1149,70 @@ def test_vanished_wires_compares_sets():
     assert _vanished_wires([1], [1]) == []
     assert _vanished_wires(None, [1]) == [], "сбой чтения — не «ничего не ушло»"
     assert _vanished_wires([1], None) == []
+
+
+def test_fit_geometry_puts_frame_margins_on_both_sides():
+    """Формула кадра: края рамки ложатся на поля, центр — в центр полотна.
+
+    Живой замер 05.10.2026: габарит модели на снимке лёг в 62..965 из 1026 при
+    полях 6% — то есть формула воспроизводит именно то, что видно глазами.
+    """
+    from simintech_mcp.tools.layout import (
+        CANVAS_W, FIT_PADDING, fit_geometry,
+    )
+
+    frame = (48.0, 48.0, 560.0, 112.0)
+    scale, view_x, _view_y = fit_geometry(frame)
+
+    assert abs(48.0 * scale + view_x - CANVAS_W * FIT_PADDING) < 1e-6
+    assert 560.0 * scale + view_x <= CANVAS_W * (1.0 - FIT_PADDING) + 1e-6
+    assert abs(304.0 * scale + view_x - CANVAS_W / 2.0) < 1e-6
+
+
+def test_fit_geometry_scale_is_limited_by_the_tighter_side():
+    """Масштаб выбирает более тесная сторона, а не среднее: модель обязана войти.
+
+    Широкая рамка упирается в ширину полотна, высокая — в высоту; растянуть
+    модель нельзя, иначе стороны разъедутся.
+    """
+    from simintech_mcp.tools.layout import (
+        CANVAS_H, CANVAS_W, FIT_PADDING, fit_geometry,
+    )
+
+    wide, _, _ = fit_geometry((0.0, 0.0, 1000.0, 10.0))
+    tall, _, _ = fit_geometry((0.0, 0.0, 10.0, 1000.0))
+
+    assert abs(wide - CANVAS_W * (1.0 - 2.0 * FIT_PADDING) / 1000.0) < 1e-9
+    assert abs(tall - CANVAS_H * (1.0 - 2.0 * FIT_PADDING) / 1000.0) < 1e-9
+
+
+def test_fit_geometry_survives_degenerate_frame():
+    """Нулевая рамка не делит на ноль: масштаб остаётся конечным и положительным.
+
+    Так выглядит страница с одним блоком без читаемого размера или пустая:
+    подгонка не должна падать и не должна выдавать бесконечность.
+    """
+    import math
+
+    from simintech_mcp.tools.layout import fit_geometry
+
+    scale, view_x, view_y = fit_geometry((10.0, 10.0, 10.0, 10.0))
+
+    assert math.isfinite(scale) and math.isfinite(view_x) and math.isfinite(view_y)
+    assert scale > 0
+
+
+def test_fit_geometry_uses_given_canvas_height():
+    """Полотно — параметр подгонки: у среды встречается и 580, и 659.
+
+    Живой замер 05.10.2026: ширина снимка всегда 1026, а высота гуляет — 580
+    у тринадцати снимков и 659 у семи. Кадр обязан считаться по фактическому
+    полотну, иначе центр рамки ложится не на середину и поля разъезжаются.
+    """
+    from simintech_mcp.tools.layout import fit_geometry
+
+    scale, view_x, view_y = fit_geometry((0.0, 0.0, 512.0, 64.0),
+                                         canvas_w=1026.0, canvas_h=659.0)
+
+    assert abs(256.0 * scale + view_x - 513.0) < 1e-6
+    assert abs(32.0 * scale + view_y - 659.0 / 2.0) < 1e-6

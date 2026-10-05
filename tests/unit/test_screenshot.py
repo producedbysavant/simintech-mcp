@@ -189,3 +189,24 @@ async def test_save_screenshot_uses_fresh_names(monkeypatch, tmp_path):
     assert first_path != second_path, f"имена снимков не уникальны: {first_path}"
     assert Path(first_path).is_file() and Path(second_path).is_file()
     assert first_path in first_text and second_path in second_text
+
+
+def test_png_size_reads_ihdr_and_rejects_other_formats(tmp_path):
+    """Размер полотна читается из заголовка PNG; не-PNG честно отвергается.
+
+    Полотно у среды не постоянно (живой замер 05.10.2026: 1026x580 у части
+    снимков и 1026x659 у другой), поэтому `save_screenshot` берёт размер из
+    самого снимка. Ошибка чтения не должна выглядеть как «размер есть»:
+    у BMP и SVG заголовок другой, и пересчитывать по нему кадр нельзя.
+    """
+    from simintech_mcp.tools.screenshot import _png_size
+
+    png = tmp_path / "shot.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + (13).to_bytes(4, "big") + b"IHDR"
+                    + (1026).to_bytes(4, "big") + (659).to_bytes(4, "big"))
+    assert _png_size(str(png)) == (1026, 659)
+
+    other = tmp_path / "shot.bmp"
+    other.write_bytes(b"BM" + b"\x00" * 30)
+    assert _png_size(str(other)) is None
+    assert _png_size(str(tmp_path / "missing.png")) is None

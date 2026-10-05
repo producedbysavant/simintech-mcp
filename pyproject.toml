@@ -61,15 +61,18 @@ dependencies = [
     # из выгрузки `.xprt` (обе конвенции кавычек, первая страница, отказ на
     # повреждённом снимке и неполном остатке; squash-коммит PR #41 `addbd0f`);
     # выпускной коммит `003f6b0`.
-    # v0.13.2 — релизный тег simintech-code (библиотека 0.13.2): аннотации для
-    # строгого внешнего анализа — Signal под TYPE_CHECKING, calc_settings →
-    # Dict[str, str], типы параметров get_properties/set_graph_prop/shutdown
-    # (squash-коммит PR #44 `34c00f4`; с ними сняты пять pyright-заглушек
-    # сервера); контур — ранний выход ожидания по CTX_END: на модели, которая
-    # структурно не считает, исход возвращается за секунды, а не за минуту
-    # таймаута (squash-коммит PR #47 `cd50af5`); выпускной коммит `3439194`.
-    # sha: 34391942ccf1edbb842a43457b0ba5ec18de0852
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.13.2",
+    # c31cc96 — коммит main simintech-code после мержа PR #53 (squash):
+    # канон укладки ТЗ 4 — channel_width/cut_sizes/round_step/ALIGN_EPS в
+    # simintech_api.layout.canon, шаг колонок от канала разреза (полуширины
+    # соседей, round_step — снап больше не подрезает канал), вертикальный
+    # зазор по пинам, канал обратных связей, нормализация слоёв (_back_edges
+    # — внутриколоночных связей нет) и повторяющаяся ячейка (layout/repeat):
+    # collapse/place/детектор. Плюс снятие запрета «Из памяти» (PR #49) и
+    # native-path записи (PR #51), вошедшие в main ранее. Пин v0.13.2 этих
+    # модулей не содержит — mcp-инструменты (layout_place: canon/repeat)
+    # падали на импорте в CI, пока пин не поднят.
+    # sha: c31cc96b2702285fd4d878ace1ee36a94dc60ca8
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@c31cc96b2702285fd4d878ace1ee36a94dc60ca8",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
