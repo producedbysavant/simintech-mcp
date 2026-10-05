@@ -69,7 +69,6 @@ def _png_size(path: str) -> "Optional[Tuple[int, int]]":
             int.from_bytes(head[20:24], "big"))
 
 
-
 def build_screenshot_body(path: str, type_code: int) -> str:
     """Тело контура: `savescreenshot("<путь>", <тип>)`.
 
