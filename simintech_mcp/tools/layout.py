@@ -669,7 +669,7 @@ def fit_view() -> str:
 
     from simintech_api.model_operations import build_import_model_text_body
 
-    from .model_text import _run_contour
+    from .model_text import run_contour
     from .page_script import refuse_on_bad_outcome
 
     props = (
@@ -680,7 +680,7 @@ def fit_view() -> str:
         f"  y_scale = {scale:g}\n"
         ")\n"
     )
-    outcome, _restored = _run_contour(
+    outcome, _restored = run_contour(
         build_import_model_text_body(props),
         failed="выставить кадр страницы не удалось")
     refuse_on_bad_outcome(outcome, action="подгонка кадра")

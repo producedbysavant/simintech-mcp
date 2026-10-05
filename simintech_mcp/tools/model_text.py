@@ -66,7 +66,7 @@ def bridge() -> ScriptBridge:
     return ScriptBridge(session.ensure_client(), project.id)
 
 
-def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
+def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     """Выполнить тело контура и вернуть `(исход, прежний скрипт)`.
 
     Отказ моста (`ScriptBridgeError`) означает неопределённое состояние проекта,
@@ -74,6 +74,10 @@ def _run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     же разбирает вызывающий — у выгрузки и сборки разный набор допустимых.
     Контурный файл результата убирается на любом пути: строки тела уже
     прочитаны мостом (`page_script.discard_result`).
+
+    Имя без подчёркивания — межмодульное: кроме выгрузки и сборки модели им
+    пользуется `fit_view` (запись свойств кадра страницы) — как
+    `refuse_on_bad_outcome` и `result_path` у инструментов контура.
     """
     path = result_path()
     try:
@@ -136,7 +140,7 @@ def export_model_text() -> str:
     # уникально на вызов, и путь, который читает инструмент, создаёт только
     # этот прогон.
 
-    outcome, _restored = _run_contour(
+    outcome, _restored = run_contour(
         build_export_model_text_body(text_path),
         failed="выгрузка текста модели не удалась")
     refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
@@ -297,7 +301,7 @@ def import_model_text(model_text: str) -> str:
             "и молчание здесь скрыло бы это.")
     wires_before = _wire_count()
     before = object_names()
-    outcome, restored = _run_contour(
+    outcome, restored = run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
     refuse_on_bad_outcome(outcome, action="сборка модели")
