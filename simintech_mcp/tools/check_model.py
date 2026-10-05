@@ -502,6 +502,17 @@ def check_model_layout() -> str:
 #: а координату линии среда отдаёт округлённой.
 _PORT_BAND = 8.0
 
+#: Допуск колонки: центры X блоков в пределах одного квадратика разметки —
+#: одна колонка. Планов раскладки у аудита нет: колонки берутся из
+#: фактической геометрии, а ручная доводка и среда дают доли пикселя —
+#: точное равенство центров было бы слишком строгим.
+COLUMN_TOLERANCE = WIRE_PITCH
+
+#: Допуск «связь выровнена»: Y конца у источника и Y конца у приёмника
+#: совпадают (ТЗ 4.1). Оба конца — фактические, из контура; полпикселя:
+#: среда считает в целых пикселях.
+ALIGN_TOLERANCE = 0.5
+
 
 class RoutingProblems(NamedTuple):
     """Что нашёл аудит маршрутов — чистая часть, без COM и контура."""
@@ -561,25 +572,32 @@ def _port_order_violations(
 def _columns(
         rects: "List[Tuple[str, tuple[float, float, float, float]]]"
 ) -> "Tuple[Dict[str, int], Dict[int, float], Dict[int, float]]":
-    """Колонки слоистой укладки: индекс блока и границы каждой колонки.
+    """Колонки слоистой укладки — из фактической геометрии блоков.
 
-    Колонка — общий центр X (так их группирует и раскладчик). Меньше двух
-    колонок — колонок нет: аудит тогда считает по прежней середине между
-    концами, а не падает на неполной геометрии.
+    Колонка — группа центров X в пределах `COLUMN_TOLERANCE` (один
+    квадратик разметки): планов раскладки у аудита нет, а равенство
+    центров было бы строже самой среды. Меньше двух колонок — колонок
+    нет: аудит откатывается на аварийный путь, а не выдумывает канал.
     """
     if not rects:
         return {}, {}, {}
-    centers = {name: round((rect[0] + rect[2]) / 2.0, 3)
-               for name, rect in rects}
-    unique = sorted(set(centers.values()))
-    if len(unique) < 2:
+    centers = {(rect[0] + rect[2]) / 2.0 for _name, rect in rects}
+    anchors: List[float] = []
+    for center in sorted(centers):
+        if anchors and center - anchors[-1] <= COLUMN_TOLERANCE:
+            continue
+        anchors.append(center)
+    if len(anchors) < 2:
         return {}, {}, {}
-    index_of = {center: i for i, center in enumerate(unique)}
-    column_of = {name: index_of[center] for name, center in centers.items()}
+    index_of = {anchor: i for i, anchor in enumerate(anchors)}
+    column_of: Dict[str, int] = {}
     lefts: Dict[int, float] = {}
     rights: Dict[int, float] = {}
     for name, rect in rects:
-        column = column_of[name]
+        center = (rect[0] + rect[2]) / 2.0
+        anchor = min(anchors, key=lambda value: abs(value - center))
+        column = index_of[anchor]
+        column_of[name] = column
         lefts[column] = min(lefts.get(column, rect[0]), rect[0])
         rights[column] = max(rights.get(column, rect[2]), rect[2])
     return column_of, lefts, rights
@@ -632,7 +650,7 @@ def channel_overflow(
         dst = _column_at(end, rects, column_of)
         if src is None or dst is None:
             continue
-        nets.append((src, dst, abs(start[1] - end[1]) < 0.5))
+        nets.append((src, dst, abs(start[1] - end[1]) < ALIGN_TOLERANCE))
         for gap in range(src, dst):
             actual[gap] = actual.get(gap, 0) + 1
     cut = cut_sizes(nets, gaps)

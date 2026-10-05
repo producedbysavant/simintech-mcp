@@ -641,3 +641,26 @@ def test_audit_routing_reports_channel_overflow():
         rects, {1: ((120.0, 0.0), (140.0, 50.0))})
 
     assert problems.channel_overflow == [(0, 1, 1, 20.0, 24.0)]
+
+
+def test_columns_cluster_centers_with_tolerance():
+    """Центры X в пределах квадратика разметки — одна колонка (допуск 8 px)."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (83.0, 140.0, 123.0, 200.0)),
+             ("U3", (280.0, 0.0, 320.0, 100.0))]
+
+    column_of, lefts, rights = cm._columns(rects)
+
+    assert column_of == {"U1": 0, "U2": 0, "U3": 1}
+    assert lefts == {0: 80.0, 1: 280.0}
+    assert rights == {0: 123.0, 1: 320.0}
+
+
+def test_channel_overflow_ignores_horizontally_aligned_wire():
+    """Выровненная по Y концов связь (ТЗ 4.1) трека на разрезе не просит."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (146.0, 0.0, 186.0, 100.0))]
+    aligned = {1: ((120.0, 50.0), (146.0, 50.0)),
+               2: ((120.0, 70.0), (146.0, 70.0))}
+
+    assert cm.channel_overflow(rects, aligned) == []
