@@ -18,11 +18,11 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.exceptions import ScriptBridgeError
-from simintech_api.script_probe import OUTCOME_MODEL_NOT_RUNNING
+from simintech_api.script_probe import ContourOutcome, OUTCOME_MODEL_NOT_RUNNING
 
 from .. import runtime, sandbox
 from ..app import mcp
@@ -48,7 +48,10 @@ DEFAULT_FORMAT = "png"
 #: Размер PNG у среды не постоянен (живой замер 05.10.2026: 1026x580 у части
 #: снимков и 1026x659 у другой), а `container_width`/`container_height` в контуре
 #: не компилируются. Поэтому размер узнаётся по самому снимку, а не угадывается.
-_LAST_CANVAS: "Optional[Tuple[int, int]]" = None
+#: Имя в нижнем регистре: pyright strict не даёт переопределять
+#: глобальное имя в ВЕРХНЕМ регистре — оно считается константой
+#: (`reportConstantRedefinition`), а размер обновляется на каждом снимке.
+_last_canvas: "Optional[Tuple[int, int]]" = None
 
 
 def _png_size(path: str) -> "Optional[Tuple[int, int]]":
@@ -123,6 +126,8 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
         fit: True (по умолчанию) — подогнать кадр по рамке модели перед
             съёмкой; False — снять текущий вид как есть.
     """
+    global _last_canvas
+
     key = format.strip().lower()
     type_code = FORMATS.get(key)
     if type_code is None:
@@ -132,7 +137,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
             f"{', '.join(f'{name}={code}' for name, code in FORMATS.items())})."
         )
 
-    canvas = _LAST_CANVAS
+    canvas = _last_canvas
     canvas_note = ""
     fit_note = ""
     if fit:
@@ -151,7 +156,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
 
     root = sandbox.output_root()
 
-    def _shoot() -> "Tuple[Any, str]":
+    def _shoot() -> "Tuple[ContourOutcome, str]":
         """Сделать снимок и вернуть (исход контура, путь файла)."""
         path = os.path.join(root, fresh_name(f"screenshot.{key}"))
         contour = result_path()
@@ -192,15 +197,24 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
                 lines = apply_fit_view(canvas_w=float(actual[0]),
                                        canvas_h=float(actual[1])).splitlines()
                 fit_note = "\n" + "\n".join(lines[:2])
-                outcome, shot_path = _shoot()
-                actual = _png_size(shot_path) or actual
-                canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}: "
-                               "кадр пересчитан под него, снимок сделан заново.")
             except Exception as exc:  # noqa: BLE001
                 canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}, "
                                "кадр под него пересчитать не удалось: "
                                f"{type(exc).__name__}: {exc}")
-        globals()["_LAST_CANVAS"] = actual
+            else:
+                # Отдельно от пересчёта: пересчёт мог удаться, а упасть —
+                # повторная съёмка, и примечание обязано называть именно её.
+                try:
+                    outcome, shot_path = _shoot()
+                    actual = _png_size(shot_path) or actual
+                    canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}: "
+                                   "кадр пересчитан под него, снимок сделан "
+                                   "заново.")
+                except Exception as exc:  # noqa: BLE001
+                    canvas_note = (f"\nПолотно снимка — {actual[0]}x{actual[1]}: "
+                                   "кадр пересчитан, но повторная съёмка не "
+                                   f"удалась: {type(exc).__name__}: {exc}")
+        _last_canvas = actual
 
     size = os.path.getsize(shot_path)
     head = ""
