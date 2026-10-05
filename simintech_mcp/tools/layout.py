@@ -721,6 +721,7 @@ def apply_fit_view() -> str:
         f"модель целиком, без обрезки по краям."
     )
 
+
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def fit_view() -> str:
