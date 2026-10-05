@@ -590,3 +590,12 @@ def test_audit_wire_report_requires_done():
     assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\nDONE\n") == {
         1: ((0.0, 0.0), (100.0, 0.0))}
     assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\n") is None
+
+
+def test_audit_routing_deduplicates_shared_pairs():
+    """Пара, совпавшая двумя отрезками, стоит в ответе один раз."""
+    problems = cm.audit_routing_segments(
+        [],
+        {1: ((0.0, 0.0), (100.0, 80.0)),
+         2: ((0.0, 0.0), (80.0, 0.0))})
+    assert problems.coincident == [(1, 2)]

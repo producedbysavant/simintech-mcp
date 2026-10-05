@@ -599,7 +599,11 @@ def audit_routing_segments(
             if segment_hits_rect(first, second, rect):
                 block_hits.append((wire_id, name))
 
-    return RoutingProblems(crossings, coincident, block_hits,
+    # Пара линий может совпасть не одним отрезком, а несколькими (стык и
+    # горизонталь одной прямой): в списке она обязана стоять один раз —
+    # дубли вскрыл живой прогон 05.10.2026.
+    return RoutingProblems(sorted(set(crossings)), sorted(set(coincident)),
+                           sorted(set(block_hits)),
                            _port_order_violations(rects, wires), unchecked)
 
 
