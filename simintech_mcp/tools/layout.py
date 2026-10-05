@@ -502,7 +502,11 @@ def layout_place(block_ids: str = "", connections: str = "",
             [node for node in nodes if node in node_sizes] +
             [node for node in nodes if node not in node_sizes],
             edges, sizes=node_sizes)
-        positions = dict(grown)
+        # В `positions` остаются только блоки: супер-узлы после разворота не
+        # нужны, а тип ключа держится единым (`str`) — этого требует mypy:
+        # `dict(grown)` давал `dict[object, …]` и падал на сверке с веткой
+        # канальной раскладки (CI-шаг «Типы»).
+        positions = {}
         for node, items in rows_of.items():
             x, y = grown[node]
             step = (max((sizes[item][1] for item in items), default=40.0)
