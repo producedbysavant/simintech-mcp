@@ -507,3 +507,239 @@ async def test_check_uses_fresh_contour_files(monkeypatch, tmp_path):
     # Файлы прошлого вызова убираются: уникальные имена не должны копить
     # песочницу (находка ревью #42).
     assert not Path(first).exists(), "файл отчёта прошлого вызова остался"
+
+
+def test_outside_sheet_flags_negative_edges():
+    """Срез листом: отрицательный левый или верхний край габарита — дефект.
+
+    Живой случай 04.10.2026: блоки стояли с центром x=0, и левая половина
+    уходила за край листа — на снимке они выглядели обрезанными.
+    """
+    from simintech_mcp.tools.check_model import _outside_sheet
+
+    assert _outside_sheet((-16.0, 0.0, 16.0, 16.0)) is True
+    assert _outside_sheet((0.0, -8.0, 32.0, 8.0)) is True
+    assert _outside_sheet((48.0, 48.0, 560.0, 112.0)) is False
+    assert _outside_sheet((0.0, 0.0, 32.0, 16.0)) is False
+
+
+# ── Аудит маршрутов (ТЗ п.1, инструмент audit_routing) ─────────────
+
+
+def test_audit_routing_flags_crossing():
+    """Пересечение внутренними отрезками попадает в crossings.
+
+    Линия через несколько колонок берёт трек первого зазора, и её дальняя
+    горизонталь пересекает вертикаль линии соседнего зазора — это и есть
+    предсказуемое пересечение.
+    """
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0)),
+             ("U3", (300.0, 0.0, 332.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects,
+        {1: ((32.0, 10.0), (300.0, 40.0)),
+         2: ((132.0, 60.0), (300.0, 20.0))})
+
+    assert (1, 2) in problems.crossings
+
+
+def test_audit_routing_puts_nets_on_separate_tracks():
+    """Связи одного зазора получают разные треки — общего трека нет."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects,
+        {1: ((32.0, 10.0), (300.0, 30.0)),
+         2: ((32.0, 40.0), (300.0, 60.0))})
+
+    assert problems.coincident == []
+    assert problems.unchecked == []
+
+
+def test_audit_routing_tracks_clear_the_stub():
+    """Трек стоит за вылетом STUB — у предсказания нет обратного хода.
+
+    Канон ТЗ 4.2: `channel_w = STUB + WIRE_PITCH * cut` — STUB первым
+    слагаемым, треки после него. Если трек положить ближе вылета, полилиния
+    уходит на `STUB` дальше трека и возвращается назад — петля, которой среда
+    не рисует, а метрики считаются по ней (числовая проверка 05.10.2026:
+    треки 36/44 против вылета до 48).
+    """
+    from simintech_mcp.geometry import predicted_polyline, segments_of
+
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+    wires = {1: ((32.0, 10.0), (300.0, 30.0)),
+             2: ((32.0, 40.0), (300.0, 60.0))}
+
+    column_of, lefts, rights = cm._columns(rects)
+    channels, _reasons = cm._wire_channels(rects, wires, column_of, lefts, rights)
+
+    for wire_id, (start, end) in wires.items():
+        poly = predicted_polyline(start, end, channels[wire_id])
+        assert poly is not None
+        for (ax, _ay), (bx, _by) in segments_of(poly):
+            assert bx >= ax, (
+                f"линия {wire_id}: сегмент идёт назад по X ({ax} → {bx}) — "
+                "трек лёг ближе вылета STUB")
+
+
+def test_audit_routing_flags_wire_through_block():
+    """Линия сквозь чужой габарит названа вместе с блоком."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0)),
+             ("U3", (200.0, 0.0, 232.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((32.0, 10.0), (200.0, 40.0))})
+
+    assert (1, "U2") in problems.block_hits
+
+
+def test_audit_routing_flags_inverted_port_order():
+    """Инверсия источников у входов блока — крест у стены."""
+    problems = cm.audit_routing_segments(
+        [("U1", (100.0, 0.0, 200.0, 100.0))],
+        {1: ((0.0, 0.0), (100.0, 80.0)),
+         2: ((40.0, 100.0), (100.0, 20.0))})
+    assert problems.port_order == ["U1"]
+
+
+def test_audit_routing_marks_feedback_unchecked():
+    """Обратная связь (приёмник левее источника) — не проверена, не «чисто»."""
+    problems = cm.audit_routing_segments(
+        [], {1: ((200.0, 0.0), (0.0, 0.0))})
+    assert problems.unchecked == [1]
+    assert problems.crossings == []
+
+
+def test_audit_routing_clean_is_empty():
+    """Прямая выровненная связь — чистый вердикт, и ничего «не проверено»."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (100.0, 0.0, 132.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((32.0, 30.0), (100.0, 30.0))})
+
+    assert not (problems.crossings or problems.coincident
+                or problems.block_hits or problems.port_order
+                or problems.unchecked or problems.channel_overflow)
+
+
+def test_audit_wire_report_requires_done():
+    """Отчёт без `DONE` — оборванный: парсер отдаёт None, а не часть линий.
+
+    `DONE` пишет `_check_script` последней строкой именно затем, чтобы полный
+    отчёт отличался от оборванного (находка ревью 02.10.2026). Без этой
+    проверки вердикт `readable` мог бы выйти по половине линий: оборванное
+    тело не отличить от «линий меньше, чем есть».
+    """
+    assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\nDONE\n") == {
+        1: ((0.0, 0.0), (100.0, 0.0))}
+    assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\n") is None
+
+
+def test_audit_routing_deduplicates_shared_pairs():
+    """Пара, совпавшая двумя отрезками, стоит в ответе один раз."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (200.0, 0.0, 232.0, 64.0))]
+
+    problems = cm.audit_routing_segments(
+        rects,
+        {1: ((32.0, 10.0), (200.0, 10.0)),
+         2: ((32.0, 10.0), (200.0, 50.0))})
+
+    assert problems.coincident == [(1, 2)]
+
+
+def test_channel_overflow_flags_tight_gap():
+    """Зазор между колонками у́же канала из ТЗ 4.2 — переполнение."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (140.0, 0.0, 180.0, 100.0))]
+
+    found = cm.channel_overflow(rects, {1: ((120.0, 0.0), (140.0, 50.0))})
+
+    assert found == [(0, 1, 1, 20.0, 24.0)]
+
+
+def test_channel_overflow_silent_when_channel_fits():
+    """Широкий зазор вмещает канал — переполнения нет."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (280.0, 0.0, 320.0, 100.0))]
+
+    assert cm.channel_overflow(
+        rects, {1: ((120.0, 0.0), (280.0, 50.0))}) == []
+
+
+def test_channel_overflow_ignores_back_edge():
+    """Обратная связь в разрез не входит (ТЗ 4.3), прямая — входит."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (146.0, 0.0, 186.0, 100.0))]
+
+    assert cm.channel_overflow(
+        rects, {1: ((146.0, 50.0), (120.0, 0.0))}) == []
+    forward = {1: ((120.0, 0.0), (146.0, 50.0)),
+               2: ((120.0, 20.0), (146.0, 70.0))}
+    assert cm.channel_overflow(rects, forward) != []
+
+
+def test_audit_routing_reports_channel_overflow():
+    """Переполнение канала попадает в вердикт аудита."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (140.0, 0.0, 180.0, 100.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((120.0, 0.0), (140.0, 50.0))})
+
+    assert problems.channel_overflow == [(0, 1, 1, 20.0, 24.0)]
+
+
+def test_columns_cluster_centers_with_tolerance():
+    """Центры X в пределах квадратика разметки — одна колонка (допуск 8 px)."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (83.0, 140.0, 123.0, 200.0)),
+             ("U3", (280.0, 0.0, 320.0, 100.0))]
+
+    column_of, lefts, rights = cm._columns(rects)
+
+    assert column_of == {"U1": 0, "U2": 0, "U3": 1}
+    assert lefts == {0: 80.0, 1: 280.0}
+    assert rights == {0: 123.0, 1: 320.0}
+
+
+def test_channel_overflow_ignores_horizontally_aligned_wire():
+    """Выровненная по Y концов связь (ТЗ 4.1) трека на разрезе не просит."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (146.0, 0.0, 186.0, 100.0))]
+    aligned = {1: ((120.0, 50.0), (146.0, 50.0)),
+               2: ((120.0, 70.0), (146.0, 70.0))}
+
+    assert cm.channel_overflow(rects, aligned) == []
+
+
+def test_audit_routing_marks_noncanon_wire_unchecked():
+    """Без колонок канон канала не даёт — линия идёт в «не проверено»."""
+    problems = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+
+    assert problems.unchecked == [1]
+
+
+def test_unchecked_reasons_name_the_cause():
+    """Каждая непроверенная линия названа причиной, а не только id."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+
+    back = cm.audit_routing_segments(rects, {1: ((300.0, 10.0), (32.0, 10.0))})
+    assert back.unchecked_reasons[1] == "обратная"
+
+    inside = cm.audit_routing_segments(rects, {1: ((32.0, 10.0), (32.0, 40.0))})
+    assert inside.unchecked_reasons[1] == "внутриколоночная"
+
+    empty = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+    assert empty.unchecked_reasons[1] == "нет колонок"
+
+    far = cm.audit_routing_segments(rects, {1: ((0.0, 500.0), (300.0, 500.0))})
+    assert far.unchecked_reasons[1] == "конец не привязан"

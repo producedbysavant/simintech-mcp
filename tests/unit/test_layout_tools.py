@@ -1171,6 +1171,32 @@ async def test_set_block_center_rejects_both_forms(monkeypatch):
     assert "не сочетается" in text
 
 
+@pytest.mark.anyio
+async def test_set_block_center_refuses_ambiguous_name(monkeypatch):
+    """Имя у нескольких блоков — отказ до перемещения, а не выбор одного.
+
+    Пару «В память»/«Из памяти» называют одним именем ячейки (живой случай
+    05.10.2026): словарь по имени молча оставил бы один блок, и ответ не
+    сказал бы, какой именно сдвинут. Id различает блоки — по нему адресация
+    работает.
+    """
+    first = _PlacedBlock("#m1", 12)
+    second = _PlacedBlock("#m1", 13)
+    _install_fake_project(monkeypatch, {"first": first, "second": second})
+
+    text = await _error("set_block_center",
+                        {"block": "#m1", "x": 200, "y": 100})
+
+    assert "несколько блоков" in text and "12" in text and "13" in text
+    assert first.center is None and second.center is None, \
+        "отказ обязан быть до перемещения"
+
+    _text(await mcp.call_tool("set_block_center",
+                              {"block": "13", "x": 200, "y": 100}))
+    assert second.center == (200.0, 100.0), "id обязан различать пару"
+    assert first.center is None
+
+
 def test_parse_moves_rejects_bad_tokens():
     """Разбор пачки строгий: битый токен и повтор имени — отказ, не пропуск."""
     from simintech_mcp.tools.layout import _parse_moves
@@ -1190,6 +1216,21 @@ def test_parse_moves_rejects_bad_tokens():
         _parse_moves("k_0=nan,1")
 
 
+def test_parse_moves_refuses_oversized_batch():
+    """Пачка сверх предела отвергается до COM: каждый токен — вызовы.
+
+    Предел обязателен у параметра, задающего число COM-вызовов (CLAUDE.md,
+    инвариант о пределах): иначе тысячи токенов займут единственный COM-поток
+    и вызов не прервётся таймаутом.
+    """
+    from simintech_mcp.tools.layout import MAX_MOVES, _parse_moves
+
+    at_limit = "; ".join(f"k_{i}=0,0" for i in range(MAX_MOVES))
+    assert len(_parse_moves(at_limit)) == MAX_MOVES
+    with pytest.raises(ToolError):
+        _parse_moves(at_limit + "; k_end=0,0")
+
+
 def test_wires_word_agrees_with_count():
     """Слово при числе согласуется: «1 линия», «2 линии», «5 линий»."""
     from simintech_mcp.tools.layout import _wires_word
@@ -1200,3 +1241,70 @@ def test_wires_word_agrees_with_count():
     assert _wires_word(21) == "линия"
     assert _wires_word(112) == "линий"
     assert _wires_word(14) == "линий"
+
+
+def test_fit_geometry_puts_frame_margins_on_both_sides():
+    """Формула кадра: края рамки ложатся на поля, центр — в центр полотна.
+
+    Живой замер 05.10.2026: габарит модели на снимке лёг в 62..965 из 1026 при
+    полях 6% — то есть формула воспроизводит именно то, что видно глазами.
+    """
+    from simintech_mcp.tools.layout import (
+        CANVAS_W, FIT_PADDING, fit_geometry,
+    )
+
+    frame = (48.0, 48.0, 560.0, 112.0)
+    scale, view_x, _view_y = fit_geometry(frame)
+
+    assert abs(48.0 * scale + view_x - CANVAS_W * FIT_PADDING) < 1e-6
+    assert 560.0 * scale + view_x <= CANVAS_W * (1.0 - FIT_PADDING) + 1e-6
+    assert abs(304.0 * scale + view_x - CANVAS_W / 2.0) < 1e-6
+
+
+def test_fit_geometry_scale_is_limited_by_the_tighter_side():
+    """Масштаб выбирает более тесная сторона, а не среднее: модель обязана войти.
+
+    Широкая рамка упирается в ширину полотна, высокая — в высоту; растянуть
+    модель нельзя, иначе стороны разъедутся.
+    """
+    from simintech_mcp.tools.layout import (
+        CANVAS_H, CANVAS_W, FIT_PADDING, fit_geometry,
+    )
+
+    wide, _, _ = fit_geometry((0.0, 0.0, 1000.0, 10.0))
+    tall, _, _ = fit_geometry((0.0, 0.0, 10.0, 1000.0))
+
+    assert abs(wide - CANVAS_W * (1.0 - 2.0 * FIT_PADDING) / 1000.0) < 1e-9
+    assert abs(tall - CANVAS_H * (1.0 - 2.0 * FIT_PADDING) / 1000.0) < 1e-9
+
+
+def test_fit_geometry_survives_degenerate_frame():
+    """Нулевая рамка не делит на ноль: масштаб остаётся конечным и положительным.
+
+    Так выглядит страница с одним блоком без читаемого размера или пустая:
+    подгонка не должна падать и не должна выдавать бесконечность.
+    """
+    import math
+
+    from simintech_mcp.tools.layout import fit_geometry
+
+    scale, view_x, view_y = fit_geometry((10.0, 10.0, 10.0, 10.0))
+
+    assert math.isfinite(scale) and math.isfinite(view_x) and math.isfinite(view_y)
+    assert scale > 0
+
+
+def test_fit_geometry_uses_given_canvas_height():
+    """Полотно — параметр подгонки: у среды встречается и 580, и 659.
+
+    Живой замер 05.10.2026: ширина снимка всегда 1026, а высота гуляет — 580
+    у тринадцати снимков и 659 у семи. Кадр обязан считаться по фактическому
+    полотну, иначе центр рамки ложится не на середину и поля разъезжаются.
+    """
+    from simintech_mcp.tools.layout import fit_geometry
+
+    scale, view_x, view_y = fit_geometry((0.0, 0.0, 512.0, 64.0),
+                                         canvas_w=1026.0, canvas_h=659.0)
+
+    assert abs(256.0 * scale + view_x - 513.0) < 1e-6
+    assert abs(32.0 * scale + view_y - 659.0 / 2.0) < 1e-6

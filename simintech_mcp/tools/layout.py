@@ -13,6 +13,7 @@ from typing import Optional
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
+from simintech_api.constants import BLOCK_GAP
 from simintech_api.catalog import NON_BLOCK_CLASSES
 
 from .. import runtime, session
@@ -23,10 +24,26 @@ from ..app import mcp
 #: хвост обрезается (счётчик остаётся).
 MAX_REPORTED_OVERLAPS = 10
 
+#: Предел пачки `set_block_center(moves=...)`: каждый токен — до трёх
+#: COM-вызовов на единственном COM-потоке (`set_center`, `get_points`,
+#: `get_name`), а COM-вызов таймаутом не прерывается (CLAUDE.md, инвариант 3:
+#: у параметра, задающего число COM-вызовов, есть явный предел; прецедент —
+#: `MAX_BLOCK_PROPS`). Боевой лист — десятки блоков (запрос fdd002); 128 —
+#: запас к этому, но не к «тысячам токенов в одном вызове».
+MAX_MOVES = 128
+
 #: Шаг разметки схемы: 1 квадратик = 8×8 px (стандарт оформления владельца:
 #: блоки «сигнал»/«порт»/«константа» — 16 высоты, «Ступенька» — 32; порты
 #: стоят в `cx±16, cy`, поэтому кратность 8 у центров даёт сетку и портам).
 GRID_STEP = 8.0
+
+#: Полотно снимка схемы (живой замер 04.10.2026): `savescreenshot` отдаёт PNG
+#: 1026x580. По нему считается масштаб подгонки кадра.
+CANVAS_W = 1026.0
+CANVAS_H = 580.0
+
+#: Поля подгонки кадра: доля полотна, оставляемая по краям.
+FIT_PADDING = 0.06
 
 #: Классы, стыкующиеся стопкой вплотную (стандарт: «входные порты единой
 #: колонкой без зазоров»).
@@ -112,6 +129,34 @@ def _first_point(points_text: str) -> "tuple[float, float] | None":
     return float(pairs[0][0]), float(pairs[0][1])
 
 
+#: Отступ раскладки от начала координат: блок с центром x=0 теряет левую
+#: половину — она уходит в минус и на лист не попадает, и снимок показывает
+#: обрезанные блоки (живой замер 04.10.2026: полотно 1026x580, схема прижата
+#: к левому верхнему углу, два блока срезаны краем). Кратен шагу разметки,
+#: чтобы сетка пережила сдвиг.
+MARGIN = 48.0
+
+
+def _shift_to_margin(centers: dict[str, tuple[float, float]],
+                     sizes: dict[str, tuple[float, float]]) -> None:
+    """Отодвинуть раскладку от начала координат на `MARGIN`.
+
+    Габарит считается по фактическим размерам блоков (центр плюс-минус
+    половина размера), сдвиг — кратно `GRID_STEP`: `_snap_centers` идёт
+    следом и обязан оставить центры на сетке. Пустая раскладка не трогается.
+    """
+    if not centers:
+        return
+    left = min(centers[t][0] - sizes[t][0] / 2.0 for t in centers)
+    top = min(centers[t][1] - sizes[t][1] / 2.0 for t in centers)
+    dx = round((MARGIN - left) / GRID_STEP) * GRID_STEP
+    dy = round((MARGIN - top) / GRID_STEP) * GRID_STEP
+    if dx == 0 and dy == 0:
+        return
+    for token, (cx, cy) in centers.items():
+        centers[token] = (cx + dx, cy + dy)
+
+
 def _rect_of(points_text: str, size: "tuple[float, float]") -> \
         "tuple[float, float, float, float] | None":
     """Габарит блока: центр из `Points` ± половина размера.
@@ -129,6 +174,38 @@ def _rect_of(points_text: str, size: "tuple[float, float]") -> \
     cx, cy = center
     w, h = size
     return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+
+
+def _model_frame(page: Page) -> "tuple[float, float, float, float] | None":
+    """Рамка модели: объединение габаритов блоков страницы.
+
+    Считается по тем же данным, что и метрика наложений: центр из `Points`
+    (первая точка — центр блока), размер — `get_size`. Подписи
+    (`NON_BLOCK_CLASSES`) пропускаются: их карточка 60x40 накрывает блок и
+    растянула бы рамку. `None` — ни одного блока с читаемыми габаритами.
+    """
+    left = top = None
+    right = bottom = None
+    for block in page.get_blocks():
+        try:
+            if block.class_name in LABEL_CLASSES:
+                continue
+        except Exception:                                     # noqa: BLE001
+            pass
+        try:
+            size = block.get_size()
+            rect = _rect_of(block.get_points(), size) if size else None
+        except Exception:                                     # noqa: BLE001
+            rect = None
+        if rect is None:
+            continue
+        left = rect[0] if left is None else min(left, rect[0])
+        top = rect[1] if top is None else min(top, rect[1])
+        right = rect[2] if right is None else max(right, rect[2])
+        bottom = rect[3] if bottom is None else max(bottom, rect[3])
+    if left is None or top is None or right is None or bottom is None:
+        return None
+    return (left, top, right, bottom)
 
 
 def _overlaps(rect_a: "tuple[float, float, float, float]",
@@ -184,7 +261,8 @@ def _overlap_report(page: Page, moved_names: set[str]) -> str:
                           for a, b in overlaps[:MAX_REPORTED_OVERLAPS])
         more = (f" (и ещё {len(overlaps) - MAX_REPORTED_OVERLAPS})"
                 if len(overlaps) > MAX_REPORTED_OVERLAPS else "")
-        text = f"\nВНИМАНИЕ: наложения блоков: {shown}{more}"
+        text = (f"\nВНИМАНИЕ: наложения блоков (нет свободного буфера): "
+                f"{shown}{more}")
     else:
         text = "\nНаложений блоков нет."
     if no_geometry:
@@ -253,9 +331,9 @@ def layout_place(block_ids: str = "", connections: str = "",
     блоки в (0,0) друг на друге — «кучей», которую инструмент при этом
     подтверждал как расставленную (живой случай 02.10.2026). Явные аргументы
     остаются для выборочной расстановки и разбираются строго, как раньше.
-    Концы чужих линий через COM не читаются: если реестр `connect` пуст
-    (проект открыт из файла), расстановка идёт без связей — ответ об этом
-    скажет, а не умолчит.
+    Граф берётся из реестра `connect`, а когда он пуст (проект открыт из
+    файла) — из выгрузки страницы: концы линий COM не отдаёт, их отдаёт
+    только выгрузка, вместе с ветвями.
 
     **`normalize_only` — трассировка без расстановки.** Линии страницы
     нормализуются, блоки не двигаются; расстановка, связи и метрика наложений
@@ -293,7 +371,8 @@ def layout_place(block_ids: str = "", connections: str = "",
 
     **Порт-блоки — не для раскладки.** «Порт входа»/«Порт выхода» — интерфейс
     схемы, их место по краям, и в `block_ids` раскладки их включать не
-    следует: шаг слоёв фиксирован (`LAYER_GAP` = 160 px), а порт шириной
+    следует: шаг слоёв считается каноном (ТЗ 4.2: `col_width + channel_w`),
+    а порт шириной
     360 px накрывает соседнюю колонку — живой замер 03.10.2026 дал 23 пары
     наложений в проекте из одних портов. Исключите порт-блоки из `block_ids`:
     остальные блоки расставятся без наложений, порты останутся на своих
@@ -341,6 +420,7 @@ def layout_place(block_ids: str = "", connections: str = "",
             расставляя; с `block_ids`/`connections` не сочетается.
     """
     from simintech_api.layout import LayeredPlacer
+    from simintech_api.layout.repeat import collapse_repeat, detect_repeat
 
     project = session.ensure_project()
     page = project.get_main_page()
@@ -443,6 +523,27 @@ def layout_place(block_ids: str = "", connections: str = "",
                 continue
             seen_pairs.add((src_token, dst_token))
             links.append((src_token, dst_token))
+        if not links and not session.WIRES:
+            # Реестр `connect` пуст — проект открыт из файла. Граф берём из
+            # выгрузки страницы (автограф графа): COM концов линий не отдаёт,
+            # их отдаёт только выгрузка, и она же называет ветви. Без этого
+            # блоки встают в одну колонку, а ветви теряются вовсе — каналы
+            # выходят уже канона на 8 px за каждую.
+            from .model_text import page_export_text, parse_page_graph
+            try:
+                graph_text, _trunc, _outcome, _path = page_export_text()
+            except Exception:                            # noqa: BLE001
+                # Выгрузка — best-effort: не удалась, значит расстановка
+                # идёт без связей, и ответ об этом скажет, а не упадёт.
+                graph_text = ""
+            known = set(tokens)
+            for src_block, dst_block in parse_page_graph(graph_text):
+                if src_block not in known or dst_block not in known:
+                    continue
+                if (src_block, dst_block) in seen_pairs:
+                    continue
+                seen_pairs.add((src_block, dst_block))
+                links.append((src_block, dst_block))
     else:
         links = []
         for pair in connections.split(","):
@@ -471,7 +572,50 @@ def layout_place(block_ids: str = "", connections: str = "",
     # Размеры берём у самих блоков, а не подставляем свои: размер задан
     # правилами разработки SimInTech, и `set_center` не должен его менять.
     sizes = {token: available[token].get_size() for token in tokens}
-    positions = LayeredPlacer().place(tokens, links, sizes=sizes)
+    # 4.4) Повторяющаяся ячейка — дорожка, а не плоский граф: позиция паттерна
+    # становится одним узлом раскладки, строки разворачиваются на его месте.
+    # Так ячейка садится по потоку — после своих предшественников и до внешних
+    # потребителей, — а не по жёсткому «слева». Не выделилась — канальная
+    # раскладка и repeated_cell: no: схему не раздуваем.
+    classes: dict[str, str] = {}
+    for token in tokens:
+        try:
+            classes[token] = available[token].class_name
+        except Exception:                                     # noqa: BLE001
+            continue
+    cell = detect_repeat(classes, links)
+    repeated_note = "repeated_cell: no"
+    if cell is None:
+        positions = LayeredPlacer().place(tokens, links, sizes=sizes)
+    else:
+        nodes, edges, rows_of = collapse_repeat(cell, tokens, links)
+        node_sizes: dict[object, tuple[float, float]] = {}
+        for node, items in rows_of.items():
+            widths = [sizes[item][0] for item in items if item in sizes]
+            heights = [sizes[item][1] for item in items if item in sizes]
+            node_sizes[node] = (
+                max(widths, default=60.0),
+                sum(heights) + BLOCK_GAP * max(0, len(heights) - 1))
+        grown = LayeredPlacer().place(
+            [node for node in nodes if node in node_sizes] +
+            [node for node in nodes if node not in node_sizes],
+            edges, sizes=node_sizes)
+        # В `positions` остаются только блоки: супер-узлы после разворота не
+        # нужны, а тип ключа держится единым (`str`) — этого требует mypy:
+        # `dict(grown)` давал `dict[object, …]` и падал на сверке с веткой
+        # канальной раскладки (CI-шаг «Типы»).
+        positions = {}
+        for node, items in rows_of.items():
+            x, y = grown[node]
+            step = (max((sizes[item][1] for item in items), default=40.0)
+                    + BLOCK_GAP)
+            base = y - (len(items) - 1) / 2.0 * step
+            base -= base % 8.0        # база стопки — на разметке, шаг кратен ей
+            for index, item in enumerate(items):
+                positions[item] = (x, base + index * step)
+        repeated_note = ("repeated_cell: yes (паттерн: " +
+                         ", ".join(cell.pattern) +
+                         f"; строк {len(cell.rows)})")
 
     centers = {token: positions[token] for token in tokens}
     # Порядок обязателен: **сначала сетка, затем стопки**. Обратный порядок
@@ -483,6 +627,7 @@ def layout_place(block_ids: str = "", connections: str = "",
     # идёт последним и порт-блоки не трогает (см. ниже); у остальных
     # приёмников смещение может увести центр с сетки (четверти трёхвходового
     # «Сумматора» — 12 px) — это назовёт проверка разметки.
+    _shift_to_margin(centers, sizes)
     _snap_centers(centers)
     flushed = _flush_port_stacks(tokens, centers, sizes, available)
     for token in tokens:
@@ -588,7 +733,8 @@ def layout_place(block_ids: str = "", connections: str = "",
         except Exception:                                     # noqa: BLE001
             placed.add(str(available[token].id))
     routes += _overlap_report(page, moved_names=placed)
-    return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
+    return (repeated_note + "\n" +
+            f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes)
 
 
 def _parse_moves(moves: str) -> "list[tuple[str, float, float]]":
@@ -597,7 +743,9 @@ def _parse_moves(moves: str) -> "list[tuple[str, float, float]]":
     Токен без `=`, с пустым именем, не парой чисел или нечисловой парой —
     отказ с указанием токена: молчаливый пропуск оставил бы блок на старом
     месте, а ответ утверждал бы переезд. Повтор имени — тоже отказ: какая из
-    точек победила, решал бы порядок разбора, а не запрос.
+    точек победила, решал бы порядок разбора, а не запрос. Пачка длиннее
+    `MAX_MOVES` отвергается до COM-вызовов: у параметра, задающего число
+    вызовов, предел обязателен (CLAUDE.md, инвариант 3).
     """
     order: list[tuple[str, float, float]] = []
     seen: set[str] = set()
@@ -627,7 +775,121 @@ def _parse_moves(moves: str) -> "list[tuple[str, float, float]]":
         raise ToolError(
             "пачка пуста: формат «блок=x,y; блок=x,y», например "
             "«k_0=200,100; kx_0=400,120».")
+    if len(order) > MAX_MOVES:
+        raise ToolError(
+            f"в пачке {len(order)} блоков — предел {MAX_MOVES}: каждый токен "
+            f"это COM-вызовы, разбейте перемещение на несколько вызовов и "
+            f"повторите.")
     return order
+
+
+def fit_geometry(frame: "tuple[float, float, float, float]",
+                 canvas_w: float = CANVAS_W,
+                 canvas_h: float = CANVAS_H,
+                 padding: float = FIT_PADDING) -> "tuple[float, float, float]":
+    """Кадр по рамке модели: (масштаб, смещение_x, смещение_y).
+
+    Семантика свойств кадра по живому замеру 04.10.2026 (разбор пикселей
+    снимков): **экран = модель * масштаб + смещение**. То есть
+    `x_center`/`y_center` — смещение В ПИКСЕЛЯХ, а не координата модели: при
+    0/0 и масштабе 1 снимок совпал с координатами модели точка в точку
+    (габарит тёмных точек 48..561 при модели 48..560), при масштабе 4 левый
+    край встал на 192 = 48*4.
+
+    Масштаб берётся по меньшей из сторон: модель обязана войти целиком, и
+    растянуть её под полотно нельзя — иначе стороны разъедутся. Поля
+    `padding` (доля полотна) остаются с обоих краёв.
+
+    Функция чистая — ни COM, ни состояния, — поэтому её и проверяют тесты:
+    `tests/unit/test_layout_tools.py`, класс `test_fit_geometry_*`.
+    """
+    left, top, right, bottom = frame
+    width = max(right - left, 1.0)
+    height = max(bottom - top, 1.0)
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+    scale = min(canvas_w * (1.0 - 2.0 * padding) / width,
+                canvas_h * (1.0 - 2.0 * padding) / height)
+    return (scale,
+            canvas_w / 2.0 - cx * scale,
+            canvas_h / 2.0 - cy * scale)
+
+
+def apply_fit_view(canvas_w: float = CANVAS_W,
+                   canvas_h: float = CANVAS_H) -> str:
+    """Посчитать рамку модели и выставить кадр страницы — общий шаг подгонки.
+
+    Нужен обоим: и инструменту `fit_view`, и `save_screenshot` — снимок обязан
+    показывать модель целиком, а не её угол. Возвращает краткую сводку; если
+    габариты прочитать не удалось, бросает `ToolError` (вызывающий сам решает,
+    отказ это или примечание к снимку).
+
+    Показать схему целиком: посчитать рамку модели и выставить кадр страницы.
+
+    Готовой функции «показать целиком» в языке среды нет — проверено по справке
+    04.10.2026: `changeprojectzoom` это загрузка проекта из файла, а раздел «слои
+    схемного окна» про видимость слоёв. Поэтому рамку считает сам инструмент,
+    а кадр пишется в свойства страницы.
+
+    **Как считается.** Габариты всех блоков страницы объединяются в одну рамку
+    (центр из `Points` плюс `get_size`; подписи пропускаются), её центр
+    становится `x_center`/`y_center`, а масштаб — отношением полотна снимка к
+    рамке с полями `FIT_PADDING`. Полотно 1026x580 — живой замер PNG от
+    `savescreenshot`. Фактический размер узнаёт `save_screenshot` по самому
+    снимку (он у среды не постоянен: живой замер 05.10.2026 — 1026x580 у части
+    снимков и 1026x659 у другой) и передаёт его сюда.
+
+    **Как пишется.** Через блок свойств в `createmodel` — тот же путь, что у
+    `import_model_text`: `x_center`, `y_center`, `x_scale`, `y_scale` это
+    свойства страницы. Объекты не добавляются, прежний скрипт страницы
+    возвращается на место.
+
+    Проверено живьём 04.10.2026: после записи `x_scale = 4` снимок той же
+    модели стал другим (4473 байта до, 7923 после) — свойства кадра управляют
+    отрисовкой.
+    """
+    project = session.ensure_project()
+    page = project.get_main_page()
+    frame = _model_frame(page)
+    if frame is None:
+        raise ToolError(
+            "На странице нет блоков с читаемыми габаритами — подгонять кадр "
+            "не по чему: габариты читаются из `Points` и `get_size`."
+        )
+    left, top, right, bottom = frame
+    width = max(right - left, 1.0)
+    height = max(bottom - top, 1.0)
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+    scale, view_x, view_y = fit_geometry(frame, canvas_w, canvas_h)
+
+    from simintech_api.model_operations import build_import_model_text_body
+
+    from .model_text import run_contour
+    from .page_script import refuse_on_bad_outcome
+
+    props = (
+        "(\n"
+        f"  x_center = {view_x:g},\n"
+        f"  y_center = {view_y:g},\n"
+        f"  x_scale = {scale:g},\n"
+        f"  y_scale = {scale:g}\n"
+        ")\n"
+    )
+    outcome, _restored = run_contour(
+        build_import_model_text_body(props),
+        failed="выставить кадр страницы не удалось")
+    refuse_on_bad_outcome(outcome, action="подгонка кадра")
+    return (
+        f"Кадр выставлен по рамке модели: {width:.0f}x{height:.0f} px "
+        f"на полотне {canvas_w:.0f}x{canvas_h:.0f}.\n"
+        f"  центр рамки (координаты модели): ({cx:.1f}, {cy:.1f})\n"
+        f"  записано: x_center = {view_x:.1f}, y_center = {view_y:.1f} "
+        f"— это смещение в пикселях, экран = модель * масштаб + смещение\n"
+        f"  масштаб: {scale:.3f}\n"
+        f"Проверьте снимком `save_screenshot`: в кадр обязана попасть вся "
+        f"модель целиком, без обрезки по краям."
+    )
 
 
 @mcp.tool()
@@ -639,9 +901,10 @@ def set_block_center(block: str = "", x: Optional[float] = None,
     Две формы, ровно одна за вызов:
 
     * одиночная: `block` + `x`, `y` — центр одного блока;
-    * пачка: `moves` — строкой «блок=x,y; блок=x,y»; все точки применяются
-      одним ходом: одна перерисовка и одна трассировка на всю пачку
-      (раскладка «под пины» из десятков блоков — один вызов, а не десятки).
+    * пачка: `moves` — строкой «блок=x,y; блок=x,y» (до `MAX_MOVES` токенов);
+      все точки применяются одним ходом: одна перерисовка и одна трассировка
+      на всю пачку (раскладка «под пины» из десятков блоков — один вызов,
+      а не десятки).
 
     Координаты — **центр блока**: первая точка `Points` (то же значение
     хранит среда; его читают `layout_place` и проверка разметки).
@@ -650,7 +913,10 @@ def set_block_center(block: str = "", x: Optional[float] = None,
     неизвестное имя — отказ, и тогда не двинут ни один блок — частичное
     применение оставило бы схему в состоянии, которого нет в ответе (сбой
     COM в середине пачки — исключение: откатить его нечем, уцелевшие
-    перемещения назовёт следующая сверка).
+    перемещения назовёт следующая сверка). Имя, которое носят несколько
+    блоков, тоже отвергается: так адресуют пару «В память»/«Из памяти», и
+    какой из двух блоков сдвинется, решил бы порядок обхода страницы, а не
+    запрос; такой блок адресуют числовым id (`list_blocks` печатает id).
 
     После перемещения — перерисовка и трассировка (`NormalizeWire`): порядок
     обязателен и тот же, что в `layout_place`; без перерисовки среда
@@ -670,18 +936,15 @@ def set_block_center(block: str = "", x: Optional[float] = None,
             одиночная форма.
         x, y: координаты центра — одиночная форма (задаются вместе с
             `block`).
-        moves: пачка «блок=x,y; блок=x,y» — не сочетается с `block`.
+        moves: пачка «блок=x,y; блок=x,y» (до `MAX_MOVES` токенов) — не
+            сочетается с `block`.
     """
     project = session.ensure_project()
     page = project.get_main_page()
-    available: dict[str, Block] = {}
-    for current in page.get_blocks():
-        available[str(current.id)] = current
-        try:
-            available[current.get_name()] = current
-        except Exception:                                     # noqa: BLE001
-            continue
 
+    # Форма выверяется до чтения страницы и до первого `set_center`: отказной
+    # запрос не тратит COM-вызовы, а предел пачки (`MAX_MOVES`) защищает сам
+    # COM-поток (CLAUDE.md, инвариант 3).
     single = bool(block.strip())
     if single and moves.strip():
         raise ToolError(
@@ -703,11 +966,38 @@ def set_block_center(block: str = "", x: Optional[float] = None,
             "нечего двигать: назовите блок (block, x, y) или пачку "
             "(moves = «блок=200,100; kx_0=400,120»).")
 
+    available: dict[str, Block] = {}
+    name_counts: dict[str, int] = {}
+    name_ids: dict[str, list[str]] = {}
+    for current in page.get_blocks():
+        block_id = str(current.id)
+        available[block_id] = current
+        try:
+            current_name = current.get_name()
+        except Exception:                                     # noqa: BLE001
+            continue
+        name_counts[current_name] = name_counts.get(current_name, 0) + 1
+        name_ids.setdefault(current_name, []).append(block_id)
+        available[current_name] = current
+
     missing = [name for name, _x, _y in order if name not in available]
     if missing:
         raise ToolError(
             f"блоки не найдены на странице: {', '.join(missing)} — ничего не "
             f"перемещено. Актуальные имена и id даёт `list_blocks`.")
+
+    # Имя, которое носят несколько блоков (пара «В память»/«Из памяти» —
+    # один и тот же Name ячейки, живой случай 05.10.2026), не различает их:
+    # словарь по имени молча оставил бы один блок, и ответ не сказал бы,
+    # какой именно сдвинут. Ид — различает; его печатает `list_blocks`.
+    ambiguous = [name for name, _x, _y in order
+                 if name_counts.get(name, 0) > 1]
+    if ambiguous:
+        details = "; ".join(f"«{name}» — id: {', '.join(name_ids[name])}"
+                            for name in ambiguous)
+        raise ToolError(
+            f"имя называют несколько блоков: {details} — адресуйте нужный "
+            f"числовым id: имя не различает их, ничего не перемещено.")
 
     lines = [f"Перемещено блоков: {len(order)}"]
     moved_names: set[str] = set()
@@ -730,3 +1020,16 @@ def set_block_center(block: str = "", x: Optional[float] = None,
     project.repaint()
     routes = _normalize_page_wires(page) + _overlap_report(page, moved_names)
     return "\n".join(lines) + routes
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def fit_view() -> str:
+    """Показать схему целиком: посчитать рамку модели и выставить кадр страницы.
+
+    Обёртка над `apply_fit_view` — тот же шаг `save_screenshot` делает сам перед
+    снимком. Рамка считается по габаритам блоков (`Points` плюс `get_size`),
+    центр и масштаб переводятся в свойства страницы; подробности и замеры — в
+    докстринге `apply_fit_view`.
+    """
+    return apply_fit_view()

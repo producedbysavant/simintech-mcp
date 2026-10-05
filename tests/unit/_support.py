@@ -12,6 +12,7 @@ from fastmcp.exceptions import ToolError
 from simintech_mcp.server import mcp
 
 from simintech_mcp import session
+from simintech_mcp.tools import model_text
 from simintech_mcp.tools import project as project_tools
 
 
@@ -287,6 +288,7 @@ def _install_wire_project(monkeypatch, blocks):
     for block in blocks.values():
         block.events = events
     monkeypatch.setattr(session, "_project", _WireProject(blocks, events))
+    monkeypatch.setattr(model_text, "page_export_text", _no_page_export)
     return events
 
 
@@ -421,9 +423,15 @@ class _FakeProject:
         return self
 
 
+def _no_page_export():
+    """В юнитах контура нет: выгрузка графа недоступна, как на пустом мосте."""
+    raise ToolError("выгрузка текста модели в тестах недоступна")
+
+
 def _install_fake_project(monkeypatch, blocks):
     """Подменить открытый проект на подделку с заданными блоками."""
     monkeypatch.setattr(session, "_project", _FakeProject(blocks))
+    monkeypatch.setattr(model_text, "page_export_text", _no_page_export)
 
 
 class _FakeProjectWithCreate:
