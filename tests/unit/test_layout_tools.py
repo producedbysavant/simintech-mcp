@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from simintech_mcp.server import mcp
 
@@ -300,7 +301,7 @@ async def test_layout_place_routes_wires_of_opened_project(monkeypatch):
 
     assert wire.normalized == 1, "линия открытого проекта не трассирована"
     assert ("normalize", wire.id) in events
-    assert "линий страницы" in text
+    assert "нормализовано 1 линия страницы" in text
 
 
 @pytest.mark.anyio
@@ -1058,6 +1059,188 @@ def test_vanished_wires_compares_sets():
     assert _vanished_wires([1], [1]) == []
     assert _vanished_wires(None, [1]) == [], "сбой чтения — не «ничего не ушло»"
     assert _vanished_wires([1], None) == []
+
+
+@pytest.mark.anyio
+async def test_set_block_center_moves_block_and_reports(monkeypatch):
+    """set_block_center двигает блок в заданный центр и называет переход.
+
+    Инструмент точечный — «раскладка под пины» собирается из таких ходов
+    (запрос fdd002 04.10.2026): центр читается из `Points`, страница не
+    пересобирается.
+    """
+    block = _PlacedBlock("k_0", 1)
+    _install_fake_project(monkeypatch, {"k_0": block})
+
+    text = _text(await mcp.call_tool("set_block_center",
+                                     {"block": "k_0", "x": 200, "y": 100}))
+
+    assert block.center == (200.0, 100.0), "координаты не применены"
+    assert "(0, 0) → (200, 100)" in text, "переход центра не назван"
+    assert "Линий связи на странице нет" in text
+    assert session.current_project().repaints == 1, \
+        "перерисовка обязана идти после перемещения"
+
+
+@pytest.mark.anyio
+async def test_set_block_center_retraces_wires_after_move(monkeypatch):
+    """После сдвига — перерисовка и трассировка: порядок как в layout_place.
+
+    Без перерисовки среда проложила бы провода по прежним прямоугольникам
+    блоков (живой замер 15.09.2026) — линии уезжали бы мимо новых портов.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    events = _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+    wire = src.wires[0][0]
+
+    text = _text(await mcp.call_tool("set_block_center",
+                                     {"block": "kx_0", "x": 400, "y": 200}))
+
+    assert dst.center == (400.0, 200.0)
+    assert events == [("repaint", None), ("normalize", 1)], \
+        "порядок обязателен: перерисовка до трассировки"
+    assert wire.normalized == 1, "линия не перетрассирована"
+    assert "нормализовано 1" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_center_batch_moves_in_one_pass(monkeypatch):
+    """Пачка двигает все блоки одним ходом: одна перерисовка на всех.
+
+    Раскладка «под пины» из десятков блоков — один вызов (запрос fdd002
+    04.10.2026); по одному вызову это были бы десятки промежуточных
+    перетрассировок.
+    """
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("kx_0", 2)
+    _install_fake_project(monkeypatch, {"k_0": first, "kx_0": second})
+
+    text = _text(await mcp.call_tool(
+        "set_block_center", {"moves": "k_0=200,100; kx_0=400,100"}))
+
+    assert first.center == (200.0, 100.0)
+    assert second.center == (400.0, 100.0)
+    assert "Перемещено блоков: 2" in text
+    assert session.current_project().repaints == 1, \
+        "пачка — один ход, а не перерисовка на каждый блок"
+    assert "Наложений блоков нет" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_center_batch_reports_overlap(monkeypatch):
+    """Наложение среди подвинутых видно в ответе: 60×40 при шаге 20 пересекутся."""
+    first = _PlacedBlock("k_0", 1)
+    second = _PlacedBlock("kx_0", 2)
+    _install_fake_project(monkeypatch, {"k_0": first, "kx_0": second})
+
+    text = _text(await mcp.call_tool(
+        "set_block_center", {"moves": "k_0=100,100; kx_0=120,100"}))
+
+    assert "ВНИМАНИЕ: наложения блоков" in text
+    assert "k_0—kx_0" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_center_batch_refuses_before_moving(monkeypatch):
+    """Неизвестное имя — отказ ДО перемещений: ни один блок не двинут.
+
+    Частичное применение оставило бы схему в состоянии, которого нет в
+    ответе: часть блоков уехала бы, а ответ был бы отказом.
+    """
+    first = _PlacedBlock("k_0", 1)
+    _install_fake_project(monkeypatch, {"k_0": first})
+
+    text = await _error("set_block_center",
+                        {"moves": "k_0=200,100; нет_такого=1,1"})
+
+    assert "не найдены" in text and "нет_такого" in text
+    assert first.center is None, "частичного перемещения быть не должно"
+
+
+@pytest.mark.anyio
+async def test_set_block_center_rejects_both_forms(monkeypatch):
+    """Одиночная форма и пачка не сочетаются — отказ, а не тихий выбор одной."""
+    _install_fake_project(monkeypatch, {"k_0": _PlacedBlock("k_0", 1)})
+
+    text = await _error("set_block_center",
+                        {"block": "k_0", "x": 1, "y": 1,
+                         "moves": "k_0=2,2"})
+
+    assert "не сочетается" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_center_refuses_ambiguous_name(monkeypatch):
+    """Имя у нескольких блоков — отказ до перемещения, а не выбор одного.
+
+    Пару «В память»/«Из памяти» называют одним именем ячейки (живой случай
+    05.10.2026): словарь по имени молча оставил бы один блок, и ответ не
+    сказал бы, какой именно сдвинут. Id различает блоки — по нему адресация
+    работает.
+    """
+    first = _PlacedBlock("#m1", 12)
+    second = _PlacedBlock("#m1", 13)
+    _install_fake_project(monkeypatch, {"first": first, "second": second})
+
+    text = await _error("set_block_center",
+                        {"block": "#m1", "x": 200, "y": 100})
+
+    assert "несколько блоков" in text and "12" in text and "13" in text
+    assert first.center is None and second.center is None, \
+        "отказ обязан быть до перемещения"
+
+    _text(await mcp.call_tool("set_block_center",
+                              {"block": "13", "x": 200, "y": 100}))
+    assert second.center == (200.0, 100.0), "id обязан различать пару"
+    assert first.center is None
+
+
+def test_parse_moves_rejects_bad_tokens():
+    """Разбор пачки строгий: битый токен и повтор имени — отказ, не пропуск."""
+    from simintech_mcp.tools.layout import _parse_moves
+
+    assert _parse_moves("k_0=200,100; kx_0=400,120") == \
+        [("k_0", 200.0, 100.0), ("kx_0", 400.0, 120.0)]
+    with pytest.raises(ToolError):
+        _parse_moves("k_0=200")
+    # Смешанная пачка — именно она ловит «битый токен молча пропущен»:
+    # проверка на «пачка пуста» такую мутацию не замечает (все токены битые
+    # дают тот же отказ, а валидный+битый — тихую потерю одного блока).
+    with pytest.raises(ToolError):
+        _parse_moves("k_0=1,1; kx_0=двести,100")
+    with pytest.raises(ToolError):
+        _parse_moves("k_0=1,1; k_0=2,2")
+    with pytest.raises(ToolError):
+        _parse_moves("k_0=nan,1")
+
+
+def test_parse_moves_refuses_oversized_batch():
+    """Пачка сверх предела отвергается до COM: каждый токен — вызовы.
+
+    Предел обязателен у параметра, задающего число COM-вызовов (CLAUDE.md,
+    инвариант о пределах): иначе тысячи токенов займут единственный COM-поток
+    и вызов не прервётся таймаутом.
+    """
+    from simintech_mcp.tools.layout import MAX_MOVES, _parse_moves
+
+    at_limit = "; ".join(f"k_{i}=0,0" for i in range(MAX_MOVES))
+    assert len(_parse_moves(at_limit)) == MAX_MOVES
+    with pytest.raises(ToolError):
+        _parse_moves(at_limit + "; k_end=0,0")
+
+
+def test_wires_word_agrees_with_count():
+    """Слово при числе согласуется: «1 линия», «2 линии», «5 линий»."""
+    from simintech_mcp.tools.layout import _wires_word
+
+    assert _wires_word(1) == "линия"
+    assert _wires_word(2) == "линии"
+    assert _wires_word(5) == "линий"
+    assert _wires_word(21) == "линия"
+    assert _wires_word(112) == "линий"
+    assert _wires_word(14) == "линий"
 
 
 def test_fit_geometry_puts_frame_margins_on_both_sides():
