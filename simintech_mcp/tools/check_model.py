@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.catalog import NON_BLOCK_CLASSES
@@ -43,7 +43,9 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..geometry import overlaps, rect_of
+from ..geometry import (
+    WIRE_PITCH, collinear_overlap, overlaps, predicted_polyline,
+    proper_crossing, rect_of, segment_hits_rect, segments_of)
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -493,3 +495,238 @@ def check_model_layout() -> str:
         lines.append(f"Порты пропущены (имя или число портов не прочитались): "
                      f"{shown}{more}.")
     return "\n".join(lines)
+
+
+#: Допуск «конец линии стоит на границе габарита»: вход блока стоит в `cx-16`,
+#: а координату линии среда отдаёт округлённой.
+_PORT_BAND = 8.0
+
+
+class RoutingProblems(NamedTuple):
+    """Что нашёл аудит маршрутов — чистая часть, без COM и контура."""
+
+    #: Пары линий, отрезки которых пересекаются внутренностями.
+    crossings: List[Tuple[int, int]]
+    #: Пары линий, отрезки которых едут по одному треку с перекрытием.
+    coincident: List[Tuple[int, int]]
+    #: Линии, проходящие через внутренность чужого габарита: (линия, блок).
+    block_hits: List[Tuple[int, str]]
+    #: Блоки, к входам которых источники приходят в обратном порядке.
+    port_order: List[str]
+    #: Линии, маршрут которых не предсказывается (обратные связи).
+    unchecked: List[int]
+
+
+def _inside(rect: "tuple[float, float, float, float]",
+            point: "tuple[float, float]") -> bool:
+    """Точка внутри габарита (строго; на границе — нет)."""
+    return rect[0] < point[0] < rect[2] and rect[1] < point[1] < rect[3]
+
+
+def _port_order_violations(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> List[str]:
+    """Блоки, к входам которых источники приходят в обратном порядке.
+
+    Для каждого габарита берутся концы линий, стоящие на его левой границе,
+    — это входные порты. Порядок портов читается по Y, порядок источников —
+    по Y начал тех же линий. Монотонность значит, что линии войдут в порты
+    без креста; инверсия — что они пересекутся у самой стены блока.
+    """
+    violations: List[str] = []
+    for name, rect in rects:
+        incoming: List[Tuple[float, float]] = []
+        for _wire_id, (start, end) in wires.items():
+            if abs(end[0] - rect[0]) > _PORT_BAND:
+                continue
+            if not (rect[1] - _PORT_BAND <= end[1] <= rect[3] + _PORT_BAND):
+                continue
+            incoming.append((end[1], start[1]))
+        if len(incoming) < 2:
+            continue
+        incoming.sort()
+        sources = [source for _port, source in incoming]
+        # Инверсия (нижний источник в верхний порт) — крест у стены:
+        # порядок источников обязан идти по Y так же, как порядок входов.
+        if sources != sorted(sources):
+            violations.append(name)
+    return violations
+
+
+def audit_routing_segments(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> RoutingProblems:
+    """Посчитать проблемы маршрутов по предсказанным полилиниям.
+
+    Чистая функция: ни COM, ни контура — потому её и проверяют тесты. Канал
+    для предсказания берётся серединой между концами линии: каналы от
+    `cut_size` — следующий шаг ТЗ, в v1 их нет.
+
+    Обратная связь (приёмник левее источника) не предсказывается — маршрут
+    ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.
+    """
+    segments: List[Tuple[int, Tuple[float, float], Tuple[float, float]]] = []
+    unchecked: List[int] = []
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        polyline = predicted_polyline(start, end, (start[0] + end[0]) / 2.0)
+        if polyline is None:
+            unchecked.append(wire_id)
+            continue
+        for first, second in segments_of(polyline):
+            segments.append((wire_id, first, second))
+
+    crossings: List[Tuple[int, int]] = []
+    coincident: List[Tuple[int, int]] = []
+    for index, (wire_a, a1, a2) in enumerate(segments):
+        for wire_b, b1, b2 in segments[index + 1:]:
+            if wire_a == wire_b:
+                continue
+            if proper_crossing(a1, a2, b1, b2):
+                crossings.append((wire_a, wire_b))
+            elif collinear_overlap(a1, a2, b1, b2, pitch=WIRE_PITCH):
+                coincident.append((wire_a, wire_b))
+
+    block_hits: List[Tuple[int, str]] = []
+    for wire_id, first, second in segments:
+        start, end = wires[wire_id]
+        for name, rect in rects:
+            # Из своего блока линия выходит: габарит с её концом — не чужой.
+            if _inside(rect, start) or _inside(rect, end):
+                continue
+            if segment_hits_rect(first, second, rect):
+                block_hits.append((wire_id, name))
+
+    return RoutingProblems(crossings, coincident, block_hits,
+                           _port_order_violations(rects, wires), unchecked)
+
+
+@mcp.tool()
+@runtime.com_threaded
+def audit_routing() -> str:
+    """Проверить маршруты линий текущей страницы (читаемость, ТЗ п.1).
+
+    Считается по предсказанной ортогонали — той же форме, которой линии
+    ведёт `NormalizeWire`, — а не глазами: пересечения линий, общий трек
+    с перекрытием дольше `WIRE_PITCH` (8 px — один квадратик разметки),
+    попадание линии во внутренность чужого габарита, порядок входов на
+    левой стене блока.
+
+    Обратные связи (приёмник левее источника) не предсказываются — их
+    маршрут ведёт среда, — и попадают в отдельный список «не проверено»,
+    а не в чистый вердикт: «не проверено» не выдаётся за «хорошо».
+
+    Вердикт: `readable` — чисто; `next` — есть что чинить, и в ответе
+    названы линии и блоки. Габариты — через COM, концы линий — контуром
+    страницы (та же цена, что у `check_model_layout`: контур сдвигает
+    модельное время). Ничего в модели не меняет.
+    """
+    project = session.ensure_project()
+    page = project.get_current_page()
+
+    rects: List[Tuple[str, Tuple[float, float, float, float]]] = []
+    for block in page.get_blocks():
+        try:
+            name = block.get_name()
+        except Exception:                                      # noqa: BLE001
+            name = str(block.id)
+        try:
+            size = block.get_size()
+        except Exception:                                      # noqa: BLE001
+            size = None
+        try:
+            rect = rect_of(block.get_points(), size) if size else None
+        except Exception:                                      # noqa: BLE001
+            rect = None
+        if rect is not None:
+            rects.append((name, rect))
+
+    try:
+        wire_ids = [int(wire.id) for wire in page.get_wires()]
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"перечислить линии страницы не удалось: {type(exc).__name__}: "
+            f"{exc}. Без списка линий аудит маршрутов невозможен.") from exc
+    if not wire_ids:
+        return ("Аудит маршрутов линий (читаемость, ТЗ п.1).\n"
+                "Линий на странице нет — проверять нечего. "
+                "Вердикт: readable.")
+
+    _sweep_previous()
+    report_path = _rect_path()
+    marker_path = _marker_path()
+    _PREVIOUS_PATHS.extend((report_path, marker_path))
+    script = _check_script(report_path, [], wire_ids)
+    try:
+        bridge().run_page_script(script, marker_path)
+    except ScriptBridgeError as exc:
+        raise ToolError(
+            f"контур аудита не отработал: {exc}. Маршруты не проверены."
+        ) from exc
+
+    data, _truncated, error = sandbox.load_result_file(
+        str(report_path), sandbox.MAX_OUTPUT_BYTES,
+        sandbox.MISSING_RESULT_FILE)
+    if error:
+        raise ToolError(
+            f"отчёт контура не прочитан: {error} — концы линий не получены, "
+            f"маршруты не проверены.")
+
+    wires: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        parts = line.split("|")
+        if parts[0] != "W" or len(parts) != 4:
+            continue
+        start = _parse_point(parts[2])
+        end = _parse_point(parts[3])
+        if start is None or end is None:
+            continue
+        try:
+            wire_id = int(parts[1])
+        except ValueError:
+            continue
+        wires[wire_id] = (start, end)
+
+    if not wires:
+        raise ToolError(
+            "контур вернул отчёт без координат линий — концы не прочитаны, "
+            "маршруты не проверены.")
+
+    problems = audit_routing_segments(rects, wires)
+    checked = len(wires) - len(problems.unchecked)
+    lines = [
+        "Аудит маршрутов линий (читаемость, ТЗ п.1).",
+        f"Линий: {len(wires)}; маршрут предсказан у {checked}, "
+        f"не предсказан у {len(problems.unchecked)} (обратные связи).",
+    ]
+    dirty = bool(problems.crossings or problems.coincident
+                 or problems.block_hits or problems.port_order)
+    if not dirty:
+        lines.append("Вердикт: readable — пересечений, общего трека, "
+                     "попаданий в габариты и нарушений порядка входов нет.")
+    else:
+        lines.append("Вердикт: next — сначала layout_place, затем повторный "
+                     "аудит.")
+        for title, items in (
+                ("линия проходит через габарит блока",
+                 [f"линия {w} в «{b}»" for w, b in problems.block_hits]),
+                ("пересечения линий",
+                 [f"{a}—{b}" for a, b in problems.crossings]),
+                ("общий трек с перекрытием",
+                 [f"{a}—{b}" for a, b in problems.coincident]),
+                ("порядок входов нарушен", list(problems.port_order))):
+            if not items:
+                continue
+            shown = ", ".join(items[:MAX_REPORTED])
+            more = (f" (и ещё {len(items) - MAX_REPORTED})"
+                    if len(items) > MAX_REPORTED else "")
+            lines.append(f"ВНИМАНИЕ: {title}: {shown}{more}.")
+    if problems.unchecked:
+        shown = ", ".join(str(w) for w in problems.unchecked[:MAX_REPORTED])
+        more = (f" (и ещё {len(problems.unchecked) - MAX_REPORTED})"
+                if len(problems.unchecked) > MAX_REPORTED else "")
+        lines.append("Не проверено (обратные связи, маршрут ведёт среда): "
+                     f"{shown}{more}.")
+    return "\n".join(lines) + "\n"

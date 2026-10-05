@@ -521,3 +521,60 @@ def test_outside_sheet_flags_negative_edges():
     assert _outside_sheet((0.0, -8.0, 32.0, 8.0)) is True
     assert _outside_sheet((48.0, 48.0, 560.0, 112.0)) is False
     assert _outside_sheet((0.0, 0.0, 32.0, 16.0)) is False
+
+
+
+# ── Аудит маршрутов (ТЗ п.1, инструмент audit_routing) ─────────────
+
+
+def test_audit_routing_flags_crossing():
+    """Внутреннее пересечение попадает в crossings."""
+    problems = cm.audit_routing_segments(
+        [],
+        {1: ((0.0, 0.0), (200.0, 0.0)),
+         2: ((50.0, -100.0), (150.0, 100.0))})
+    assert (1, 2) in problems.crossings
+    assert problems.coincident == []
+
+
+def test_audit_routing_flags_shared_track():
+    """Общий трек длиннее WIRE_PITCH — coincident, а не crossings."""
+    problems = cm.audit_routing_segments(
+        [],
+        {1: ((0.0, 0.0), (200.0, 0.0)),
+         2: ((0.0, 0.0), (100.0, 0.0))})
+    assert (1, 2) in problems.coincident
+    assert problems.crossings == []
+
+
+def test_audit_routing_flags_wire_through_block():
+    """Линия сквозь чужой габарит названа вместе с блоком."""
+    problems = cm.audit_routing_segments(
+        [("U1", (50.0, -50.0, 150.0, 50.0))],
+        {1: ((0.0, 0.0), (200.0, 0.0))})
+    assert problems.block_hits == [(1, "U1")]
+
+
+def test_audit_routing_flags_inverted_port_order():
+    """Инверсия источников у входов блока — крест у стены."""
+    problems = cm.audit_routing_segments(
+        [("U1", (100.0, 0.0, 200.0, 100.0))],
+        {1: ((0.0, 0.0), (100.0, 80.0)),
+         2: ((40.0, 100.0), (100.0, 20.0))})
+    assert problems.port_order == ["U1"]
+
+
+def test_audit_routing_marks_feedback_unchecked():
+    """Обратная связь (приёмник левее источника) — не проверена, не «чисто»."""
+    problems = cm.audit_routing_segments(
+        [], {1: ((200.0, 0.0), (0.0, 0.0))})
+    assert problems.unchecked == [1]
+    assert problems.crossings == []
+
+
+def test_audit_routing_clean_is_empty():
+    """Прямая линия без соседей и габаритов — чистый вердикт."""
+    problems = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+    assert not (problems.crossings or problems.coincident
+                or problems.block_hits or problems.port_order
+                or problems.unchecked)
