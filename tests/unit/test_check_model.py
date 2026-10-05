@@ -599,3 +599,45 @@ def test_audit_routing_deduplicates_shared_pairs():
         {1: ((0.0, 0.0), (100.0, 80.0)),
          2: ((0.0, 0.0), (80.0, 0.0))})
     assert problems.coincident == [(1, 2)]
+
+
+def test_channel_overflow_flags_tight_gap():
+    """Зазор между колонками у́же канала из ТЗ 4.2 — переполнение."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (140.0, 0.0, 180.0, 100.0))]
+
+    found = cm.channel_overflow(rects, {1: ((120.0, 0.0), (140.0, 50.0))})
+
+    assert found == [(0, 1, 1, 20.0, 24.0)]
+
+
+def test_channel_overflow_silent_when_channel_fits():
+    """Широкий зазор вмещает канал — переполнения нет."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (280.0, 0.0, 320.0, 100.0))]
+
+    assert cm.channel_overflow(
+        rects, {1: ((120.0, 0.0), (280.0, 50.0))}) == []
+
+
+def test_channel_overflow_ignores_back_edge():
+    """Обратная связь в разрез не входит (ТЗ 4.3), прямая — входит."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (146.0, 0.0, 186.0, 100.0))]
+
+    assert cm.channel_overflow(
+        rects, {1: ((146.0, 50.0), (120.0, 0.0))}) == []
+    forward = {1: ((120.0, 0.0), (146.0, 50.0)),
+               2: ((120.0, 20.0), (146.0, 70.0))}
+    assert cm.channel_overflow(rects, forward) != []
+
+
+def test_audit_routing_reports_channel_overflow():
+    """Переполнение канала попадает в вердикт аудита."""
+    rects = [("U1", (80.0, 0.0, 120.0, 100.0)),
+             ("U2", (140.0, 0.0, 180.0, 100.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((120.0, 0.0), (140.0, 50.0))})
+
+    assert problems.channel_overflow == [(0, 1, 1, 20.0, 24.0)]

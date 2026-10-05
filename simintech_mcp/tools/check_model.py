@@ -44,8 +44,9 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import (
-    WIRE_PITCH, collinear_overlap, overlaps, predicted_polyline,
-    proper_crossing, rect_of, segment_hits_rect, segments_of)
+    WIRE_PITCH, channel_width, collinear_overlap, cut_sizes, overlaps,
+    predicted_polyline, proper_crossing, rect_of, segment_hits_rect,
+    segments_of)
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -515,6 +516,9 @@ class RoutingProblems(NamedTuple):
     port_order: List[str]
     #: Линии, маршрут которых не предсказывается (обратные связи).
     unchecked: List[int]
+    #: Зазоры между колонками, чей канал теснее разреза (ТЗ 4.2):
+    #: (зазор, cut, связей, фактический зазор, нужный канал).
+    channel_overflow: List[Tuple[int, int, int, float, float]]
 
 
 def _inside(rect: "tuple[float, float, float, float]",
@@ -554,6 +558,118 @@ def _port_order_violations(
     return violations
 
 
+def _columns(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]"
+) -> "Tuple[Dict[str, int], Dict[int, float], Dict[int, float]]":
+    """Колонки слоистой укладки: индекс блока и границы каждой колонки.
+
+    Колонка — общий центр X (так их группирует и раскладчик). Меньше двух
+    колонок — колонок нет: аудит тогда считает по прежней середине между
+    концами, а не падает на неполной геометрии.
+    """
+    if not rects:
+        return {}, {}, {}
+    centers = {name: round((rect[0] + rect[2]) / 2.0, 3)
+               for name, rect in rects}
+    unique = sorted(set(centers.values()))
+    if len(unique) < 2:
+        return {}, {}, {}
+    index_of = {center: i for i, center in enumerate(unique)}
+    column_of = {name: index_of[center] for name, center in centers.items()}
+    lefts: Dict[int, float] = {}
+    rights: Dict[int, float] = {}
+    for name, rect in rects:
+        column = column_of[name]
+        lefts[column] = min(lefts.get(column, rect[0]), rect[0])
+        rights[column] = max(rights.get(column, rect[2]), rect[2])
+    return column_of, lefts, rights
+
+
+def _column_at(
+        point: "Tuple[float, float]",
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        column_of: "Dict[str, int]"
+) -> "Optional[int]":
+    """Колонка блока, к которому точка ближе всего (в пределах полосы порта).
+
+    Конец линии стоит на границе блока, поэтому «ближайший габарит» и есть
+    владелец порта; дальше полосы `_PORT_BAND` связь не привязывается —
+    честнее пропустить её, чем приписать чужой колонке.
+    """
+    best: "Optional[str]" = None
+    best_gap: "Optional[float]" = None
+    for name, rect in rects:
+        gap = (max(rect[0] - point[0], 0.0, point[0] - rect[2])
+               + max(rect[1] - point[1], 0.0, point[1] - rect[3]))
+        if best_gap is None or gap < best_gap:
+            best_gap, best = gap, name
+    if best is None or best_gap is None or best_gap > _PORT_BAND:
+        return None
+    return column_of[best]
+
+
+def channel_overflow(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> "List[Tuple[int, int, int, float, float]]":
+    """Зазоры, чей канал теснее разреза (ТЗ 4.2).
+
+    По зазору между колонками: `(номер, cut, связей, зазор, нужно)`. `cut` —
+    мощность разреза (`cut_sizes`), `связей` — сколько линий фактически идёт
+    через зазор, `зазор` — свободное место между колонками, `нужно` —
+    `channel_width(cut)`. Тесно, если фактика меньше канона. Обратные связи в
+    разрез не входят: по ТЗ 4.3 им место в отдельном нижнем канале.
+    """
+    column_of, lefts, rights = _columns(rects)
+    if not column_of:
+        return []
+    gaps = max(lefts) + 1
+    nets: List[Tuple[int, int, bool]] = []
+    actual: Dict[int, int] = {}
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        src = _column_at(start, rects, column_of)
+        dst = _column_at(end, rects, column_of)
+        if src is None or dst is None:
+            continue
+        nets.append((src, dst, abs(start[1] - end[1]) < 0.5))
+        for gap in range(src, dst):
+            actual[gap] = actual.get(gap, 0) + 1
+    cut = cut_sizes(nets, gaps)
+    found: "List[Tuple[int, int, int, float, float]]" = []
+    for gap in range(gaps - 1):
+        free = lefts.get(gap + 1, 0.0) - rights.get(gap, 0.0)
+        need = channel_width(cut[gap])
+        if free < need - 0.5:
+            found.append((gap, cut[gap], actual.get(gap, 0), free, need))
+    return found
+
+
+def _channel_x(
+        start: "Tuple[float, float]", end: "Tuple[float, float]",
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        column_of: "Dict[str, int]", lefts: "Dict[int, float]",
+        rights: "Dict[int, float]"
+) -> float:
+    """X канала предсказания: середина зазора сразу за колонкой источника.
+
+    ТЗ 4.2 задаёт канал раскладкой колонок, а не серединой между концами:
+    линия выходит из колонки источника в зазор справа от неё. Без колонок,
+    либо если конец не привязан к блоку или связь обратная — прежняя
+    середина между концами.
+    """
+    fallback = (start[0] + end[0]) / 2.0
+    if not column_of:
+        return fallback
+    src = _column_at(start, rects, column_of)
+    dst = _column_at(end, rects, column_of)
+    if src is None or dst is None or src >= dst:
+        return fallback
+    if src not in lefts or src + 1 not in lefts:
+        return fallback
+    return (rights[src] + lefts[src + 1]) / 2.0
+
+
 def audit_routing_segments(
         rects: "List[Tuple[str, tuple[float, float, float, float]]]",
         wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
@@ -567,11 +683,13 @@ def audit_routing_segments(
     Обратная связь (приёмник левее источника) не предсказывается — маршрут
     ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.
     """
+    column_of, lefts, rights = _columns(rects)
     segments: List[Tuple[int, Tuple[float, float], Tuple[float, float]]] = []
     unchecked: List[int] = []
     for wire_id in sorted(wires):
         start, end = wires[wire_id]
-        polyline = predicted_polyline(start, end, (start[0] + end[0]) / 2.0)
+        channel = _channel_x(start, end, rects, column_of, lefts, rights)
+        polyline = predicted_polyline(start, end, channel)
         if polyline is None:
             unchecked.append(wire_id)
             continue
@@ -604,7 +722,8 @@ def audit_routing_segments(
     # дубли вскрыл живой прогон 05.10.2026.
     return RoutingProblems(sorted(set(crossings)), sorted(set(coincident)),
                            sorted(set(block_hits)),
-                           _port_order_violations(rects, wires), unchecked)
+                           _port_order_violations(rects, wires), unchecked,
+                           channel_overflow(rects, wires))
 
 
 def _parse_wire_report(
@@ -730,7 +849,8 @@ def audit_routing() -> str:
         f"не предсказан у {len(problems.unchecked)} (обратные связи).",
     ]
     dirty = bool(problems.crossings or problems.coincident
-                 or problems.block_hits or problems.port_order)
+                 or problems.block_hits or problems.port_order
+                 or problems.channel_overflow)
     if not dirty:
         lines.append("Вердикт: readable — пересечений, общего трека, "
                      "попаданий в габариты и нарушений порядка входов нет.")
@@ -751,6 +871,15 @@ def audit_routing() -> str:
             more = (f" (и ещё {len(items) - MAX_REPORTED})"
                     if len(items) > MAX_REPORTED else "")
             lines.append(f"ВНИМАНИЕ: {title}: {shown}{more}.")
+    if problems.channel_overflow:
+        shown = "; ".join(
+            f"зазор {gap}: cut={cut}, связей {count}, "
+            f"зазор {free:g} px, нужно {need:g}"
+            for gap, cut, count, free, need
+            in problems.channel_overflow[:MAX_REPORTED])
+        more = (f" (и ещё {len(problems.channel_overflow) - MAX_REPORTED})"
+                if len(problems.channel_overflow) > MAX_REPORTED else "")
+        lines.append(f"ВНИМАНИЕ: канал теснее разреза: {shown}{more}.")
     if problems.unchecked:
         shown = ", ".join(str(w) for w in problems.unchecked[:MAX_REPORTED])
         more = (f" (и ещё {len(problems.unchecked) - MAX_REPORTED})"
