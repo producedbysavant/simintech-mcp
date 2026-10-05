@@ -26,7 +26,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.catalog import NON_BLOCK_CLASSES
@@ -43,7 +43,10 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..geometry import overlaps, rect_of
+from ..geometry import (
+    STUB, WIRE_PITCH, channel_width, collinear_overlap, cut_sizes, overlaps,
+    predicted_polyline, proper_crossing, rect_of, segment_hits_rect,
+    segments_of)
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -170,6 +173,18 @@ def _script_safe(name: str) -> bool:
     return bool(_SAFE_NAME_RE.fullmatch(name))
 
 
+def _outside_sheet(rect: "tuple[float, float, float, float]") -> bool:
+    """Выходит ли габарит блока за начало листа (левый или верхний край в минусе).
+
+    Раскладка начинается с отступа (`layout_place`, `MARGIN`), поэтому
+    отрицательный левый или верхний край — ровно тот случай, из-за которого
+    схема выглядела срезанной: половина блока уходила за край листа (живой
+    случай 04.10.2026: блоки с центром x=0 теряли левую половину).
+    """
+    left, top, _right, _bottom = rect
+    return left < 0.0 or top < 0.0
+
+
 def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
                   wire_ids: List[int]) -> str:
     """Скрипт контура: концы каждой линии и пустые порты — построчно в отчёт.
@@ -258,6 +273,11 @@ def check_model_layout() -> str:
       критерия разметки (на разметке проверяются центры блоков);
     * пустой порт — это порт без линии; для выходных портов это не всегда
       дефект, решает человек.
+    * **кадр (масштаб и смещение вида) не проверяется**: свойства страницы
+      читаются только выгрузкой текста, а языковой способ чтения живым замером
+      не подтверждён (05.10.2026 — опыт не вернул ответа). Проверка
+      ограничивается тем, что видно без кадра, — «блок выходит за начало
+      листа». Сам кадр подгоняет `save_screenshot` (`fit=True`).
 
     Ничего не меняет в модели: контур ставит свой скрипт и возвращает прежний
     (`run_page_script` — тот же механизм и та же гарантия).
@@ -272,6 +292,7 @@ def check_model_layout() -> str:
     off_grid: List[str] = []
     port_blocks: List[Tuple[str, int]] = []
     port_skipped: List[str] = []
+    outside_sheet: List[str] = []
     for block in page.get_blocks():
         try:
             name = block.get_name()
@@ -298,6 +319,8 @@ def check_model_layout() -> str:
             geometry.append((name, rect))
             if _off_grid(rect):
                 off_grid.append(name)
+            if _outside_sheet(rect):
+                outside_sheet.append(name)
         width = size[0] if size else None
         names = _read_port_names(block)
         if width and names:
@@ -415,6 +438,14 @@ def check_model_layout() -> str:
                      f"{shown}{more}.")
     else:
         lines.append(f"Разметка {GRID_STEP:g} px: центры на сетке.")
+    if outside_sheet:
+        shown = ", ".join(outside_sheet[:MAX_REPORTED])
+        more = (f" (и ещё {len(outside_sheet) - MAX_REPORTED})"
+                if len(outside_sheet) > MAX_REPORTED else "")
+        lines.append(f"ВНИМАНИЕ: блоки выходят за начало листа (левый или "
+                     f"верхний край в минусе): {shown}{more}.")
+    else:
+        lines.append("Блоки в пределах листа: левый и верхний края не в минусе.")
     lines.append(contour_line)
     if not error:
         if empty_ports:
@@ -465,3 +496,477 @@ def check_model_layout() -> str:
         lines.append(f"Порты пропущены (имя или число портов не прочитались): "
                      f"{shown}{more}.")
     return "\n".join(lines)
+
+
+#: Допуск «конец линии стоит на границе габарита»: вход блока стоит в `cx-16`,
+#: а координату линии среда отдаёт округлённой.
+_PORT_BAND = 8.0
+
+#: Допуск колонки: центры X блоков в пределах одного квадратика разметки —
+#: одна колонка. Планов раскладки у аудита нет: колонки берутся из
+#: фактической геометрии, а ручная доводка и среда дают доли пикселя —
+#: точное равенство центров было бы слишком строгим.
+COLUMN_TOLERANCE = WIRE_PITCH
+
+#: Допуск «связь выровнена»: Y конца у источника и Y конца у приёмника
+#: совпадают (ТЗ 4.1). Оба конца — фактические, из контура; полпикселя:
+#: среда считает в целых пикселях.
+ALIGN_TOLERANCE = 0.5
+
+
+class RoutingProblems(NamedTuple):
+    """Что нашёл аудит маршрутов — чистая часть, без COM и контура."""
+
+    #: Пары линий, отрезки которых пересекаются внутренностями.
+    crossings: List[Tuple[int, int]]
+    #: Пары линий, отрезки которых едут по одному треку с перекрытием.
+    coincident: List[Tuple[int, int]]
+    #: Линии, проходящие через внутренность чужого габарита: (линия, блок).
+    block_hits: List[Tuple[int, str]]
+    #: Блоки, к входам которых источники приходят в обратном порядке.
+    port_order: List[str]
+    #: Линии, маршрут которых не предсказывается (обратные связи).
+    unchecked: List[int]
+    #: Почему линия не проверена: обратная / внутриколоночная / нет колонок /
+    #: конец не привязан / приёмник не правее источника.
+    unchecked_reasons: Dict[int, str]
+    #: Зазоры между колонками, чей канал теснее разреза (ТЗ 4.2):
+    #: (зазор, cut, связей, фактический зазор, нужный канал).
+    channel_overflow: List[Tuple[int, int, int, float, float]]
+
+
+def _inside(rect: "tuple[float, float, float, float]",
+            point: "tuple[float, float]") -> bool:
+    """Точка внутри габарита (строго; на границе — нет)."""
+    return rect[0] < point[0] < rect[2] and rect[1] < point[1] < rect[3]
+
+
+def _port_order_violations(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> List[str]:
+    """Блоки, к входам которых источники приходят в обратном порядке.
+
+    Для каждого габарита берутся концы линий, стоящие на его левой границе,
+    — это входные порты. Порядок портов читается по Y, порядок источников —
+    по Y начал тех же линий. Монотонность значит, что линии войдут в порты
+    без креста; инверсия — что они пересекутся у самой стены блока.
+    """
+    violations: List[str] = []
+    for name, rect in rects:
+        incoming: List[Tuple[float, float]] = []
+        for _wire_id, (start, end) in wires.items():
+            if abs(end[0] - rect[0]) > _PORT_BAND:
+                continue
+            if not (rect[1] - _PORT_BAND <= end[1] <= rect[3] + _PORT_BAND):
+                continue
+            incoming.append((end[1], start[1]))
+        if len(incoming) < 2:
+            continue
+        incoming.sort()
+        sources = [source for _port, source in incoming]
+        # Инверсия (нижний источник в верхний порт) — крест у стены:
+        # порядок источников обязан идти по Y так же, как порядок входов.
+        if sources != sorted(sources):
+            violations.append(name)
+    return violations
+
+
+def _columns(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]"
+) -> "Tuple[Dict[str, int], Dict[int, float], Dict[int, float]]":
+    """Колонки слоистой укладки — из фактической геометрии блоков.
+
+    Колонка — группа центров X в пределах `COLUMN_TOLERANCE` (один
+    квадратик разметки): планов раскладки у аудита нет, а равенство
+    центров было бы строже самой среды. Меньше двух колонок — колонок
+    нет: аудит откатывается на аварийный путь, а не выдумывает канал.
+    """
+    if not rects:
+        return {}, {}, {}
+    centers = {(rect[0] + rect[2]) / 2.0 for _name, rect in rects}
+    anchors: List[float] = []
+    for center in sorted(centers):
+        if anchors and center - anchors[-1] <= COLUMN_TOLERANCE:
+            continue
+        anchors.append(center)
+    if len(anchors) < 2:
+        return {}, {}, {}
+    index_of = {anchor: i for i, anchor in enumerate(anchors)}
+    column_of: Dict[str, int] = {}
+    lefts: Dict[int, float] = {}
+    rights: Dict[int, float] = {}
+    for name, rect in rects:
+        center = (rect[0] + rect[2]) / 2.0
+        anchor = min(anchors, key=lambda value: abs(value - center))
+        column = index_of[anchor]
+        column_of[name] = column
+        lefts[column] = min(lefts.get(column, rect[0]), rect[0])
+        rights[column] = max(rights.get(column, rect[2]), rect[2])
+    return column_of, lefts, rights
+
+
+def _column_at(
+        point: "Tuple[float, float]",
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        column_of: "Dict[str, int]"
+) -> "Optional[int]":
+    """Колонка блока, к которому точка ближе всего (в пределах полосы порта).
+
+    Конец линии стоит на границе блока, поэтому «ближайший габарит» и есть
+    владелец порта; дальше полосы `_PORT_BAND` связь не привязывается —
+    честнее пропустить её, чем приписать чужой колонке.
+    """
+    best: "Optional[str]" = None
+    best_gap: "Optional[float]" = None
+    for name, rect in rects:
+        gap = (max(rect[0] - point[0], 0.0, point[0] - rect[2])
+               + max(rect[1] - point[1], 0.0, point[1] - rect[3]))
+        if best_gap is None or gap < best_gap:
+            best_gap, best = gap, name
+    if best is None or best_gap is None or best_gap > _PORT_BAND:
+        return None
+    return column_of[best]
+
+
+def channel_overflow(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> "List[Tuple[int, int, int, float, float]]":
+    """Зазоры, чей канал теснее разреза (ТЗ 4.2).
+
+    По зазору между колонками: `(номер, cut, связей, зазор, нужно)`. `cut` —
+    мощность разреза (`cut_sizes`), `связей` — сколько линий фактически идёт
+    через зазор, `зазор` — свободное место между колонками, `нужно` —
+    `channel_width(cut)`. Тесно, если фактика меньше канона. Обратные связи в
+    разрез не входят: по ТЗ 4.3 им место в отдельном нижнем канале.
+    """
+    column_of, lefts, rights = _columns(rects)
+    if not column_of:
+        return []
+    gaps = max(lefts) + 1
+    nets: List[Tuple[int, int, bool]] = []
+    actual: Dict[int, int] = {}
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        src = _column_at(start, rects, column_of)
+        dst = _column_at(end, rects, column_of)
+        if src is None or dst is None:
+            continue
+        nets.append((src, dst, abs(start[1] - end[1]) < ALIGN_TOLERANCE))
+        for gap in range(src, dst):
+            actual[gap] = actual.get(gap, 0) + 1
+    cut = cut_sizes(nets, gaps)
+    found: "List[Tuple[int, int, int, float, float]]" = []
+    for gap in range(gaps - 1):
+        free = lefts.get(gap + 1, 0.0) - rights.get(gap, 0.0)
+        need = channel_width(cut[gap])
+        if free < need - 0.5:
+            found.append((gap, cut[gap], actual.get(gap, 0), free, need))
+    return found
+
+
+def _wire_channels(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]",
+        column_of: "Dict[str, int]", lefts: "Dict[int, float]",
+        rights: "Dict[int, float]"
+) -> "Tuple[Dict[int, float | None], Dict[int, str]]":
+    """X канала каждой связи — её трек в зазоре между колонками (ТЗ 4.2).
+
+    Порядок треков детерминирован: связи зазора, которым трек нужен (не
+    выровненные в одну горизонталь), сортируются по Y приёмника, при равенстве
+    — по Y источника, и получают X = правая граница левой колонки +
+    `STUB + (k + 0.5) * WIRE_PITCH`. STUB — первым слагаемым канона
+    (`channel_w = STUB + WIRE_PITCH * cut`, ТЗ 4.2): вылет из порта в
+    `predicted_polyline` остаётся левее трека, и линия не делает петлю назад.
+    Без этого слагаемого трек ложился **ближе** вылета и полилиния шла
+    вбок-назад (числовая проверка 05.10.2026: треки 36/44 против вылета до 48).
+    Связь через несколько колонок берёт трек **первого** зазора: форму такой
+    связи канон не расписывает, это наше явное решение.
+
+    **Предсказание, не замер.** Как среда укладывает треки внутри канала, мы не
+    мерили и померить не можем (промежуточные точки линии среда не отдаёт),
+    поэтому порядок — модель. Проверка — снимком (`save_screenshot`):
+    предсказанные треки обязаны визуально совпасть с тем, как линии лежат в
+    канале; если снимок покажет другой порядок (например, среда кладёт от
+    краёв к центру) — порядок уточняется по нему.
+
+    `None` — канон канала не даёт: меньше двух колонок, конец не привязан к
+    блоку, связь обратная или внутриколоночная. Такие линии уходят в «не
+    проверено»: выдуманная середина между концами дала бы ложные метрики.
+    """
+    channels: "Dict[int, float | None]" = {wid: None for wid in wires}
+    reasons: "Dict[int, str]" = {wid: "нет колонок" for wid in wires}
+    if not column_of:
+        return channels, reasons
+    placement: "Dict[int, Tuple[int, int, float, float, bool]]" = {}
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        src = _column_at(start, rects, column_of)
+        dst = _column_at(end, rects, column_of)
+        if src is None or dst is None:
+            reasons[wire_id] = "конец не привязан"
+            continue
+        if dst < src:
+            reasons[wire_id] = "обратная"
+            continue
+        if dst == src:
+            reasons[wire_id] = "внутриколоночная"
+            continue
+        aligned = abs(start[1] - end[1]) < ALIGN_TOLERANCE
+        placement[wire_id] = (src, dst, end[1], start[1], aligned)
+        reasons.pop(wire_id, None)
+    for gap in range(max(lefts) if lefts else 0):
+        members = [wid for wid, (src, dst, _ey, _sy, aligned)
+                   in placement.items()
+                   if not aligned and src <= gap < dst]
+        members.sort(key=lambda wid: (placement[wid][2], placement[wid][3]))
+        for index, wire_id in enumerate(members):
+            if gap == placement[wire_id][0]:
+                channels[wire_id] = (rights[gap] + STUB
+                                     + (index + 0.5) * WIRE_PITCH)
+    # Выровненной связи трек не нужен: её форма — прямая, канал не
+    # задействован. Но канон канал ей даёт, поэтому она проверяема, а не
+    # «не проверена».
+    for wire_id, (src_col, _dst, _ey, _sy, aligned) in placement.items():
+        if aligned:
+            channels[wire_id] = rights[src_col]
+    return channels, reasons
+
+
+def audit_routing_segments(
+        rects: "List[Tuple[str, tuple[float, float, float, float]]]",
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]"
+) -> RoutingProblems:
+    """Посчитать проблемы маршрутов по предсказанным полилиниям.
+
+    Чистая функция: ни COM, ни контура — потому её и проверяют тесты. Канал
+    каждой связи — её трек в зазоре между колонками (`_wire_channels`, ТЗ 4.2);
+    линии, которым канон канала не даёт, честно уходят в `unchecked`.
+
+    Обратная связь (приёмник левее источника) не предсказывается — маршрут
+    ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.
+    """
+    column_of, lefts, rights = _columns(rects)
+    channels, reasons = _wire_channels(
+        rects, wires, column_of, lefts, rights)
+    segments: List[Tuple[int, Tuple[float, float], Tuple[float, float]]] = []
+    unchecked: List[int] = []
+    unchecked_reasons: Dict[int, str] = {}
+    for wire_id in sorted(wires):
+        start, end = wires[wire_id]
+        channel = channels.get(wire_id)
+        if channel is None:
+            unchecked.append(wire_id)
+            unchecked_reasons[wire_id] = reasons.get(wire_id, "нет колонок")
+            continue
+        polyline = predicted_polyline(start, end, channel)
+        if polyline is None:
+            unchecked.append(wire_id)
+            unchecked_reasons[wire_id] = "приёмник не правее источника"
+            continue
+        for first, second in segments_of(polyline):
+            segments.append((wire_id, first, second))
+
+    crossings: List[Tuple[int, int]] = []
+    coincident: List[Tuple[int, int]] = []
+    for index, (wire_a, a1, a2) in enumerate(segments):
+        for wire_b, b1, b2 in segments[index + 1:]:
+            if wire_a == wire_b:
+                continue
+            if proper_crossing(a1, a2, b1, b2):
+                crossings.append((wire_a, wire_b))
+            elif collinear_overlap(a1, a2, b1, b2, pitch=WIRE_PITCH):
+                coincident.append((wire_a, wire_b))
+
+    block_hits: List[Tuple[int, str]] = []
+    for wire_id, first, second in segments:
+        start, end = wires[wire_id]
+        for name, rect in rects:
+            # Из своего блока линия выходит: габарит с её концом — не чужой.
+            if _inside(rect, start) or _inside(rect, end):
+                continue
+            if segment_hits_rect(first, second, rect):
+                block_hits.append((wire_id, name))
+
+    # Пара линий может совпасть не одним отрезком, а несколькими (стык и
+    # горизонталь одной прямой): в списке она обязана стоять один раз —
+    # дубли вскрыл живой прогон 05.10.2026.
+    return RoutingProblems(sorted(set(crossings)), sorted(set(coincident)),
+                           sorted(set(block_hits)),
+                           _port_order_violations(rects, wires), unchecked,
+                           unchecked_reasons,
+                           channel_overflow(rects, wires))
+
+
+def _parse_wire_report(
+        text: str
+) -> "Optional[Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]]":
+    """Разобрать отчёт контура: концы линий. `None` — отчёт оборван.
+
+    `DONE` — признак полного отчёта (его пишет `_check_script` последней
+    строкой): без него часть `W`-строк могла не записаться, и вердикт по
+    такому отчёту не выдаётся — та же защита, что у `check_model_layout`
+    (находка ревью 02.10.2026). Строки, которые не разобрались, пропускаются:
+    `DONE` подтверждает, что отчёт пришёл целиком, а число прочитанных линий
+    называет сам вердикт.
+    """
+    wires: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
+    complete = False
+    for line in text.splitlines():
+        parts = line.split("|")
+        if parts[0] == "DONE":
+            complete = True
+            continue
+        if parts[0] != "W" or len(parts) != 4:
+            continue
+        start = _parse_point(parts[2])
+        end = _parse_point(parts[3])
+        if start is None or end is None:
+            continue
+        try:
+            wire_id = int(parts[1])
+        except ValueError:
+            continue
+        wires[wire_id] = (start, end)
+    return wires if complete else None
+
+
+@mcp.tool()
+@runtime.com_threaded
+def audit_routing() -> str:
+    """Проверить маршруты линий текущей страницы (читаемость, ТЗ п.1).
+
+    Считается по предсказанной ортогонали — той же форме, которой линии
+    ведёт `NormalizeWire`, — а не глазами: пересечения линий, общий трек
+    с перекрытием дольше `WIRE_PITCH` (8 px — один квадратик разметки),
+    попадание линии во внутренность чужого габарита, порядок входов на
+    левой стене блока.
+
+    Обратные связи (приёмник левее источника) не предсказываются — их
+    маршрут ведёт среда, — и попадают в отдельный список «не проверено»,
+    а не в чистый вердикт: «не проверено» не выдаётся за «хорошо».
+
+    Вердикт: `readable` — чисто; `next` — есть что чинить, и в ответе
+    названы линии и блоки. Габариты — через COM, концы линий — контуром
+    страницы (та же цена, что у `check_model_layout`: контур сдвигает
+    модельное время). Ничего в модели не меняет.
+    """
+    project = session.ensure_project()
+    page = project.get_current_page()
+
+    rects: List[Tuple[str, Tuple[float, float, float, float]]] = []
+    for block in page.get_blocks():
+        try:
+            name = block.get_name()
+        except Exception:                                      # noqa: BLE001
+            name = str(block.id)
+        try:
+            size = block.get_size()
+        except Exception:                                      # noqa: BLE001
+            size = None
+        try:
+            rect = rect_of(block.get_points(), size) if size else None
+        except Exception:                                      # noqa: BLE001
+            rect = None
+        if rect is not None:
+            rects.append((name, rect))
+
+    try:
+        wire_ids = [int(wire.id) for wire in page.get_wires()]
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"перечислить линии страницы не удалось: {type(exc).__name__}: "
+            f"{exc}. Без списка линий аудит маршрутов невозможен.") from exc
+    if not wire_ids:
+        return ("Аудит маршрутов линий (читаемость, ТЗ п.1).\n"
+                "Линий на странице нет — проверять нечего. "
+                "Вердикт: readable.")
+
+    _sweep_previous()
+    report_path = _rect_path()
+    marker_path = _marker_path()
+    _PREVIOUS_PATHS.extend((report_path, marker_path))
+    script = _check_script(report_path, [], wire_ids)
+    try:
+        bridge().run_page_script(script, marker_path)
+    except ScriptBridgeError as exc:
+        raise ToolError(
+            f"контур аудита не отработал: {exc}. Маршруты не проверены."
+        ) from exc
+
+    data, _truncated, error = sandbox.load_result_file(
+        str(report_path), sandbox.MAX_OUTPUT_BYTES,
+        sandbox.MISSING_RESULT_FILE)
+    if error:
+        raise ToolError(
+            f"отчёт контура не прочитан: {error} — концы линий не получены, "
+            f"маршруты не проверены.")
+
+    wires = _parse_wire_report(data.decode("utf-8", errors="replace"))
+    if wires is None:
+        raise ToolError(
+            "отчёт контура оборван: признака `DONE` в нём нет — концы линий "
+            "прочитаны не все, и вердикт по неполным данным не выдаётся "
+            "(та же защита, что у `check_model_layout`).")
+    if not wires:
+        raise ToolError(
+            "контур вернул отчёт без координат линий — концы не прочитаны, "
+            "маршруты не проверены.")
+
+    problems = audit_routing_segments(rects, wires)
+    checked = len(wires) - len(problems.unchecked)
+    lines = [
+        "Аудит маршрутов линий (читаемость, ТЗ п.1).",
+        f"Линий: {len(wires)}; маршрут предсказан у {checked}, "
+        f"не предсказан у {len(problems.unchecked)} (обратные связи).",
+    ]
+    dirty = bool(problems.crossings or problems.coincident
+                 or problems.block_hits or problems.port_order
+                 or problems.channel_overflow)
+    if not dirty:
+        lines.append("Вердикт: readable — пересечений, общего трека, "
+                     "попаданий в габариты и нарушений порядка входов нет.")
+    else:
+        lines.append("Вердикт: next — сначала layout_place, затем повторный "
+                     "аудит.")
+        for title, items in (
+                ("линия проходит через габарит блока",
+                 [f"линия {w} в «{b}»" for w, b in problems.block_hits]),
+                ("пересечения линий",
+                 [f"{a}—{b}" for a, b in problems.crossings]),
+                ("общий трек с перекрытием",
+                 [f"{a}—{b}" for a, b in problems.coincident]),
+                ("порядок входов нарушен", list(problems.port_order))):
+            if not items:
+                continue
+            shown = ", ".join(items[:MAX_REPORTED])
+            more = (f" (и ещё {len(items) - MAX_REPORTED})"
+                    if len(items) > MAX_REPORTED else "")
+            lines.append(f"ВНИМАНИЕ: {title}: {shown}{more}.")
+    if problems.channel_overflow:
+        shown = "; ".join(
+            f"зазор {gap}: cut={cut}, связей {count}, "
+            f"зазор {free:g} px, нужно {need:g}"
+            for gap, cut, count, free, need
+            in problems.channel_overflow[:MAX_REPORTED])
+        more = (f" (и ещё {len(problems.channel_overflow) - MAX_REPORTED})"
+                if len(problems.channel_overflow) > MAX_REPORTED else "")
+        lines.append(f"ВНИМАНИЕ: канал теснее разреза: {shown}{more}.")
+    if problems.unchecked:
+        grouped: Dict[str, List[int]] = {}
+        for wire_id in problems.unchecked:
+            grouped.setdefault(
+                problems.unchecked_reasons.get(wire_id, "причина не названа"),
+                []).append(wire_id)
+        parts: List[str] = []
+        for reason in sorted(grouped):
+            ids = grouped[reason]
+            shown = ", ".join(str(w) for w in ids[:MAX_REPORTED])
+            more = (f" (и ещё {len(ids) - MAX_REPORTED})"
+                    if len(ids) > MAX_REPORTED else "")
+            parts.append(f"{reason} — {len(ids)}: {shown}{more}")
+        lines.append(f"Не проверено: {len(problems.unchecked)} "
+                     f"({' ; '.join(parts)}).")
+    return "\n".join(lines) + "\n"

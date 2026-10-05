@@ -366,3 +366,26 @@ async def test_import_model_text_reports_no_lines(monkeypatch, tmp_path):
         "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
 
     assert "Линий связи на странице нет" in result
+
+
+def test_parse_page_graph_resolves_branches():
+    """Ветвь — точка съёма с той же линии: её источник — источник исходной."""
+    from simintech_mcp.tools.model_text import parse_page_graph
+
+    text = (
+        '  wire_1: (\n'
+        '    type = "wire",\n'
+        '    points=[(0 , 0),(0 , 10)],\n'
+        '    src = "n_dc:out:0",\n'
+        '    dst = "ad_1:in:0"\n'
+        '  ),\n'
+        '  branch_1: (\n'
+        '    type = "wire",\n'
+        '    points=[(0 , 0),(0 , 20)],\n'
+        '    src = "wire_1:0",\n'
+        '    dst = "portconnector_0:in:0"\n'
+        '  ),\n'
+    )
+
+    assert parse_page_graph(text) == [("n_dc", "ad_1"),
+                                      ("n_dc", "portconnector_0")]
