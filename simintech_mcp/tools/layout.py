@@ -11,6 +11,7 @@ import re
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
+from simintech_api.constants import BLOCK_GAP
 from simintech_api.catalog import NON_BLOCK_CLASSES
 
 from .. import runtime, session
@@ -236,9 +237,9 @@ def layout_place(block_ids: str = "", connections: str = "",
     блоки в (0,0) друг на друге — «кучей», которую инструмент при этом
     подтверждал как расставленную (живой случай 02.10.2026). Явные аргументы
     остаются для выборочной расстановки и разбираются строго, как раньше.
-    Концы чужих линий через COM не читаются: если реестр `connect` пуст
-    (проект открыт из файла), расстановка идёт без связей — ответ об этом
-    скажет, а не умолчит.
+    Граф берётся из реестра `connect`, а когда он пуст (проект открыт из
+    файла) — из выгрузки страницы: концы линий COM не отдаёт, их отдаёт
+    только выгрузка, вместе с ветвями.
 
     **`normalize_only` — трассировка без расстановки.** Линии страницы
     нормализуются, блоки не двигаются; расстановка, связи и метрика наложений
@@ -321,6 +322,7 @@ def layout_place(block_ids: str = "", connections: str = "",
             расставляя; с `block_ids`/`connections` не сочетается.
     """
     from simintech_api.layout import LayeredPlacer
+    from simintech_api.layout.repeat import collapse_repeat, detect_repeat
 
     project = session.ensure_project()
     page = project.get_main_page()
@@ -423,6 +425,27 @@ def layout_place(block_ids: str = "", connections: str = "",
                 continue
             seen_pairs.add((src_token, dst_token))
             links.append((src_token, dst_token))
+        if not links and not session.WIRES:
+            # Реестр `connect` пуст — проект открыт из файла. Граф берём из
+            # выгрузки страницы (автограф графа): COM концов линий не отдаёт,
+            # их отдаёт только выгрузка, и она же называет ветви. Без этого
+            # блоки встают в одну колонку, а ветви теряются вовсе — каналы
+            # выходят уже канона на 8 px за каждую.
+            from .model_text import page_export_text, parse_page_graph
+            try:
+                graph_text, _trunc, _outcome, _path = page_export_text()
+            except Exception:                            # noqa: BLE001
+                # Выгрузка — best-effort: не удалась, значит расстановка
+                # идёт без связей, и ответ об этом скажет, а не упадёт.
+                graph_text = ""
+            known = set(tokens)
+            for src_block, dst_block in parse_page_graph(graph_text):
+                if src_block not in known or dst_block not in known:
+                    continue
+                if (src_block, dst_block) in seen_pairs:
+                    continue
+                seen_pairs.add((src_block, dst_block))
+                links.append((src_block, dst_block))
     else:
         links = []
         for pair in connections.split(","):
@@ -451,7 +474,46 @@ def layout_place(block_ids: str = "", connections: str = "",
     # Размеры берём у самих блоков, а не подставляем свои: размер задан
     # правилами разработки SimInTech, и `set_center` не должен его менять.
     sizes = {token: available[token].get_size() for token in tokens}
-    positions = LayeredPlacer().place(tokens, links, sizes=sizes)
+    # 4.4) Повторяющаяся ячейка — дорожка, а не плоский граф: позиция паттерна
+    # становится одним узлом раскладки, строки разворачиваются на его месте.
+    # Так ячейка садится по потоку — после своих предшественников и до внешних
+    # потребителей, — а не по жёсткому «слева». Не выделилась — канальная
+    # раскладка и repeated_cell: no: схему не раздуваем.
+    classes: dict[str, str] = {}
+    for token in tokens:
+        try:
+            classes[token] = available[token].class_name
+        except Exception:                                     # noqa: BLE001
+            continue
+    cell = detect_repeat(classes, links)
+    repeated_note = "repeated_cell: no"
+    if cell is None:
+        positions = LayeredPlacer().place(tokens, links, sizes=sizes)
+    else:
+        nodes, edges, rows_of = collapse_repeat(cell, tokens, links)
+        node_sizes: dict[object, tuple[float, float]] = {}
+        for node, items in rows_of.items():
+            widths = [sizes[item][0] for item in items if item in sizes]
+            heights = [sizes[item][1] for item in items if item in sizes]
+            node_sizes[node] = (
+                max(widths, default=60.0),
+                sum(heights) + BLOCK_GAP * max(0, len(heights) - 1))
+        grown = LayeredPlacer().place(
+            [node for node in nodes if node in node_sizes] +
+            [node for node in nodes if node not in node_sizes],
+            edges, sizes=node_sizes)
+        positions = dict(grown)
+        for node, items in rows_of.items():
+            x, y = grown[node]
+            step = (max((sizes[item][1] for item in items), default=40.0)
+                    + BLOCK_GAP)
+            base = y - (len(items) - 1) / 2.0 * step
+            base -= base % 8.0        # база стопки — на разметке, шаг кратен ей
+            for index, item in enumerate(items):
+                positions[item] = (x, base + index * step)
+        repeated_note = ("repeated_cell: yes (паттерн: " +
+                         ", ".join(cell.pattern) +
+                         f"; строк {len(cell.rows)})")
 
     centers = {token: positions[token] for token in tokens}
     # Порядок обязателен: **сначала сетка, затем стопки**. Обратный порядок
@@ -615,7 +677,8 @@ def layout_place(block_ids: str = "", connections: str = "",
     if no_geometry:
         routes += (f"\nГеометрию прочитать не удалось у {len(no_geometry)} "
                    f"блоков: {', '.join(no_geometry[:MAX_REPORTED_OVERLAPS])}")
-    return f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes
+    return (repeated_note + "\n" +
+            f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes)
 
 
 def fit_geometry(frame: "tuple[float, float, float, float]",

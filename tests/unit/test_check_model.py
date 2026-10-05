@@ -576,7 +576,7 @@ def test_audit_routing_tracks_clear_the_stub():
              2: ((32.0, 40.0), (300.0, 60.0))}
 
     column_of, lefts, rights = cm._columns(rects)
-    channels = cm._wire_channels(rects, wires, column_of, lefts, rights)
+    channels, _reasons = cm._wire_channels(rects, wires, column_of, lefts, rights)
 
     for wire_id, (start, end) in wires.items():
         poly = predicted_polyline(start, end, channels[wire_id])
@@ -725,3 +725,21 @@ def test_audit_routing_marks_noncanon_wire_unchecked():
     problems = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
 
     assert problems.unchecked == [1]
+
+
+def test_unchecked_reasons_name_the_cause():
+    """Каждая непроверенная линия названа причиной, а не только id."""
+    rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
+             ("U2", (300.0, 0.0, 332.0, 64.0))]
+
+    back = cm.audit_routing_segments(rects, {1: ((300.0, 10.0), (32.0, 10.0))})
+    assert back.unchecked_reasons[1] == "обратная"
+
+    inside = cm.audit_routing_segments(rects, {1: ((32.0, 10.0), (32.0, 40.0))})
+    assert inside.unchecked_reasons[1] == "внутриколоночная"
+
+    empty = cm.audit_routing_segments([], {1: ((0.0, 0.0), (200.0, 0.0))})
+    assert empty.unchecked_reasons[1] == "нет колонок"
+
+    far = cm.audit_routing_segments(rects, {1: ((0.0, 500.0), (300.0, 500.0))})
+    assert far.unchecked_reasons[1] == "конец не привязан"

@@ -527,6 +527,9 @@ class RoutingProblems(NamedTuple):
     port_order: List[str]
     #: Линии, маршрут которых не предсказывается (обратные связи).
     unchecked: List[int]
+    #: Почему линия не проверена: обратная / внутриколоночная / нет колонок /
+    #: конец не привязан / приёмник не правее источника.
+    unchecked_reasons: Dict[int, str]
     #: Зазоры между колонками, чей канал теснее разреза (ТЗ 4.2):
     #: (зазор, cut, связей, фактический зазор, нужный канал).
     channel_overflow: List[Tuple[int, int, int, float, float]]
@@ -668,7 +671,7 @@ def _wire_channels(
         wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]",
         column_of: "Dict[str, int]", lefts: "Dict[int, float]",
         rights: "Dict[int, float]"
-) -> "Dict[int, float | None]":
+) -> "Tuple[Dict[int, float | None], Dict[int, str]]":
     """X канала каждой связи — её трек в зазоре между колонками (ТЗ 4.2).
 
     Порядок треков детерминирован: связи зазора, которым трек нужен (не
@@ -694,17 +697,26 @@ def _wire_channels(
     проверено»: выдуманная середина между концами дала бы ложные метрики.
     """
     channels: "Dict[int, float | None]" = {wid: None for wid in wires}
+    reasons: "Dict[int, str]" = {wid: "нет колонок" for wid in wires}
     if not column_of:
-        return channels
+        return channels, reasons
     placement: "Dict[int, Tuple[int, int, float, float, bool]]" = {}
     for wire_id in sorted(wires):
         start, end = wires[wire_id]
         src = _column_at(start, rects, column_of)
         dst = _column_at(end, rects, column_of)
-        if src is None or dst is None or src >= dst:
+        if src is None or dst is None:
+            reasons[wire_id] = "конец не привязан"
+            continue
+        if dst < src:
+            reasons[wire_id] = "обратная"
+            continue
+        if dst == src:
+            reasons[wire_id] = "внутриколоночная"
             continue
         aligned = abs(start[1] - end[1]) < ALIGN_TOLERANCE
         placement[wire_id] = (src, dst, end[1], start[1], aligned)
+        reasons.pop(wire_id, None)
     for gap in range(max(lefts) if lefts else 0):
         members = [wid for wid, (src, dst, _ey, _sy, aligned)
                    in placement.items()
@@ -720,7 +732,7 @@ def _wire_channels(
     for wire_id, (src_col, _dst, _ey, _sy, aligned) in placement.items():
         if aligned:
             channels[wire_id] = rights[src_col]
-    return channels
+    return channels, reasons
 
 
 def audit_routing_segments(
@@ -737,18 +749,22 @@ def audit_routing_segments(
     ведёт среда, — и такие линии честно попадают в `unchecked`, а не в чистые.
     """
     column_of, lefts, rights = _columns(rects)
-    channels = _wire_channels(rects, wires, column_of, lefts, rights)
+    channels, reasons = _wire_channels(
+        rects, wires, column_of, lefts, rights)
     segments: List[Tuple[int, Tuple[float, float], Tuple[float, float]]] = []
     unchecked: List[int] = []
+    unchecked_reasons: Dict[int, str] = {}
     for wire_id in sorted(wires):
         start, end = wires[wire_id]
         channel = channels.get(wire_id)
         if channel is None:
             unchecked.append(wire_id)
+            unchecked_reasons[wire_id] = reasons.get(wire_id, "нет колонок")
             continue
         polyline = predicted_polyline(start, end, channel)
         if polyline is None:
             unchecked.append(wire_id)
+            unchecked_reasons[wire_id] = "приёмник не правее источника"
             continue
         for first, second in segments_of(polyline):
             segments.append((wire_id, first, second))
@@ -780,6 +796,7 @@ def audit_routing_segments(
     return RoutingProblems(sorted(set(crossings)), sorted(set(coincident)),
                            sorted(set(block_hits)),
                            _port_order_violations(rects, wires), unchecked,
+                           unchecked_reasons,
                            channel_overflow(rects, wires))
 
 
@@ -938,9 +955,18 @@ def audit_routing() -> str:
                 if len(problems.channel_overflow) > MAX_REPORTED else "")
         lines.append(f"ВНИМАНИЕ: канал теснее разреза: {shown}{more}.")
     if problems.unchecked:
-        shown = ", ".join(str(w) for w in problems.unchecked[:MAX_REPORTED])
-        more = (f" (и ещё {len(problems.unchecked) - MAX_REPORTED})"
-                if len(problems.unchecked) > MAX_REPORTED else "")
-        lines.append("Не проверено (обратные связи, маршрут ведёт среда): "
-                     f"{shown}{more}.")
+        grouped: Dict[str, List[int]] = {}
+        for wire_id in problems.unchecked:
+            grouped.setdefault(
+                problems.unchecked_reasons.get(wire_id, "причина не названа"),
+                []).append(wire_id)
+        parts: List[str] = []
+        for reason in sorted(grouped):
+            ids = grouped[reason]
+            shown = ", ".join(str(w) for w in ids[:MAX_REPORTED])
+            more = (f" (и ещё {len(ids) - MAX_REPORTED})"
+                    if len(ids) > MAX_REPORTED else "")
+            parts.append(f"{reason} — {len(ids)}: {shown}{more}")
+        lines.append(f"Не проверено: {len(problems.unchecked)} "
+                     f"({' ; '.join(parts)}).")
     return "\n".join(lines) + "\n"

@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
@@ -104,6 +104,73 @@ def result_path() -> Path:
                              fresh_name(PROBE_RESULT_FILE)))
 
 
+def page_export_text() -> "Tuple[str, bool, ContourOutcome, Path]":
+    """Текст выгрузки страницы: (текст, обрезано, исход, путь файла).
+
+    Без обёртки инструмента и COM-потока: тем же путём идёт `layout_place`,
+    когда реестр `connect` пуст (проект открыт из файла) — раскладке нужен граф
+    страницы, а COM концов линий не отдаёт, их отдаёт только выгрузка.
+    """
+    root = sandbox.output_root()
+    text_path = os.path.join(root, fresh_name(MODEL_TEXT_FILE))
+    outcome, _restored = run_contour(
+        build_export_model_text_body(text_path),
+        failed="выгрузка текста модели не удалась")
+    refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
+
+    data, truncated, error = sandbox.load_result_file(
+        text_path, sandbox.MAX_OUTPUT_BYTES, sandbox.MISSING_RESULT_FILE
+    )
+    if error:
+        raise ToolError(
+            f"скрипт выгрузки отработал, но файла нет: {error}. Выгрузка идёт "
+            "в каталог результатов, и туда же указывает путь в скрипте."
+        )
+    text = data.decode("utf-8", errors="replace").removeprefix("\ufeff")
+    return text, truncated, outcome, Path(text_path)
+
+
+def _address(line: str) -> str:
+    """Блок или имя провода из строки адреса `src`/`dst`."""
+    value = line.split("=", 1)[1].strip().strip('",')
+    return value.split(":")[0]
+
+
+def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
+    """Рёбра страницы из выгрузки — с разрешением ветвей.
+
+    Запись провода: `src = "block:out:N"`, `dst = "block:in:N"`. У ветви на
+    месте источника стоит имя провода (`src = "wireName:K"`): ветвь — не новый
+    источник, а точка съёма с той же линии, поэтому её источник разрешается по
+    исходному проводу. Без этого раскладчик не видит ветви боевой модели и
+    кладёт каналы на 8 px уже канона за каждую.
+    """
+    sources: "Dict[str, str]" = {}
+    pairs: "List[Tuple[str, str]]" = []
+    name = ""
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if line.endswith(": (") and not line.startswith("type"):
+            name = line[:-3]
+            continue
+        if not name:
+            continue
+        if line.startswith("src = "):
+            sources[name] = _address(line)
+            continue
+        if line.startswith("dst = "):
+            pairs.append((name, _address(line)))
+
+    def resolve(value: str) -> str:
+        for _step in range(8):
+            if value not in sources:
+                break
+            value = sources[value]
+        return value
+
+    return [(resolve(sources[name]), dst) for name, dst in pairs]
+
+
 @mcp.tool()
 @runtime.com_threaded
 def export_model_text() -> str:
@@ -130,34 +197,7 @@ def export_model_text() -> str:
     Поле `script` страницы содержит временный скрипт контура — не скрипт проекта
     (прежний возвращается на место после прогона).
     """
-    root = sandbox.output_root()
-    text_path = os.path.join(root, fresh_name(MODEL_TEXT_FILE))
-    # Прежняя защита от устаревшего текста — удаление файла прошлого прогона —
-    # не переживала блокировку: запертый файл удалить не даёт (WinError 32,
-    # живое наблюдение 02.10.2026), и тогда оборвавшийся прогон отдал бы
-    # прошлую выгрузку как нынешнюю — ровно тот класс ошибки, который здесь
-    # дороже всего (агент правит модель по устаревшему тексту). Теперь имя
-    # уникально на вызов, и путь, который читает инструмент, создаёт только
-    # этот прогон.
-
-    outcome, _restored = run_contour(
-        build_export_model_text_body(text_path),
-        failed="выгрузка текста модели не удалась")
-    refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
-
-    data, truncated, error = sandbox.load_result_file(
-        text_path, sandbox.MAX_OUTPUT_BYTES, sandbox.MISSING_RESULT_FILE
-    )
-    if error:
-        raise ToolError(
-            f"скрипт выгрузки отработал, но файла нет: {error}. Выгрузка идёт "
-            "в каталог результатов, и туда же указывает путь в скрипте."
-        )
-    text = data.decode("utf-8", errors="replace")
-    # BOM снимаем: `savemodeltofile` пишет его, а вклейка текста обратно через
-    # `eval` файла с BOM не принимает (замер 2026-09-29) — текст, возвращённый
-    # агенту, должен быть пригоден для обратного пути без правки.
-    text = text.removeprefix("﻿")
+    text, truncated, outcome, text_path = page_export_text()
     note = (
         f"\n… текст обрезан по пределу {sandbox.MAX_OUTPUT_BYTES} байт"
         if truncated
