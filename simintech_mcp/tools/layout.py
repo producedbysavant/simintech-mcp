@@ -285,7 +285,7 @@ def _wires_word(count: int) -> str:
     return "линий"
 
 
-def _normalize_page_wires(page: Page) -> str:
+def normalize_page_wires(page: Page) -> str:
     """Трассировать все линии страницы — общий шаг обоих режимов.
 
     Трассируем все линии страницы, а не только созданные этой сессией:
@@ -439,7 +439,7 @@ def layout_place(block_ids: str = "", connections: str = "",
             )
         project.repaint()
         return ("Блоки не двигались: normalize_only."
-                + _normalize_page_wires(page))
+                + normalize_page_wires(page))
 
     available: dict[str, Block] = {}
     for block in page.get_blocks():
@@ -708,7 +708,7 @@ def layout_place(block_ids: str = "", connections: str = "",
     # нужна ещё раз, уже перед трассировкой.
     if shifted:
         project.repaint()
-    routes = _normalize_page_wires(page)
+    routes = normalize_page_wires(page)
     if bare_call and not links:
         routes += ("\nСвязи: ни одной пары не известно (реестр `connect` пуст)"
                    " — связи не учтены, блоки встали одной колонкой; концы"
@@ -1018,7 +1018,7 @@ def set_block_center(block: str = "", x: Optional[float] = None,
                 f"(центр до не прочитан) → ({cx:g}, {cy:g})")
         lines.append(f"  {name}: центр {move}")
     project.repaint()
-    routes = _normalize_page_wires(page) + _overlap_report(page, moved_names)
+    routes = normalize_page_wires(page) + _overlap_report(page, moved_names)
     return "\n".join(lines) + routes
 
 

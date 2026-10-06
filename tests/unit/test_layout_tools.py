@@ -798,6 +798,157 @@ async def test_disconnect_wire_addressed_by_id(monkeypatch, tmp_path):
         session.WIRES[:] = saved
 
 
+def test_remove_block_body_when_wires_not_touched():
+    """Тело при with_wires=False линии только называет — не снимает."""
+    from simintech_mcp.tools.blocks import _remove_block_body
+
+    body = _remove_block_body(10, 2, 1, False)
+
+    assert "blk = 10;" in body
+    assert "getinportid(blk, i)" in body and "getoutportid(blk, i)" in body
+    assert "while i < 2 do begin" in body, "входы не перебираются"
+    assert "while i < 1 do begin" in body, "выходы не перебираются"
+    assert "for i :=" not in body, "`for` в контуре не компилируется"
+    assert 'writelnutf8(fid, "busy=" + inttostr(busy))' in body
+    assert "removeprimitiv(blk)" in body
+    assert "removeprimitiv(w)" not in body, "линии не должны сниматься"
+
+
+def test_remove_block_body_with_wires_cuts_lines():
+    """Тело при with_wires=True снимает линии и блок, без ветки busy."""
+    from simintech_mcp.tools.blocks import _remove_block_body
+
+    body = _remove_block_body(10, 1, 1, True)
+
+    assert "removeprimitiv(w)" in body
+    assert "busy" not in body
+    assert "removeprimitiv(blk)" in body
+    assert "cut-in=" in body and "cut-out=" in body
+
+
+def test_remove_block_body_skips_zero_port_loops():
+    """Портов нет — циклов нет: `for 0 to -1` живьём не измерялся."""
+    from simintech_mcp.tools.blocks import _remove_block_body
+
+    body = _remove_block_body(10, 0, 0, False)
+
+    assert "while i" not in body
+    assert "removeprimitiv(blk)" in body
+
+
+@pytest.mark.anyio
+async def test_remove_block_removes_block(monkeypatch, tmp_path):
+    """Удаление: тело сообщило removed=, блок исчез со страницы — успех."""
+    block = _ConnectingBlock("k_0", 10)
+    blocks = {"k_0": block}
+
+    class _Removes(_BridgeReplies):
+        lines = ["removed=10"]
+        on_run = staticmethod(lambda: blocks.pop("k_0", None))
+
+    _install_disconnect(monkeypatch, tmp_path, _Removes, blocks)
+
+    text = _text(await mcp.call_tool("remove_block", {"block": "k_0"}))
+
+    assert "удалён" in text
+    assert "id=10" in text
+
+
+@pytest.mark.anyio
+async def test_remove_block_missing_block(monkeypatch, tmp_path):
+    """Неизвестный блок — «не найден», до всякого прогона."""
+    _install_disconnect(monkeypatch, tmp_path, _BridgeReplies,
+                        {"k_0": _ConnectingBlock("k_0", 1)})
+
+    message = await _error("remove_block", {"block": "нет_такого"})
+
+    assert "не найден" in message
+
+
+@pytest.mark.anyio
+async def test_remove_block_refuses_when_wires_connected(monkeypatch, tmp_path):
+    """Линии подключены — отказ с перечислением; блок и линии не тронуты."""
+    block = _ConnectingBlock("k_0", 10)
+    saved = list(session.WIRES)
+
+    class _Busy(_BridgeReplies):
+        lines = ["wire-in=77", "busy=1"]
+
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Busy, {"k_0": block})
+        message = await _error("remove_block", {"block": "k_0"})
+
+        assert "не удалён" in message and "77" in message
+        assert "with_wires=True" in message
+        assert "disconnect_wire" in message
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_remove_block_with_wires_forgets_lines(monkeypatch, tmp_path):
+    """with_wires: линии сняты вместе с блоком, реестр сессии их забыл."""
+    src = _ConnectingBlock("k_0", 10)
+    dst = _ConnectingBlock("kx_0", 2)
+    wire = _FakeWire(77)
+    src.wires.append((wire, dst, 0, 0))
+    blocks = {"k_0": src, "kx_0": dst}
+    saved = list(session.WIRES)
+
+    def _effect():
+        src.wires.clear()
+        blocks.pop("k_0", None)
+
+    class _Cuts(_BridgeReplies):
+        lines = ["cut-in=77", "removed=10"]
+        on_run = staticmethod(_effect)
+
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Cuts, blocks)
+        session.WIRES.append((wire, "k_0", 0, "kx_0", 0))
+
+        text = _text(await mcp.call_tool(
+            "remove_block", {"block": "k_0", "with_wires": True}))
+
+        assert "удалён вместе с линиями (1)" in text
+        assert "Линий связи на странице: 1 → 0" in text
+        assert session.WIRES == [], "снятая линия осталась в реестре"
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_remove_block_refuses_when_block_still_found(monkeypatch, tmp_path):
+    """Тело сказало «removed=», а блок находится — отказ: среда не подтвердила."""
+    class _Lies(_BridgeReplies):
+        lines = ["removed=10"]
+
+    _install_disconnect(monkeypatch, tmp_path, _Lies,
+                        {"k_0": _ConnectingBlock("k_0", 10)})
+
+    message = await _error("remove_block", {"block": "k_0"})
+
+    assert "не подтверждено" in message
+    assert "по-прежнему" in message
+
+
+@pytest.mark.anyio
+async def test_remove_block_refuses_when_body_aborts(monkeypatch, tmp_path):
+    """Обрыв тела — «не подтверждено»: успело ли удаление, не определить."""
+    class _Aborted(_BridgeReplies):
+        kind = "aborted"
+        lines = ["busy=0"]
+
+    _install_disconnect(monkeypatch, tmp_path, _Aborted,
+                        {"k_0": _ConnectingBlock("k_0", 10)})
+
+    message = await _error("remove_block", {"block": "k_0"})
+
+    assert "не подтверждено" in message
+    assert "оборвалось" in message
+    assert "list_blocks" in message
+
+
 @pytest.mark.anyio
 async def test_disconnect_wire_refuses_when_input_has_no_line(monkeypatch, tmp_path):
     """Вход без линии — отказ: снимать нечего, реестр не тронут."""

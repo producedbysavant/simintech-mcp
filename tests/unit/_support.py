@@ -226,6 +226,13 @@ class _ConnectingBlock:
     def get_in_port(self, index=0):
         return _FakePort(self, False, index)
 
+    def get_port_count(self):
+        """Число портов — как у простого блока: вход и выход."""
+        return 2
+
+    def get_in_port_count(self):
+        return 1
+
     @property
     def id(self):
         return self._id
