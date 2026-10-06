@@ -126,7 +126,7 @@ claude mcp add simintech -- simintech-mcp
 | Пакет проектов | `create_pack`, `open_pack`, `close_pack`, `list_pack_projects`, `select_pack_project`, `pack_run`, `pack_step`, `pack_stop` |
 | Настройки проекта | `get_project_config`, `set_project_config` |
 | Блоки и связи | `add_block`, `remove_block`, `connect`, `disconnect_wire`, `list_blocks`, `list_wires` |
-| Параметры | `get_block_params`, `set_block_param`, `set_block_size` |
+| Параметры | `get_block_params`, `set_block_param`, `set_block_size`, `fit_port_blocks` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
 | Результаты | `read_output_file`, `summarize_output_file` |
@@ -137,7 +137,7 @@ claude mcp add simintech -- simintech-mcp
 | Снимок схемы | `save_screenshot` (кадр подгоняется сам; `fit=False` — текущий вид) |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 
-Всего инструментов — 56. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 57. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):

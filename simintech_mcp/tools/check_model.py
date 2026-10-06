@@ -44,9 +44,9 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from ..geometry import (
-    STUB, WIRE_PITCH, channel_width, collinear_overlap, cut_sizes, overlaps,
-    predicted_polyline, proper_crossing, rect_of, segment_hits_rect,
-    segments_of)
+    CHAR_WIDTH_ESTIMATE, STUB, WIRE_PITCH, channel_width, collinear_overlap,
+    cut_sizes, overlaps, predicted_polyline, proper_crossing, rect_of,
+    segment_hits_rect, segments_of)
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -88,11 +88,6 @@ def _off_grid(rect: "tuple[float, float, float, float]") -> bool:
             return True
     return False
 
-
-#: Грубая оценка ширины символа подписи, px. Точную ширину шрифта COM не
-#: отдаёт, поэтому оценка намеренно названа оценкой: она ловит случаи с
-#: запасом (имя в 20+ символов на 32-пиксельной рамке), а не косметику.
-CHAR_WIDTH_ESTIMATE = 8.0
 
 _POINT_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)i")
 
@@ -138,7 +133,7 @@ def _sweep_previous() -> None:
     _PREVIOUS_PATHS.clear()
 
 
-def _read_port_names(block: Block) -> Optional[List[str]]:
+def read_port_names(block: Block) -> Optional[List[str]]:
     """Имена сигналов из `PortNames`; `None` — прочитать не удалось.
 
     Пустой список и «не прочиталось» — разные вещи: у обычного блока портов
@@ -322,7 +317,7 @@ def check_model_layout() -> str:
             if _outside_sheet(rect):
                 outside_sheet.append(name)
         width = size[0] if size else None
-        names = _read_port_names(block)
+        names = read_port_names(block)
         if width and names:
             longest = max(names, key=len)
             estimate = len(longest) * CHAR_WIDTH_ESTIMATE

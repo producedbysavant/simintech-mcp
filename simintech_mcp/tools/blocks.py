@@ -27,6 +27,8 @@ from simintech_api.script_probe import (
 
 from .. import catalog, runtime, session
 from ..app import mcp
+from ..geometry import CHAR_WIDTH_ESTIMATE
+from .check_model import read_port_names
 from .layout import normalize_page_wires
 from .page_script import (
     bridge,
@@ -1673,6 +1675,166 @@ def set_block_size(block: str, width: float, height: float) -> str:
                 f"{_size_text(requested)})")
     return (f"Размер блока '{block}': {_size_text(before)} → "
             f"{_size_text(after)}{note}")
+
+
+#: Предел обхода субмоделей при подгонке порт-блоков: дерево страниц конечно,
+#: но цикл в данных не должен вешать инструмент.
+MAX_SUBMODEL_DEPTH = 8
+
+
+def _fit_one_port_block(block: Block, where: str,
+                        lines: List[str]) -> bool:
+    """Расширить один порт-блок под самую длинную подпись.
+
+    Ширина — по той же оценке, что ловит `check_model_layout`
+    (`CHAR_WIDTH_ESTIMATE` px на символ): правка и проверка обязаны сходиться,
+    иначе проверка продолжила бы ругаться на исправленное. Высота не
+    трогается — у порт-блоков она подчинена правилу 16 px на строку сигнала
+    (`set_block_size`). True — ширина изменена и подтверждена перечитыванием.
+    """
+    try:
+        name = block.get_name()
+    except Exception:                                         # noqa: BLE001
+        name = f"id={block.id}"
+    names = read_port_names(block)
+    if names is None:
+        lines.append(f"{where}: {name}: PortNames не читается — ширина не "
+                     f"проверена.")
+        return False
+    if not names:
+        return False
+    try:
+        width = float(block.get_size()[0])
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: {name}: ширина не читается "
+                     f"({type(exc).__name__}: {exc}) — пропущен.")
+        return False
+    longest = max(names, key=len)
+    estimate = len(longest) * CHAR_WIDTH_ESTIMATE
+    if estimate <= width:
+        return False
+    block.set_graph_prop("Width", _size_value(estimate))
+    try:
+        after = float(block.get_size()[0])
+    except Exception:                                         # noqa: BLE001
+        lines.append(f"{where}: {name}: ширина записана, но перечитать не "
+                     f"удалось — проверьте снимком.")
+        return True
+    if after == width:
+        lines.append(f"{where}: {name}: ширина не изменилась "
+                     f"({_size_value(width)}) — среда не приняла запись.")
+        return False
+    lines.append(
+        f"{where}: {name}: ширина {_size_value(width)} → "
+        f"{_size_value(after)} («{longest}» ~{estimate:g} px, оценка "
+        f"×{CHAR_WIDTH_ESTIMATE:g}).")
+    return True
+
+
+def _fit_page_port_blocks(project: Any, page: Page, where: str, depth: int,
+                          seen: set[int], affected: List[Any],
+                          lines: List[str]) -> int:
+    """Обойти страницу и её субмодели; вернуть число расширенных порт-блоков.
+
+    `project` передаётся явно (а не берётся `page.project`): страницу
+    субмодели достаёт `Project.submodel_page`, и инструменту так проще
+    тестироваться на подделке.
+    """
+    if depth > MAX_SUBMODEL_DEPTH:
+        lines.append(f"{where}: глубже {MAX_SUBMODEL_DEPTH} уровней не "
+                     f"обхожу.")
+        return 0
+    try:
+        blocks = page.get_blocks()
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: блоки не перечислить "
+                     f"({type(exc).__name__}: {exc}).")
+        return 0
+    changed = 0
+    for block in blocks:
+        try:
+            class_name = str(block.class_name).strip()
+        except Exception:                                     # noqa: BLE001
+            continue
+        if class_name in _PORT_HEIGHT_CLASSES:
+            if _fit_one_port_block(block, where, lines):
+                changed += 1
+                if page not in affected:
+                    affected.append(page)
+        elif class_name == "Субмодель":
+            try:
+                sub = project.submodel_page(block.id)
+            except Exception as exc:                          # noqa: BLE001
+                lines.append(
+                    f"{where}: страница субмодели блока id={block.id} не "
+                    f"читается ({type(exc).__name__}: {exc}) — пропущена.")
+                continue
+            if sub.id in seen:
+                continue
+            seen.add(sub.id)
+            try:
+                sub_name = block.get_name()
+            except Exception:                                 # noqa: BLE001
+                sub_name = str(block.id)
+            changed += _fit_page_port_blocks(
+                project, sub, f"{where} → субмодель '{sub_name}'", depth + 1,
+                seen, affected, lines)
+    return changed
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def fit_port_blocks() -> str:
+    """Расширить порт-блоки под подписи — на главной и во всех субмоделях.
+
+    Импорт (`import_model_text`/`createmodel`) нормализует рамку порт-блока
+    (ширина ~32 px) независимо от поданных `points` — длинное имя сигнала
+    (`PortNames`) вылезает за рамку, и владелец растягивает блоки руками в
+    GUI. Инструмент делает это сам: ширина = max(текущая, длина самой
+    длинной подписи × `CHAR_WIDTH_ESTIMATE`) — **та же оценка**, которой
+    `check_model_layout` ловит «текст шире рамки», поэтому после подгонки
+    его предупреждение снимается. Высота не трогается: у порт-блоков она
+    подчинена правилу 16 px на строку сигнала (`set_block_size`).
+
+    **Субмодели обходятся рекурсивно** (`Project.submodel_page`, предел
+    `MAX_SUBMODEL_DEPTH`): ширина портов ВНУТРИ субмоделей тем же импортом
+    тоже не задаётся (наблюдение владельца, 06.10.2026), а
+    `check_model_layout` смотрит только текущую страницу — без обхода такие
+    подписи не чинил бы никто. Активной в конце снова становится главная
+    страница.
+
+    После правок — перерисовка и трассировка линий затронутых страниц
+    (`NormalizeWire`), как у `set_block_size`.
+
+    **Только расширение.** Если подпись уже в рамке (по оценке) — блок не
+    трогается: ширину, выставленную руками, инструмент не «оптимизирует».
+    """
+    project = session.ensure_project()
+    main = project.get_main_page()
+    lines: List[str] = []
+    affected: List[Any] = []
+    seen = {main.id}
+    changed = _fit_page_port_blocks(
+        project, main, "главная", 0, seen, affected, lines)
+    if not changed:
+        head = (f"Все подписи порт-блоков в рамках (оценка "
+                f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
+                f"{len(seen)}).")
+        return head + ("\n" + "\n".join(lines) if lines else "")
+    project.repaint()
+    for page in affected:
+        try:
+            for wire in page.get_wires():
+                wire.normalize()
+        except Exception as exc:                              # noqa: BLE001
+            lines.append(f"линии страницы не трассированы "
+                         f"({type(exc).__name__}: {exc}).")
+    try:
+        main.activate()
+    except Exception:                                         # noqa: BLE001
+        pass
+    return (f"Порт-блоки расширены под подписи: {changed} "
+            f"(страниц обойдено: {len(seen)}).\n" + "\n".join(lines))
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).

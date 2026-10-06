@@ -12,6 +12,7 @@ from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
 
 from _support import (
     _FakeBlock,
+    _FakePage,
     _FakeProject,
     _FakeProjectWithCreate,
     _PlacedBlock,
@@ -1026,4 +1027,86 @@ async def test_set_block_size_port_unsat_also_at_bounds(monkeypatch):
                         {"block": "InputPort_0", "width": 200, "height": 11200})
 
     assert "нельзя вовсе" in text
+    assert block.graph_writes == []
+
+
+# ─── fit_port_blocks: ширина порт-блоков по подписям (mcp#19) ──────
+
+
+class _SubmodelBlock(_SizeBlock):
+    """Блок-субмодель: страница берётся у проекта по id блока."""
+
+    def __init__(self, name="sub_1", block_id=5):
+        super().__init__(name=name)
+        self.class_name = "Субмодель"
+        self.id = block_id
+
+
+class _SubmodelProject(_FakeProject):
+    """Проект с субмоделью: `submodel_page(id)` отдаёт её страницу."""
+
+    def __init__(self, blocks, subs):
+        super().__init__(blocks)
+        self._subs = subs
+
+    def submodel_page(self, block_id):
+        return self._subs[block_id]
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_widens_long_labels(monkeypatch):
+    """Длинная подпись: ширина растёт по той же оценке, что у проверки."""
+    long_name = "CoolTT_C_CoolSt_WorkSt"
+    block = _PortBlock(names=long_name + "\r\n")
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.graph_writes == [("Width", str(len(long_name) * 8))]
+    assert "Порт-блоки расширены под подписи: 1" in text
+    assert long_name in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_keeps_fitting_labels(monkeypatch):
+    """Подпись в рамке — блок не трогается: сужения нет."""
+    block = _PortBlock(names="in\r\n")
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.graph_writes == []
+    assert "в рамках" in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_walks_submodels(monkeypatch):
+    """Порт-блок ВНУТРИ субмодели расширяется; главная — снова активна."""
+    sub_block = _SubmodelBlock(block_id=5)
+    inner_name = "In_WorkSt_Channel_1"
+    inner = _PortBlock(name="in_1", names=inner_name + "\r\n")
+    sub_page = _FakePage({"in_1": inner})
+    project = _SubmodelProject({"sub_1": sub_block}, {5: sub_page})
+    monkeypatch.setattr(session, "_project", project)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert inner.graph_writes == [("Width", str(len(inner_name) * 8))]
+    assert "субмодель 'sub_1'" in text
+    assert project.get_main_page().activations >= 1, (
+        "после обхода субмоделей главная не возвращена активной")
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_names_unreadable_names(monkeypatch):
+    """Нечитаемый PortNames — примечанием, а не молчанием и не отказом."""
+    block = _UnreadableNamesPort()
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert "PortNames не читается" in text
     assert block.graph_writes == []
