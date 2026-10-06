@@ -215,16 +215,15 @@ def _overlaps(rect_a: "tuple[float, float, float, float]",
             and rect_a[1] < rect_b[3] and rect_b[1] < rect_a[3])
 
 
-def _overlap_report(page: Page, moved_names: set[str]) -> str:
-    """Строки о наложениях: пары с участием перемещённых блоков.
+def _page_rects(
+        page: Page,
+) -> "tuple[list[tuple[str, tuple[float, float, float, float]]], list[str]]":
+    """Габариты блоков страницы: (список, имена без геометрии).
 
-    Контракт «без наложений» проверяется фактом — по габаритам из `Points`
-    всех блоков страницы, прочитанным **после** перерисовки. Пары считаются
-    с участием перемещённых (любой из двух): чужой блок, перечисленный
-    раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
-    наложения — не наша правка, но подвинутый поверх чужого обязан быть
-    виден. Подписи (`LABEL_CLASSES`) пропускаются: карточка 60×40 накрывает
-    край своего блока — это не наложение (замер 02.10.2026).
+    Общий сбор для наложений и метрик маршрутов. Подписи (`LABEL_CLASSES`)
+    пропускаются: карточка 60×40 накрывает край своего блока — это не
+    наложение (замер 02.10.2026). Габарит — центр (`Points`) ± `size/2`;
+    одни `Points` габаритом не являются (замер 02.10.2026).
     """
     rects: list[tuple[str, tuple[float, float, float, float]]] = []
     no_geometry: list[str] = []
@@ -250,6 +249,28 @@ def _overlap_report(page: Page, moved_names: set[str]) -> str:
             no_geometry.append(name)
         else:
             rects.append((name, rect))
+    return rects, no_geometry
+
+
+def _overlap_report(
+        rects: "list[tuple[str, tuple[float, float, float, float]]]",
+        no_geometry: list[str],
+        moved_names: set[str],
+) -> str:
+    """Строки о наложениях: пары с участием перемещённых блоков.
+
+    Контракт «без наложений» проверяется фактом — по габаритам из `Points`
+    всех блоков страницы, прочитанным **после** перерисовки. Пары считаются
+    с участием перемещённых (любой из двух): чужой блок, перечисленный
+    раньше, не должен прятать пару (находка ревью 02.10.2026), а чужие
+    наложения — не наша правка, но подвинутый поверх чужого обязан быть
+    виден. Подписи (`LABEL_CLASSES`) пропускаются: карточка 60×40 накрывает
+    край своего блока — это не наложение (замер 02.10.2026).
+
+    Габариты приходят снаружи (`_page_rects`): у `layout_place` тем же
+    чтением пользуются метрики маршрутов, и второй проход по всем блокам
+    страницы (COM на блок) был бы лишним (находка ревью PR #92).
+    """
     overlaps: list[tuple[str, str]] = []
     for index, (name_a, rect_a) in enumerate(rects):
         for name_b, rect_b in rects[index + 1:]:
@@ -271,6 +292,63 @@ def _overlap_report(page: Page, moved_names: set[str]) -> str:
     return text
 
 
+def _routing_metrics(
+        rects: "list[tuple[str, tuple[float, float, float, float]]]",
+        pairs: "list[tuple[str, int, str, int]]",
+        aliases: dict[str, str],
+        available: dict[str, Block],
+        page: Page,
+) -> str:
+    """Метрики маршрутов по известным связям — строкой в ответ `layout_place`.
+
+    Числа считает та же чистая `audit_routing_segments`, что и `audit_routing`
+    (пересечения, общий трек с перекрытием, попадание в чужой габарит,
+    порядок входов, канал теснее разреза), но данные — только связи с
+    известными концами: реестр `connect`, а у открытого проекта — прямые
+    пары из выгрузки (`wire_pairs` — те же, по которым работает
+    выравнивание). Линии, которых мы не знаем, в метрику не входят — их
+    число сказано прямо, а полный аудит всех линий страницы (контур читает
+    концы каждой) даёт `audit_routing`. Пустые порты сюда не входят по той
+    же причине: `getportwireid` — функция языка, а не COM.
+    """
+    from .check_model import audit_routing_segments
+
+    wires: "dict[int, tuple[tuple[float, float], tuple[float, float]]]" = {}
+    for index, (src_name, out_index, dst_name, in_index) in enumerate(
+            pairs, start=1):
+        src_token = aliases.get(src_name, src_name)
+        dst_token = aliases.get(dst_name, dst_name)
+        src_block = available.get(src_token)
+        dst_block = available.get(dst_token)
+        if src_block is None or dst_block is None:
+            continue
+        try:
+            wires[index] = (src_block.get_out_port(out_index).get_coords(),
+                            dst_block.get_in_port(in_index).get_coords())
+        except Exception:                                     # noqa: BLE001
+            continue
+    if not wires or not rects:
+        return ""
+    try:
+        total = len(page.get_wires())
+    except Exception:                                         # noqa: BLE001
+        total = None
+    problems = audit_routing_segments(rects, wires)
+    # Без «из N»: `_wires_word` согласует именительный («1 линия»), а «1 из 1
+    # линии» требует родительного — союз «из» дал бы «1 из 1 линия» (находка
+    # ревью PR #92: «1 из 1 линий» — та же ловушка с другой стороны).
+    scope = (f"{len(wires)}; линий на странице — {total}"
+             if total is not None else f"{len(wires)}")
+    return (f"\nМетрики маршрутов (известные связи — {scope}): "
+            f"пересечений — {len(problems.crossings)}; "
+            f"общий трек с перекрытием — {len(problems.coincident)}; "
+            f"в чужом габарите — {len(problems.block_hits)}; "
+            f"порядок входов нарушен — {len(problems.port_order)}; "
+            f"канал теснее разреза — {len(problems.channel_overflow)}; "
+            f"вне канона (обратные/внутриколоночные) — "
+            f"{len(problems.unchecked)}. Все линии страницы — `audit_routing`.")
+
+
 def _wires_word(count: int) -> str:
     """Согласовать слово с числом: «1 линия», «2 линии», «5 линий».
 
@@ -290,11 +368,9 @@ def normalize_page_wires(page: Page) -> str:
 
     Трассируем все линии страницы, а не только созданные этой сессией:
     `page.get_wires()` их перечисляет (так же поступает `list_wires`), а
-    `normalize()` безопасен и на линии открытого проекта — выравнивание
-    остаётся только для связей текущей сессии: концы чужих линий через COM
-    не читаются. Порядок «перерисовка → трассировка» — на вызывающих: у
-    `normalize_only` перерисовка своя, в расстановке — условная (`if
-    shifted`).
+    `normalize()` безопасен и на линии открытого проекта. Порядок
+    «перерисовка → трассировка» — на вызывающих: у `normalize_only`
+    перерисовка своя, в расстановке — условная (`if shifted`).
 
     Текст один на оба режима намеренно: копия разошлась бы молча (находка
     ревью 04.10.2026), а «участки ортогональные» — утверждение, которого
@@ -360,6 +436,14 @@ def layout_place(block_ids: str = "", connections: str = "",
     свойства `Points`, и пересекающиеся пары называются в ответе: контракт
     «без наложений» виден фактом, а не предполагается. Пары считаются только
     с участием расставленных блоков — чужие наложения не наша правка.
+
+    **Метрики маршрутов.** По связям с известными концами (реестр `connect`,
+    а у открытого проекта — прямые пары из выгрузки: те же, что у
+    выравнивания) в ответе считаются пересечения, общий трек с перекрытием,
+    попадание в чужой габарит, порядок входов и канал теснее разреза — той
+    же чистой функцией, что у `audit_routing`. Линии без известных концов в
+    метрику не входят, и это сказано её числом: полный аудит всех линий
+    страницы (контур читает концы каждой) — `audit_routing`.
 
     **Сетка 8 px и стопки порт-блоков** (стандарт оформления владельца,
     02.10.2026): 1 квадратик разметки — 8×8; центры ставятся на сетку,
@@ -771,7 +855,17 @@ def layout_place(block_ids: str = "", connections: str = "",
             placed.add(available[token].get_name())
         except Exception:                                     # noqa: BLE001
             placed.add(str(available[token].id))
-    routes += _overlap_report(page, moved_names=placed)
+    # Габариты читаются один раз на весь ответ: наложения и метрики маршрутов
+    # пользуются одним и тем же сбором (`_page_rects`) — второй проход по
+    # всем блокам страницы был бы лишними COM-вызовами (находка ревью PR #92).
+    rects, no_geometry = _page_rects(page)
+    routes += _overlap_report(rects, no_geometry, placed)
+    # Метрики — по тем же парам, что и выравнивание: реестр `connect`, а у
+    # открытого проекта — прямые пары из выгрузки (`wire_pairs`). Так строка
+    # метрик появляется и там, где связей сессии нет вовсе (follow-up к PR
+    # #92 после мержа выравнивания по выгрузке).
+    if wire_pairs:
+        routes += _routing_metrics(rects, wire_pairs, aliases, available, page)
     return (repeated_note + "\n" +
             f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes)
 
@@ -1057,7 +1151,9 @@ def set_block_center(block: str = "", x: Optional[float] = None,
                 f"(центр до не прочитан) → ({cx:g}, {cy:g})")
         lines.append(f"  {name}: центр {move}")
     project.repaint()
-    routes = normalize_page_wires(page) + _overlap_report(page, moved_names)
+    rects, no_geometry = _page_rects(page)
+    routes = (normalize_page_wires(page)
+              + _overlap_report(rects, no_geometry, moved_names))
     return "\n".join(lines) + routes
 
 
