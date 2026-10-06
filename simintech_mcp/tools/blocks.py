@@ -1942,6 +1942,24 @@ def fit_port_blocks() -> str:
     return result
 
 
+#: Кавычечные литералы выгрузки: двойные с `\`-экранированием и одинарные
+#: с удвоением (строки языка). Содержимое вырезается перед подсчётом скобок.
+_QUOTED_LITERALS = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\'\'|[^\'])*\'')
+
+
+def _unquoted(line: str) -> str:
+    """Строка без содержимого кавычечных литералов — для счёта скобок.
+
+    Выгрузка несёт `script` страницы **одной строкой** с экранированными
+    `\\n` (живой пример в `test_language_contour_live`), а в тексте скрипта
+    бывают скобки (`writelnutf8(fid, "тест (1")`): одиночная `(` уводила
+    счётчик глубины навсегда, `top_level` перестал совпадать с записями, и
+    карта подписей возвращалась пустой — `fit_value_labels` молча отвечал
+    «подписи на месте» (находка ревью PR #96, воспроизведено).
+    """
+    return _QUOTED_LITERALS.sub("", line)
+
+
 def _constlabel_parents(text: str) -> Dict[str, str]:
     """Карта «подпись значения → блок-родитель» из выгрузки страницы.
 
@@ -1955,7 +1973,8 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
     страницах с совпавшими автоименами (`TextLabel7` у главной и субмодели
     в живой пробе) подпись могла быть «подтянута» по чужой паре. Глубина
     считается по скобкам построчно (скобки `points=[…]` сбалансированы в
-    строке): записи при глубине 1 — верхний уровень.
+    строке); содержимое кавычечных литералов в счёт не идёт (`_unquoted`) —
+    скрипт страницы и строковые значения иначе сбивают баланс.
     """
     result: Dict[str, str] = {}
     name = ""
@@ -1963,7 +1982,8 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
     parent = ""
     depth = 0
     for line in text.splitlines():
-        stripped = line.strip()
+        raw = line.strip()
+        stripped = _unquoted(raw)
         top_level = depth == 1
         depth += stripped.count("(") - stripped.count(")")
         match = re.match(r"^([A-Za-z_][\w]*):\s*\(\s*$", stripped)
@@ -1976,10 +1996,12 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
             continue
         if not name:
             continue
-        if stripped.startswith("type ="):
-            is_label = "constLabel" in stripped
-        elif "parentblock" in stripped and "=" in stripped:
-            parent = stripped.split("=", 1)[1].strip().strip(",").strip('"')
+        # Разбор значений — по исходной строке: `_unquoted` вырезает их
+        # содержимое, и по очищенной `"constLabel"` уже не найти.
+        if raw.startswith("type ="):
+            is_label = "constLabel" in raw
+        elif "parentblock" in raw and "=" in raw:
+            parent = raw.split("=", 1)[1].strip().strip(",").strip('"')
     if is_label and parent and name:
         result[name] = parent
     return result

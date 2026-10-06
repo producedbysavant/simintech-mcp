@@ -1227,6 +1227,31 @@ def test_constlabel_parents_skips_submodel_pairs():
     assert _constlabel_parents(text) == {"TextLabel7": "inner"}
 
 
+def test_constlabel_parents_ignores_brackets_in_quoted_values():
+    """Скобки в кавычечных значениях не сбивают счёт глубины.
+
+    Выгрузка несёт `script` страницы одной строкой с экранированными `\\n`
+    (живой пример — `test_language_contour_live`), и одиночная `(` в тексте
+    скрипта уводила счётчик вложенности: `top_level` перестал совпадать с
+    записями, карта возвращалась пустой — и `fit_value_labels` молча отвечал
+    «подписи на месте» (находка ревью PR #96).
+    """
+    from simintech_mcp.tools.blocks import _constlabel_parents
+
+    text = (
+        '(\n'
+        '  script = "writelnutf8(fid, \\"тест (1\\");",\n'
+        '  TextLabel3: (\n'
+        '    type = "constLabel",\n'
+        '    points=[(248 , 192)],\n'
+        '    parentblock = "k_0"\n'
+        '  )\n'
+        ')'
+    )
+
+    assert _constlabel_parents(text) == {"TextLabel3": "k_0"}
+
+
 @pytest.mark.anyio
 async def test_fit_value_labels_moves_label_to_parent(monkeypatch):
     """Подпись из (248,192) подтягивается к левому верхнему углу родителя."""
