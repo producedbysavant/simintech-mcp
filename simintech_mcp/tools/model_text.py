@@ -170,14 +170,19 @@ def parse_page_wires(text: str) -> "List[Tuple[str, str, str]]":
     return wires
 
 
-def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
-    """Рёбра страницы из выгрузки — с разрешением ветвей.
+def graph_from_wires(
+        wires: "List[Tuple[str, str, str]]") -> "List[Tuple[str, str]]":
+    """Рёбра страницы из записей проводов — с разрешением ветвей.
 
     Ветвь — не новый источник, а точка съёма с той же линии, поэтому её
     источник разрешается по исходному проводу. Без этого раскладчик не видит
     ветви боевой модели и кладёт каналы на 8 px уже канона за каждую.
+
+    Отделена от `parse_page_graph` ради `layout_place`: там из одной выгрузки
+    нужны и граф, и прямые пары, и двойной разбор целого текста (`parse_page_
+    wires` дважды) был бы лишним — на больших страницах это заметно
+    (находка ревью PR #91).
     """
-    wires = parse_page_wires(text)
     sources: "Dict[str, str]" = {
         name: _block_of(src) for name, src, _dst in wires}
 
@@ -192,7 +197,13 @@ def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
             for _name, src, dst in wires]
 
 
-def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
+def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
+    """Рёбра страницы из выгрузки — с разрешением ветвей (см. граф)."""
+    return graph_from_wires(parse_page_wires(text))
+
+
+def pairs_from_wires(
+        wires: "List[Tuple[str, str, str]]") -> "List[Tuple[str, int, str, int]]":
     """Прямые пары с индексами портов: (источник, out, приёмник, in).
 
     Только провода, у которых источник — блок (`src = "block:out:N"`). Ветвь
@@ -205,7 +216,7 @@ def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
     блок по ложной цели.
     """
     pairs: "List[Tuple[str, int, str, int]]" = []
-    for _name, src, dst in parse_page_wires(text):
+    for _name, src, dst in wires:
         src_block, out_sep, out_index = src.partition(":out:")
         dst_block, in_sep, in_index = dst.partition(":in:")
         if not out_sep or not in_sep:
@@ -214,6 +225,11 @@ def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
             continue
         pairs.append((src_block, int(out_index), dst_block, int(in_index)))
     return pairs
+
+
+def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
+    """Прямые пары из выгрузки (см. пары из записей проводов)."""
+    return pairs_from_wires(parse_page_wires(text))
 
 
 @mcp.tool()

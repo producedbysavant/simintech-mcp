@@ -538,9 +538,10 @@ def layout_place(block_ids: str = "", connections: str = "",
             # блоки встают в одну колонку, а ветви теряются вовсе — каналы
             # выходят уже канона на 8 px за каждую.
             from .model_text import (
+                graph_from_wires,
                 page_export_text,
-                parse_page_graph,
-                parse_page_pairs,
+                pairs_from_wires,
+                parse_page_wires,
             )
             try:
                 graph_text, _trunc, _outcome, _path = page_export_text()
@@ -548,8 +549,12 @@ def layout_place(block_ids: str = "", connections: str = "",
                 # Выгрузка — best-effort: не удалась, значит расстановка
                 # идёт без связей, и ответ об этом скажет, а не упадёт.
                 graph_text = ""
+            # Разбор выгрузки один: из записей проводов выводятся и граф, и
+            # пары — два `parse_page_wires` по одному тексту были бы лишней
+            # работой на больших страницах (находка ревью PR #91).
+            wires = parse_page_wires(graph_text)
             known = set(tokens)
-            for src_block, dst_block in parse_page_graph(graph_text):
+            for src_block, dst_block in graph_from_wires(wires):
                 if src_block not in known or dst_block not in known:
                     continue
                 if (src_block, dst_block) in seen_pairs:
@@ -559,9 +564,9 @@ def layout_place(block_ids: str = "", connections: str = "",
             # Пары с индексами портов — для выравнивания приёмников по
             # источникам: тем же выравниванием, что и по связям сессии
             # (ниже), но у открытого проекта концы линий даёт выгрузка.
-            # Ветви пропускает `parse_page_pairs`: у них не порт источника.
+            # Ветви пропускает `pairs_from_wires`: у них не порт источника.
             for src_block, out_index, dst_block, in_index in \
-                    parse_page_pairs(graph_text):
+                    pairs_from_wires(wires):
                 if src_block not in known or dst_block not in known:
                     continue
                 exported_pairs.append(
