@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path, PureWindowsPath
 
 from public_data_check import Findings, main, scan_text, scan_tree
 
@@ -71,6 +72,29 @@ def test_vendor_fixture_directory_is_allowed(tmp_path):
     fixture = tmp_path / "tests" / "fixtures" / "vendor-public" / "sample.tbl"
     fixture.parent.mkdir(parents=True)
     fixture.write_text("1 2 3", encoding="utf-8")
+    assert not scan_tree(tmp_path)
+
+
+def test_vendor_fixture_allowed_in_windows_path_form(tmp_path, monkeypatch):
+    """Путь в ОС-форме Windows не обходит исключение фикстур (находка #82).
+
+    До правки сравнение шло со `str(relative_to(...))` — формой ОС; на Windows
+    исключение с прямыми слэшами не срабатывало, и гейт помечал запрещённым
+    собственную разрешённую фикстуру (`tests\\fixtures\\vendor-public\\...`).
+    Форма Windows воспроизводится явно — тест ловит возврат к `str()` и на
+    Linux, где ОС сама такой формы не даёт.
+    """
+    fixture = tmp_path / "tests" / "fixtures" / "vendor-public" / "sample.tbl"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("1 2 3", encoding="utf-8")
+
+    real_relative_to = Path.relative_to
+
+    def windows_relative_to(self, root):
+        return PureWindowsPath(str(real_relative_to(self, root)))
+
+    monkeypatch.setattr(Path, "relative_to", windows_relative_to)
+
     assert not scan_tree(tmp_path)
 
 
