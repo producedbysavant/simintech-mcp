@@ -622,7 +622,8 @@ async def test_layout_place_reports_routing_metrics(monkeypatch):
 
     text = _text(await mcp.call_tool("layout_place", {}))
 
-    assert "Метрики маршрутов (известные связи — 1 из 1 линий)" in text
+    assert "Метрики маршрутов (известные связи — 1; линий на странице — 1)" in text
+    assert "канал теснее разреза — 0" in text
     assert "Все линии страницы — `audit_routing`" in text
 
 
