@@ -130,36 +130,56 @@ def page_export_text() -> "Tuple[str, bool, ContourOutcome, Path]":
     return text, truncated, outcome, Path(text_path)
 
 
-def _address(line: str) -> str:
-    """Блок или имя провода из строки адреса `src`/`dst`."""
-    value = line.split("=", 1)[1].strip().strip('",')
-    return value.split(":")[0]
+def _wire_value(line: str) -> str:
+    """Значение адреса `src`/`dst` из строки выгрузки (без кавычек)."""
+    return line.split("=", 1)[1].strip().strip('",')
+
+
+def _block_of(address: str) -> str:
+    """Имя блока или провода из адреса: часть до первого двоеточия."""
+    return address.split(":")[0]
+
+
+def parse_page_wires(text: str) -> "List[Tuple[str, str, str]]":
+    """Записи проводов страницы: (имя провода, адрес источника, адрес конца).
+
+    Адрес — как в выгрузке: у прямого провода `block:out:N` / `block:in:N`
+    (N — индекс порта), у ветви на месте источника стоит имя провода
+    (`src = "wireName:K"`): ветвь — не новый источник, а точка съёма с той же
+    линии (K — номер точки с нуля; замеры 2026-09-28/29). Разбор не решает,
+    что с записью делать: раскладке (`parse_page_graph`) нужен граф с
+    разрешением ветвей, выравниванию (`parse_page_pairs`) — только прямые
+    пары с индексами портов.
+    """
+    wires: "List[Tuple[str, str, str]]" = []
+    name = ""
+    src = ""
+    for raw in text.replace("\r\n", "\n").split("\n"):
+        line = raw.strip()
+        if line.endswith(": (") and not line.startswith("type"):
+            name, src = line[:-3], ""
+            continue
+        if not name:
+            continue
+        if line.startswith("src = "):
+            src = _wire_value(line)
+            continue
+        if line.startswith("dst = ") and src:
+            wires.append((name, src, _wire_value(line)))
+            src = ""
+    return wires
 
 
 def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
     """Рёбра страницы из выгрузки — с разрешением ветвей.
 
-    Запись провода: `src = "block:out:N"`, `dst = "block:in:N"`. У ветви на
-    месте источника стоит имя провода (`src = "wireName:K"`): ветвь — не новый
-    источник, а точка съёма с той же линии, поэтому её источник разрешается по
-    исходному проводу. Без этого раскладчик не видит ветви боевой модели и
-    кладёт каналы на 8 px уже канона за каждую.
+    Ветвь — не новый источник, а точка съёма с той же линии, поэтому её
+    источник разрешается по исходному проводу. Без этого раскладчик не видит
+    ветви боевой модели и кладёт каналы на 8 px уже канона за каждую.
     """
-    sources: "Dict[str, str]" = {}
-    pairs: "List[Tuple[str, str]]" = []
-    name = ""
-    for raw in text.replace("\r\n", "\n").split("\n"):
-        line = raw.strip()
-        if line.endswith(": (") and not line.startswith("type"):
-            name = line[:-3]
-            continue
-        if not name:
-            continue
-        if line.startswith("src = "):
-            sources[name] = _address(line)
-            continue
-        if line.startswith("dst = "):
-            pairs.append((name, _address(line)))
+    wires = parse_page_wires(text)
+    sources: "Dict[str, str]" = {
+        name: _block_of(src) for name, src, _dst in wires}
 
     def resolve(value: str) -> str:
         for _step in range(8):
@@ -168,7 +188,32 @@ def parse_page_graph(text: str) -> "List[Tuple[str, str]]":
             value = sources[value]
         return value
 
-    return [(resolve(sources[name]), dst) for name, dst in pairs]
+    return [(resolve(_block_of(src)), _block_of(dst))
+            for _name, src, dst in wires]
+
+
+def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
+    """Прямые пары с индексами портов: (источник, out, приёмник, in).
+
+    Только провода, у которых источник — блок (`src = "block:out:N"`). Ветвь
+    (`src = "wireName:K"`) пропускается: K — точка съёма с линии, а не порт
+    источника, и выравнивание по ней поставило бы выход источника под
+    случайную точку маршрута. Индексы N — те же, что у COM-адресации портов:
+    живой замер 06.10.2026 — у провода с `dst = "LangBlock_0:in:0"` конец
+    сошёлся по координате с первым входом блока. Незнакомый формат адреса
+    пропускается, а не угадывается: пара с выдуманным индексом сдвинула бы
+    блок по ложной цели.
+    """
+    pairs: "List[Tuple[str, int, str, int]]" = []
+    for _name, src, dst in parse_page_wires(text):
+        src_block, out_sep, out_index = src.partition(":out:")
+        dst_block, in_sep, in_index = dst.partition(":in:")
+        if not out_sep or not in_sep:
+            continue
+        if not (out_index.isdigit() and in_index.isdigit()):
+            continue
+        pairs.append((src_block, int(out_index), dst_block, int(in_index)))
+    return pairs
 
 
 @mcp.tool()
