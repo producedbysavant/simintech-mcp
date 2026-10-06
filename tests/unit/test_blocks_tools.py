@@ -836,6 +836,64 @@ def _install_size_contour(monkeypatch, tmp_path, blocks, bridge):
     return project
 
 
+class _UnactivatablePage(_FakePage):
+    """Страница, которую сделать текущей не удаётся (деградация сцены)."""
+
+    def activate(self):
+        raise RuntimeError("SetCurrentPage отказал")
+
+
+class _UnactivatableProject(_FakeProject):
+    """Проект, чья главная страница не активируется."""
+
+    def __init__(self, blocks):
+        super().__init__(blocks)
+        self._page = _UnactivatablePage(blocks)
+
+
+@pytest.mark.anyio
+async def test_set_block_size_activates_page_before_contour(monkeypatch,
+                                                            tmp_path):
+    """Запись по id идёт с активной страницей: скрипт ставится в текущую.
+
+    `SetPageScript` пишет в `GetCurentPage`, и `blk = <id>` ищется на ней:
+    без активации запись из GUI, уведённого в субмодель, ушла бы мимо блока
+    (находка ревью PR #94).
+    """
+    block = _SizeBlock()
+    project = _install_size_contour(monkeypatch, tmp_path, {"kx_0": block},
+                                    _size_bridge(block))
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "kx_0", "width": 140, "height": 80}))
+
+    assert project.get_main_page().activations >= 1, (
+        "контурный прогон без активной страницы: блок по id может не найтись")
+    assert "140x80" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_size_refuses_when_page_activation_fails(monkeypatch,
+                                                                 tmp_path):
+    """Не удалось активировать страницу — отказ, а не запись вслепую."""
+    from simintech_mcp.tools import page_script
+
+    block = _SizeBlock()
+    bridge = _size_bridge(block)
+    project = _UnactivatableProject({"kx_0": block})
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(session, "_client", _FakeClient())
+    monkeypatch.setattr(page_script, "ScriptBridge", bridge)
+
+    text = await _error("set_block_size",
+                        {"block": "kx_0", "width": 140, "height": 80})
+
+    assert "активной" in text
+    assert bridge.body == "", "контур звали, хотя страница не активирована"
+    assert block.get_size() == (32.0, 32.0), "проект не изменён"
+
+
 class _PortBlock(_SizeBlock):
     """Порт-блок: класс «Порт входа», список сигналов читается из PortNames.
 
