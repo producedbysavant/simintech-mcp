@@ -608,6 +608,25 @@ async def test_layout_place_bare_reports_unknown_links(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_reports_routing_metrics(monkeypatch):
+    """Метрики маршрутов — по известным связям, остальные честно вне метрики.
+
+    Числа считает `audit_routing_segments` (та же, что у `audit_routing`), но
+    только по связям, чьи концы известны: у чужих линий концов через COM нет.
+    Линии без известных концов названы числом, а не выданы за проверенные.
+    """
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    await mcp.call_tool("connect", {"src": "k_0", "dst": "kx_0"})
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert "Метрики маршрутов (известные связи — 1 из 1 линий)" in text
+    assert "Все линии страницы — `audit_routing`" in text
+
+
+@pytest.mark.anyio
 async def test_layout_place_bare_tolerates_comma_in_block_name(monkeypatch):
     """Имя блока с запятой не срывает вызов «расставь всё» (находка ревью).
 

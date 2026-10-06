@@ -272,5 +272,8 @@ async def test_resource_model_checklist_covers_key_rules():
 
     assert "layout_place" in text
     assert "check_model_layout" in text
+    assert "audit_routing" in text
+    assert "fit_port_blocks" in text
+    assert "fit_value_labels" in text
     assert "16 px" in text
     assert "GUI" in text  # непроверяемое машинно названо
