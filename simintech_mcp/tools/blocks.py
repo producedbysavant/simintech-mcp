@@ -21,6 +21,7 @@ from simintech_api.exceptions import PortError, ScriptBridgeError
 from simintech_api.script_probe import (
     OUTCOME_ABORTED,
     OUTCOME_NOT_COMPILED,
+    OUTCOME_SECTION_NOT_RUN,
     ContourOutcome,
 )
 
@@ -450,6 +451,21 @@ def _page_wire_ids(page: Any) -> Optional[List[int]]:
         return None
 
 
+def _page_has_block_id(page: Any, block_id: int) -> Optional[bool]:
+    """Есть ли на странице блок с этим id; None — перечислить не удалось.
+
+    Подтверждение удаления — по id, а не по имени-токену: у пары
+    «В память»/«Из памяти» имя одно на две половины, и `find_block` вернул
+    бы вторую — «не подтверждено» после настоящего удаления (находка ревью
+    06.10.2026).
+    """
+    try:
+        return any(getattr(block, "id", None) == block_id
+                   for block in page.get_blocks())
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
 def _vanished_wires(before_ids: Optional[List[int]],
                     after_ids: Optional[List[int]]) -> List[int]:
     """Идентификаторы линий, пропавших между двумя перечислениями страницы.
@@ -705,6 +721,12 @@ def _remove_block_body(block_id: int, in_count: int, out_count: int,
     или нет» принимает вызывающий.
     """
     lines: List[str] = [f"blk = {block_id};"]
+    # Набор уже увиденных линий — строкой: `pos` ищет подстроку (справка
+    # языка: `indx = pos(sub_str, str)`). Без него линия, у которой ОБА
+    # конца на портах этого блока, снималась бы (или считалась) дважды —
+    # второй `removeprimitiv` по снятому id мог бы оборвать тело, а
+    # счётчики в ответе удвоились бы (находка ревью 06.10.2026).
+    lines.append('seen = "|";')
     if not with_wires:
         lines.append("busy = 0;")
     for direction, getter, count in (("in", "getinportid", in_count),
@@ -722,14 +744,18 @@ def _remove_block_body(block_id: int, in_count: int, out_count: int,
         lines.append("  if p <> 0 then begin")
         lines.append("    w = getportwireid(p);")
         lines.append("    if w <> 0 then begin")
+        lines.append('      if pos("|" + inttostr(w) + "|", seen) = 0 then '
+                     "begin")
+        lines.append('        seen = seen + inttostr(w) + "|";')
         if with_wires:
-            lines.append("      removeprimitiv(w);")
-            lines.append('      writelnutf8(fid, "cut-'
+            lines.append("        removeprimitiv(w);")
+            lines.append('        writelnutf8(fid, "cut-'
                          f'{direction}=" + inttostr(w));')
         else:
-            lines.append('      writelnutf8(fid, "wire-'
+            lines.append('        writelnutf8(fid, "wire-'
                          f'{direction}=" + inttostr(w));')
-            lines.append("      busy = busy + 1;")
+            lines.append("        busy = busy + 1;")
+        lines.append("      end;")
         lines.append("    end;")
         lines.append("  end;")
         lines.append("  i = i + 1;")
@@ -867,13 +893,25 @@ def remove_block(block: str, with_wires: bool = False) -> str:
             f"{detail} Успело ли удаление выполниться — по этому исходу не "
             f"определить: проверьте схему (`list_blocks`, `list_wires`). "
             f"Прежний скрипт страницы возвращён.")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            "удаление не подтверждено: секция `initialization` не "
+            "выполнилась — тело не запускалось, блок не удалён (причина по "
+            "этому признаку не определяется). Повторите вызов.")
     reply = _parse_remove_reply(outcome.lines)
-    if reply.bad_port:
+    if reply.bad_port and reply.kind != "removed":
+        # Состав портов разошёлся (пересчёт? undirected?) — тело ответа об
+        # удалении не оставило. Отказ; линии, снятые до места отказа,
+        # учитываются перечислением страницы, чтобы реестр не держал мёртвые
+        # записи (находка ревью 06.10.2026).
+        for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
+            session.forget_wire(wire_id)
         raise ToolError(
             f"удаление не подтверждено: среда не нашла {reply.bad_port}-порт "
             f"блока в контуре, хотя через COM состав портов читается. Порт "
             f"мог пересоздаться между проверкой и прогоном — повторите "
-            f"вызов; если повтор не помогает, сверьте блок со схемой.")
+            f"вызов; если повтор не помогает, сверьте блок со схемой. Блок "
+            f"НЕ удалён; проверьте, не осталось ли висячих линий.")
     if reply.kind == "busy" and not with_wires:
         listed = ", ".join(str(wire_id) for wire_id in reply.wires)
         shown = f": {listed}" if listed else ""
@@ -887,13 +925,21 @@ def remove_block(block: str, with_wires: bool = False) -> str:
             "удаление не подтверждено: тело отработало, но не оставило "
             "ответа — что оно успело сделать, по этому признаку не "
             "определить. Проверьте схему (`list_blocks`, `list_wires`).")
-    # «Удалён» — по среде: блок больше не находится; при `with_wires` — ещё и
-    # число линий уменьшилось (снятие могло унести и чужие концы линии).
-    if _resolve_block(page, block) is not None:
+    # «Удалён» — по среде и по ID, а не по исходному токену: у пары
+    # «В память»/«Из памяти» имя одно на две половины, и проверка токеном
+    # нашла бы вторую — «не подтверждено» после настоящего удаления (находка
+    # ревью 06.10.2026). При `with_wires` — ещё и число линий уменьшилось.
+    present = _page_has_block_id(page, target.id)
+    if present is None:
         raise ToolError(
-            f"удаление не подтверждено: блок '{name}' по-прежнему находится "
-            f"на странице. Повторите вызов, а если повтор не помогает — "
-            f"сообщите среду и версию.")
+            "удаление не подтверждено: перечислить блоки страницы не удалось "
+            "(сбой чтения через COM) — подтвердить нечем. Проверьте схему "
+            "(`list_blocks`).")
+    if present:
+        raise ToolError(
+            f"удаление не подтверждено: блок '{name}' (id={target.id}) "
+            f"по-прежнему найден на странице. Повторите вызов, а если повтор "
+            f"не помогает — сообщите среду и версию.")
     after_ids = _page_wire_ids(page)
     vanished = _vanished_wires(before_ids, after_ids)
     if (with_wires and reply.wires
@@ -910,8 +956,17 @@ def remove_block(block: str, with_wires: bool = False) -> str:
         for wire_id in reply.wires:
             session.forget_wire(wire_id)
     project.repaint()
-    routes = normalize_page_wires(page)
     notes: List[str] = []
+    if reply.bad_port:
+        notes.append(
+            f"ВНИМАНИЕ: {reply.bad_port}-порт блока в контуре не читался — "
+            f"линии этого порта могли не сняться; проверьте схему.")
+    try:
+        routes = normalize_page_wires(page)
+    except Exception:                                         # noqa: BLE001
+        routes = ""
+        notes.append("Линии не трассированы: перечислить их не удалось "
+                     "(сбой чтения через COM) — проверьте схему.")
     if before_ids is not None and after_ids is not None:
         note = (f"Линий связи на странице: {len(before_ids)} → "
                 f"{len(after_ids)}.")

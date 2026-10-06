@@ -809,6 +809,8 @@ def test_remove_block_body_when_wires_not_touched():
     assert "while i < 2 do begin" in body, "входы не перебираются"
     assert "while i < 1 do begin" in body, "выходы не перебираются"
     assert "for i :=" not in body, "`for` в контуре не компилируется"
+    assert 'seen = "|";' in body, "нет набора линий: повтор не отсекается"
+    assert 'pos("|" + inttostr(w) + "|", seen) = 0' in body
     assert 'writelnutf8(fid, "busy=" + inttostr(busy))' in body
     assert "removeprimitiv(blk)" in body
     assert "removeprimitiv(w)" not in body, "линии не должны сниматься"
@@ -930,6 +932,72 @@ async def test_remove_block_refuses_when_block_still_found(monkeypatch, tmp_path
 
     assert "не подтверждено" in message
     assert "по-прежнему" in message
+
+
+@pytest.mark.anyio
+async def test_remove_block_confirms_by_id_for_shared_name(monkeypatch, tmp_path):
+    """Пара с общим именем: подтверждение по id не спутает вторую половину.
+
+    У «В память»/«Из памяти» имя одно (`#m1`); перерезолв токеном нашёл бы
+    оставшуюся половину и отчитался «не подтверждено» после настоящего
+    удаления (находка ревью 06.10.2026).
+    """
+    first = _ConnectingBlock("#m1", 10)
+    second = _ConnectingBlock("#m1", 11)
+    blocks = {"first": first, "second": second}
+
+    class _Removes(_BridgeReplies):
+        lines = ["removed=10"]
+        on_run = staticmethod(lambda: blocks.pop("first", None))
+
+    _install_disconnect(monkeypatch, tmp_path, _Removes, blocks)
+    page = session.current_project().get_main_page()
+    monkeypatch.setattr(
+        page, "find_block",
+        lambda name: next((b for b in page.get_blocks()
+                           if b.get_name() == name), None))
+
+    text = _text(await mcp.call_tool("remove_block", {"block": "#m1"}))
+
+    assert "удалён" in text and "id=10" in text
+    assert second is not None, "вторая половина пары не должна удаляться"
+
+
+@pytest.mark.anyio
+async def test_remove_block_warns_when_port_unread_but_removed(
+        monkeypatch, tmp_path):
+    """Порт не прочитался, а блок удалён: успех с предупреждением, не отказ.
+
+    Отказ здесь врал бы «повторите» (блока уже нет), а «ничего не изменено» —
+    о линиях, снятых до места отказа (находка ревью 06.10.2026).
+    """
+    blocks = {"k_0": _ConnectingBlock("k_0", 10)}
+
+    class _Removes(_BridgeReplies):
+        lines = ["err=no-out-port", "removed=10"]
+        on_run = staticmethod(lambda: blocks.pop("k_0", None))
+
+    _install_disconnect(monkeypatch, tmp_path, _Removes, blocks)
+
+    text = _text(await mcp.call_tool("remove_block", {"block": "k_0"}))
+
+    assert "удалён" in text
+    assert "не читался" in text
+
+
+@pytest.mark.anyio
+async def test_remove_block_refuses_when_section_not_run(monkeypatch, tmp_path):
+    """Секция не выполнилась — честный отказ, а не «тело отработало»."""
+    class _NotRun(_BridgeReplies):
+        kind = "section-not-run"
+        lines = []
+
+    _install_disconnect(monkeypatch, tmp_path, _NotRun,
+                        {"k_0": _ConnectingBlock("k_0", 10)})
+
+    message = await _error("remove_block", {"block": "k_0"})
+
+    assert "не выполнилась" in message
 
 
 @pytest.mark.anyio
