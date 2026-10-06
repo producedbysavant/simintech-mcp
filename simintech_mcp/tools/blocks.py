@@ -702,8 +702,7 @@ def disconnect_wire(src: str, dst: str,
             f"{describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
-def _remove_block_body(block_id: int, in_count: int, out_count: int,
-                       with_wires: bool) -> str:
+def _remove_block_body(block_id: int, with_wires: bool) -> str:
     """Тело удаления блока для контура: только удаление, отдельным прогоном.
 
     Дефект вендора (access violation `mbtylib.dll` на старте расчёта) даёт
@@ -714,13 +713,18 @@ def _remove_block_body(block_id: int, in_count: int, out_count: int,
     переживает (живые замеры 06.10.2026, R1b). В теле поэтому нет ни одного
     создания.
 
-    Линии блока ищутся по портам (`getportwireid`): концы линий через COM не
-    читаются, а порт называет подключённую к нему линию. Числа портов
-    приходят из COM — тело их только перебирает. При `with_wires=False`
-    линии не трогаются: тело называет их, блок остаётся; решение «снимать
-    или нет» принимает вызывающий.
+    Порты перебираются **по общему индексу** (`getblockportcount` +
+    `getblockportid`): перебор отдельно входов и выходов пропускал бы
+    ненаправленные порты — линия на них осталась бы сиротой при «успехе»
+    (находка ревью 06.10.2026). Линии блока читаются `getportwireid`: концы
+    линий через COM не читаются, а порт называет подключённую к нему линию.
+    При `with_wires=False` линии не трогаются: тело называет их, блок
+    остаётся; решение «снимать или нет» принимает вызывающий.
     """
-    lines: List[str] = [f"blk = {block_id};"]
+    lines: List[str] = [
+        f"blk = {block_id};",
+        "nports = getblockportcount(blk);",
+    ]
     # Набор уже увиденных линий — строкой: `pos` ищет подстроку (справка
     # языка: `indx = pos(sub_str, str)`). Без него линия, у которой ОБА
     # конца на портах этого блока, снималась бы (или считалась) дважды —
@@ -729,37 +733,30 @@ def _remove_block_body(block_id: int, in_count: int, out_count: int,
     lines.append('seen = "|";')
     if not with_wires:
         lines.append("busy = 0;")
-    for direction, getter, count in (("in", "getinportid", in_count),
-                                     ("out", "getoutportid", out_count)):
-        if count <= 0:
-            continue
-        # Цикл — `while`, а не `for`: форма `for i := 0 to N` в контуре не
-        # компилируется (живой прогон 06.10.2026, «тело не собралось»), а
-        # `while` проверена живыми телами проб (серия removeprimitiv 04.10).
-        lines.append("i = 0;")
-        lines.append(f"while i < {count} do begin")
-        lines.append(f"  p = {getter}(blk, i);")
-        lines.append('  if p = 0 then writelnutf8(fid, '
-                     f'"err=no-{direction}-port");')
-        lines.append("  if p <> 0 then begin")
-        lines.append("    w = getportwireid(p);")
-        lines.append("    if w <> 0 then begin")
-        lines.append('      if pos("|" + inttostr(w) + "|", seen) = 0 then '
-                     "begin")
-        lines.append('        seen = seen + inttostr(w) + "|";')
-        if with_wires:
-            lines.append("        removeprimitiv(w);")
-            lines.append('        writelnutf8(fid, "cut-'
-                         f'{direction}=" + inttostr(w));')
-        else:
-            lines.append('        writelnutf8(fid, "wire-'
-                         f'{direction}=" + inttostr(w));')
-            lines.append("        busy = busy + 1;")
-        lines.append("      end;")
-        lines.append("    end;")
-        lines.append("  end;")
-        lines.append("  i = i + 1;")
-        lines.append("end;")
+    # Цикл — `while`, а не `for`: форма `for i := 0 to N` в контуре не
+    # компилируется (живой прогон 06.10.2026, «тело не собралось»), а
+    # `while` проверена живыми телами проб (серия removeprimitiv 04.10).
+    lines.append("i = 0;")
+    lines.append("while i < nports do begin")
+    lines.append("  p = getblockportid(blk, i);")
+    lines.append('  if p = 0 then writelnutf8(fid, "err=no-port");')
+    lines.append("  if p <> 0 then begin")
+    lines.append("    w = getportwireid(p);")
+    lines.append("    if w <> 0 then begin")
+    lines.append('      if pos("|" + inttostr(w) + "|", seen) = 0 then '
+                 "begin")
+    lines.append('        seen = seen + inttostr(w) + "|";')
+    if with_wires:
+        lines.append("        removeprimitiv(w);")
+        lines.append('        writelnutf8(fid, "cut=" + inttostr(w));')
+    else:
+        lines.append('        writelnutf8(fid, "wire=" + inttostr(w));')
+        lines.append("        busy = busy + 1;")
+    lines.append("      end;")
+    lines.append("    end;")
+    lines.append("  end;")
+    lines.append("  i = i + 1;")
+    lines.append("end;")
     if with_wires:
         lines.append("removeprimitiv(blk);")
         lines.append('writelnutf8(fid, "removed=" + inttostr(blk));')
@@ -778,13 +775,13 @@ class _RemoveReply(NamedTuple):
 
     `kind` — «removed» | «busy» | «unknown»; `wires` — подключённые линии
     (при «busy») или снятые (при «removed» в режиме `with_wires`);
-    `bad_port` — «in»/«out», если среда не нашла порт в контуре.
+    `bad_port` — True, если среда не отдала порт по индексу в контуре.
     """
 
     kind: str
     block_id: int = 0
     wires: Tuple[int, ...] = ()
-    bad_port: str = ""
+    bad_port: bool = False
 
 
 def _int_after_eq(text: str) -> int:
@@ -798,23 +795,20 @@ def _int_after_eq(text: str) -> int:
 def _parse_remove_reply(lines: List[str]) -> _RemoveReply:
     """Разобрать строки тела: что снято/занято — или «ответа нет»."""
     wires: List[int] = []
-    bad_port = ""
+    bad_port = False
     block_id = 0
     removed = False
     busy = False
     for line in lines:
         text = line.strip()
-        if text == "err=no-in-port":
-            bad_port = "in"
-        elif text == "err=no-out-port":
-            bad_port = "out"
+        if text == "err=no-port":
+            bad_port = True
         elif text.startswith("removed="):
             block_id = _int_after_eq(text)
             removed = True
         elif text.startswith("busy="):
             busy = True
-        elif text.startswith(("wire-in=", "wire-out=",
-                              "cut-in=", "cut-out=")):
+        elif text.startswith(("wire=", "cut=")):
             wires.append(_int_after_eq(text))
     if removed:
         return _RemoveReply("removed", block_id=block_id, wires=tuple(wires),
@@ -863,18 +857,10 @@ def remove_block(block: str, with_wires: bool = False) -> str:
         name = target.get_name()
     except Exception:                                         # noqa: BLE001
         name = block.strip()
-    try:
-        in_count = target.get_in_port_count()
-        out_count = max(0, target.get_port_count() - in_count)
-    except Exception as exc:                                  # noqa: BLE001
-        raise ToolError(
-            f"состав портов блока '{name}' прочитать не удалось "
-            f"({type(exc).__name__}: {exc}) — удаление отменено: без состава "
-            f"портов линии блока не найти.") from exc
 
     before_ids = _page_wire_ids(page)
     outcome = _run_contour_body(
-        _remove_block_body(target.id, in_count, out_count, with_wires),
+        _remove_block_body(target.id, with_wires),
         failed="удалить блок не удалось")
     if outcome.kind == OUTCOME_NOT_COMPILED:
         raise ToolError(
@@ -900,18 +886,18 @@ def remove_block(block: str, with_wires: bool = False) -> str:
             "этому признаку не определяется). Повторите вызов.")
     reply = _parse_remove_reply(outcome.lines)
     if reply.bad_port and reply.kind != "removed":
-        # Состав портов разошёлся (пересчёт? undirected?) — тело ответа об
-        # удалении не оставило. Отказ; линии, снятые до места отказа,
-        # учитываются перечислением страницы, чтобы реестр не держал мёртвые
-        # записи (находка ревью 06.10.2026).
+        # Порт не отдался по индексу — тело ответа об удалении не оставило.
+        # Отказ; линии, снятые до места отказа, учитываются перечислением
+        # страницы, чтобы реестр не держал мёртвые записи (находка ревью
+        # 06.10.2026).
         for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
             session.forget_wire(wire_id)
         raise ToolError(
-            f"удаление не подтверждено: среда не нашла {reply.bad_port}-порт "
-            f"блока в контуре, хотя через COM состав портов читается. Порт "
-            f"мог пересоздаться между проверкой и прогоном — повторите "
-            f"вызов; если повтор не помогает, сверьте блок со схемой. Блок "
-            f"НЕ удалён; проверьте, не осталось ли висячих линий.")
+            "удаление не подтверждено: среда не отдала порт блока по "
+            "индексу в контуре (общий перебор портов). Порт мог "
+            "пересоздаться между проверкой и прогоном — повторите вызов; "
+            "если повтор не помогает, сверьте блок со схемой. Блок НЕ "
+            "удалён; проверьте, не осталось ли висячих линий.")
     if reply.kind == "busy" and not with_wires:
         listed = ", ".join(str(wire_id) for wire_id in reply.wires)
         shown = f": {listed}" if listed else ""
@@ -959,8 +945,8 @@ def remove_block(block: str, with_wires: bool = False) -> str:
     notes: List[str] = []
     if reply.bad_port:
         notes.append(
-            f"ВНИМАНИЕ: {reply.bad_port}-порт блока в контуре не читался — "
-            f"линии этого порта могли не сняться; проверьте схему.")
+            "ВНИМАНИЕ: порт блока в контуре не читался — линия этого порта "
+            "могла не сняться; проверьте схему.")
     try:
         routes = normalize_page_wires(page)
     except Exception:                                         # noqa: BLE001

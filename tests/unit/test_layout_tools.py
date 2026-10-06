@@ -802,12 +802,14 @@ def test_remove_block_body_when_wires_not_touched():
     """Тело при with_wires=False линии только называет — не снимает."""
     from simintech_mcp.tools.blocks import _remove_block_body
 
-    body = _remove_block_body(10, 2, 1, False)
+    body = _remove_block_body(10, False)
 
     assert "blk = 10;" in body
-    assert "getinportid(blk, i)" in body and "getoutportid(blk, i)" in body
-    assert "while i < 2 do begin" in body, "входы не перебираются"
-    assert "while i < 1 do begin" in body, "выходы не перебираются"
+    assert "nports = getblockportcount(blk);" in body
+    assert "getblockportid(blk, i)" in body, "порты — общим индексом"
+    assert "getinportid" not in body and "getoutportid" not in body, (
+        "перебор по направлениям пропускал бы ненаправленные порты")
+    assert "while i < nports do begin" in body
     assert "for i :=" not in body, "`for` в контуре не компилируется"
     assert 'seen = "|";' in body, "нет набора линий: повтор не отсекается"
     assert 'pos("|" + inttostr(w) + "|", seen) = 0' in body
@@ -820,22 +822,12 @@ def test_remove_block_body_with_wires_cuts_lines():
     """Тело при with_wires=True снимает линии и блок, без ветки busy."""
     from simintech_mcp.tools.blocks import _remove_block_body
 
-    body = _remove_block_body(10, 1, 1, True)
+    body = _remove_block_body(10, True)
 
     assert "removeprimitiv(w)" in body
     assert "busy" not in body
     assert "removeprimitiv(blk)" in body
-    assert "cut-in=" in body and "cut-out=" in body
-
-
-def test_remove_block_body_skips_zero_port_loops():
-    """Портов нет — циклов нет: `for 0 to -1` живьём не измерялся."""
-    from simintech_mcp.tools.blocks import _remove_block_body
-
-    body = _remove_block_body(10, 0, 0, False)
-
-    assert "while i" not in body
-    assert "removeprimitiv(blk)" in body
+    assert '"cut=" + inttostr(w)' in body
 
 
 @pytest.mark.anyio
@@ -874,7 +866,7 @@ async def test_remove_block_refuses_when_wires_connected(monkeypatch, tmp_path):
     saved = list(session.WIRES)
 
     class _Busy(_BridgeReplies):
-        lines = ["wire-in=77", "busy=1"]
+        lines = ["wire=77", "busy=1"]
 
     try:
         _install_disconnect(monkeypatch, tmp_path, _Busy, {"k_0": block})
@@ -902,7 +894,7 @@ async def test_remove_block_with_wires_forgets_lines(monkeypatch, tmp_path):
         blocks.pop("k_0", None)
 
     class _Cuts(_BridgeReplies):
-        lines = ["cut-in=77", "removed=10"]
+        lines = ["cut=77", "removed=10"]
         on_run = staticmethod(_effect)
 
     try:
@@ -974,7 +966,7 @@ async def test_remove_block_warns_when_port_unread_but_removed(
     blocks = {"k_0": _ConnectingBlock("k_0", 10)}
 
     class _Removes(_BridgeReplies):
-        lines = ["err=no-out-port", "removed=10"]
+        lines = ["err=no-port", "removed=10"]
         on_run = staticmethod(lambda: blocks.pop("k_0", None))
 
     _install_disconnect(monkeypatch, tmp_path, _Removes, blocks)
