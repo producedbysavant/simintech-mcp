@@ -48,10 +48,13 @@ MCP-сервер (FastMCP) для управления средой динами
   поэтому инструменты языкового слоя (`import_model_text`, `run_page_script`,
   `inject_submodel_script`) и `disconnect_wire` ставят тело именно в эту
   секцию, а не под `if firststep then`, как старая проба.
-- **Удаление БЛОКОВ не поддерживается.** `removeprimitiv` блок убирает, но
-  следующий `ProjectStart` падает (access violation в `mbtylib.dll`; замер
-  2026-09-29, воспроизведён на четырёх прогонах). Пока дефект не исправлен,
-  модель правят заново, а не удалением. На **линии** дефект не
+- **Удаление БЛОКОВ — отдельным прогоном** (`remove_block`).
+  `removeprimitiv` блок убирает, но связка «`createmodel` и удаление в ОДНОМ
+  прогоне `initialization`» роняет следующий `ProjectStart` (access violation
+  в `mbtylib.dll`; замеры 04.10.2026, повтор на 2.26.9.29 — 06.10.2026;
+  дефект вендора). `remove_block` удаляет отдельным прогоном и ничего в нём
+  не создаёт — дефект не задевается (живая приёмка 06.10.2026). На **линии**
+  дефект не
   распространяется: `disconnect_wire` снимает линию языковым путём, и среду
   это не роняет; но расчёт после снятия может **структурно стоять** — если
   вход остался без подключённой линии (в том числе когда вторая линия во
@@ -122,7 +125,7 @@ claude mcp add simintech -- simintech-mcp
 | Проекты | `create_project`, `open_project`, `reload_project`, `save_project`, `close_project`, `set_calc_time` |
 | Пакет проектов | `create_pack`, `open_pack`, `close_pack`, `list_pack_projects`, `select_pack_project`, `pack_run`, `pack_step`, `pack_stop` |
 | Настройки проекта | `get_project_config`, `set_project_config` |
-| Блоки и связи | `add_block`, `connect`, `disconnect_wire`, `list_blocks`, `list_wires` |
+| Блоки и связи | `add_block`, `remove_block`, `connect`, `disconnect_wire`, `list_blocks`, `list_wires` |
 | Параметры | `get_block_params`, `set_block_param`, `set_block_size` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
@@ -134,7 +137,7 @@ claude mcp add simintech -- simintech-mcp
 | Снимок схемы | `save_screenshot` (кадр подгоняется сам; `fit=False` — текущий вид) |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 
-Всего инструментов — 55. Актуальный состав — всегда в `tools/list`; таблица
+Всего инструментов — 56. Актуальный состав — всегда в `tools/list`; таблица
 выше только для ориентира.
 
 `create_project` создаёт проект **из шаблона** («Схема модели общего вида»):

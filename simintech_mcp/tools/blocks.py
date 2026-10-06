@@ -11,7 +11,7 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
@@ -21,11 +21,13 @@ from simintech_api.exceptions import PortError, ScriptBridgeError
 from simintech_api.script_probe import (
     OUTCOME_ABORTED,
     OUTCOME_NOT_COMPILED,
+    OUTCOME_SECTION_NOT_RUN,
     ContourOutcome,
 )
 
 from .. import catalog, runtime, session
 from ..app import mcp
+from .layout import normalize_page_wires
 from .page_script import (
     bridge,
     describe_outcome,
@@ -449,6 +451,21 @@ def _page_wire_ids(page: Any) -> Optional[List[int]]:
         return None
 
 
+def _page_has_block_id(page: Any, block_id: int) -> Optional[bool]:
+    """Есть ли на странице блок с этим id; None — перечислить не удалось.
+
+    Подтверждение удаления — по id, а не по имени-токену: у пары
+    «В память»/«Из памяти» имя одно на две половины, и `find_block` вернул
+    бы вторую — «не подтверждено» после настоящего удаления (находка ревью
+    06.10.2026).
+    """
+    try:
+        return any(getattr(block, "id", None) == block_id
+                   for block in page.get_blocks())
+    except Exception:                                         # noqa: BLE001
+        return None
+
+
 def _vanished_wires(before_ids: Optional[List[int]],
                     after_ids: Optional[List[int]]) -> List[int]:
     """Идентификаторы линий, пропавших между двумя перечислениями страницы.
@@ -510,7 +527,8 @@ def disconnect_wire(src: str, dst: str,
     `removeobject` рвёт тело — замер 03.10.2026); тело снимает первым.
     **Снятие среду не роняет** (замеры 03.10.2026, поставка 2.26.6.23; у
     БЛОКА тот же вызов роняет `ProjectStart` — access violation в
-    `mbtylib.dll`, дефект вендора, и инструмента удаления блоков нет).
+    `mbtylib.dll`, дефект вендора, но лишь в связке «создание и удаление в
+    одном прогоне»; блоки удаляет `remove_block` — отдельным прогоном).
     Но расчёт после снятия может **структурно стоять**: если вход остался
     без подключённой линии, модель не считает до нового `connect`. Вердикт в
     ответе (`model-not-running`) это называет.
@@ -682,6 +700,275 @@ def disconnect_wire(src: str, dst: str,
     return (f"Связь {src}[{out_index}] → {dst}[{in_index}] снята "
             f"(wire={reply.wire_id}).\n"
             f"{describe_outcome(outcome, what='Вердикт')}{tail}")
+
+
+def _remove_block_body(block_id: int, with_wires: bool) -> str:
+    """Тело удаления блока для контура: только удаление, отдельным прогоном.
+
+    Дефект вендора (access violation `mbtylib.dll` на старте расчёта) даёт
+    **связка** «`createmodel` и `removeprimitiv` в одном прогоне
+    `initialization`»: серия проб 04.10.2026 (пробы — во внутреннем
+    хранилище) и повтор на 2.26.9.29 06.10.2026. Удаление отдельным
+    прогоном — и загруженного блока, и созданного в прошлом вызове — старт
+    переживает (живые замеры 06.10.2026, R1b). В теле поэтому нет ни одного
+    создания.
+
+    Порты перебираются **по общему индексу** (`getblockportcount` +
+    `getblockportid`): перебор отдельно входов и выходов пропускал бы
+    ненаправленные порты — линия на них осталась бы сиротой при «успехе»
+    (находка ревью 06.10.2026). Линии блока читаются `getportwireid`: концы
+    линий через COM не читаются, а порт называет подключённую к нему линию.
+    При `with_wires=False` линии не трогаются: тело называет их, блок
+    остаётся; решение «снимать или нет» принимает вызывающий.
+    """
+    lines: List[str] = [
+        f"blk = {block_id};",
+        "nports = getblockportcount(blk);",
+    ]
+    # Набор уже увиденных линий — строкой: `pos` ищет подстроку (справка
+    # языка: `indx = pos(sub_str, str)`). Без него линия, у которой ОБА
+    # конца на портах этого блока, снималась бы (или считалась) дважды —
+    # второй `removeprimitiv` по снятому id мог бы оборвать тело, а
+    # счётчики в ответе удвоились бы (находка ревью 06.10.2026).
+    lines.append('seen = "|";')
+    if not with_wires:
+        lines.append("busy = 0;")
+    # Цикл — `while`, а не `for`: форма `for i := 0 to N` в контуре не
+    # компилируется (живой прогон 06.10.2026, «тело не собралось»), а
+    # `while` проверена живыми телами проб (серия removeprimitiv 04.10).
+    lines.append("i = 0;")
+    lines.append("while i < nports do begin")
+    lines.append("  p = getblockportid(blk, i);")
+    lines.append('  if p = 0 then writelnutf8(fid, "err=no-port");')
+    lines.append("  if p <> 0 then begin")
+    lines.append("    w = getportwireid(p);")
+    lines.append("    if w <> 0 then begin")
+    lines.append('      if pos("|" + inttostr(w) + "|", seen) = 0 then '
+                 "begin")
+    lines.append('        seen = seen + inttostr(w) + "|";')
+    if with_wires:
+        lines.append("        removeprimitiv(w);")
+        lines.append('        writelnutf8(fid, "cut=" + inttostr(w));')
+    else:
+        lines.append('        writelnutf8(fid, "wire=" + inttostr(w));')
+        lines.append("        busy = busy + 1;")
+    lines.append("      end;")
+    lines.append("    end;")
+    lines.append("  end;")
+    lines.append("  i = i + 1;")
+    lines.append("end;")
+    if with_wires:
+        lines.append("removeprimitiv(blk);")
+        lines.append('writelnutf8(fid, "removed=" + inttostr(blk));')
+    else:
+        lines.append('if busy > 0 then writelnutf8(fid, '
+                     '"busy=" + inttostr(busy));')
+        lines.append("if busy = 0 then begin")
+        lines.append("  removeprimitiv(blk);")
+        lines.append('  writelnutf8(fid, "removed=" + inttostr(blk));')
+        lines.append("end;")
+    return "\n".join(lines) + "\n"
+
+
+class _RemoveReply(NamedTuple):
+    """Разобранный ответ тела удаления.
+
+    `kind` — «removed» | «busy» | «unknown»; `wires` — подключённые линии
+    (при «busy») или снятые (при «removed» в режиме `with_wires`);
+    `bad_port` — True, если среда не отдала порт по индексу в контуре.
+    """
+
+    kind: str
+    block_id: int = 0
+    wires: Tuple[int, ...] = ()
+    bad_port: bool = False
+
+
+def _int_after_eq(text: str) -> int:
+    """Число после «=» в строке тела; не разобралось — 0."""
+    try:
+        return int(text.split("=", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def _parse_remove_reply(lines: List[str]) -> _RemoveReply:
+    """Разобрать строки тела: что снято/занято — или «ответа нет»."""
+    wires: List[int] = []
+    bad_port = False
+    block_id = 0
+    removed = False
+    busy = False
+    for line in lines:
+        text = line.strip()
+        if text == "err=no-port":
+            bad_port = True
+        elif text.startswith("removed="):
+            block_id = _int_after_eq(text)
+            removed = True
+        elif text.startswith("busy="):
+            busy = True
+        elif text.startswith(("wire=", "cut=")):
+            wires.append(_int_after_eq(text))
+    if removed:
+        return _RemoveReply("removed", block_id=block_id, wires=tuple(wires),
+                            bad_port=bad_port)
+    if busy:
+        return _RemoveReply("busy", wires=tuple(wires), bad_port=bad_port)
+    return _RemoveReply("unknown", wires=tuple(wires), bad_port=bad_port)
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def remove_block(block: str, with_wires: bool = False) -> str:
+    """Удалить блок со страницы — узкая безопасная форма `removeprimitiv`.
+
+    Удаления в COM API нет; в языке объект убирает `removeprimitiv`, но у
+    БЛОКА этот вызов роняет старт расчёта (access violation `mbtylib.dll`).
+    Серия проб (04.10.2026; повтор на 2.26.9.29 — 06.10.2026) уточнила
+    границу: AV даёт только связка «`createmodel` и удаление в ОДНОМ прогоне
+    `initialization`». Этот инструмент удаляет **отдельным прогоном** и
+    ничего в нём не создаёт — замер 06.10.2026: блок удалён, расчёт после
+    этого идёт.
+
+    **Связи по умолчанию не снимаются.** Если у блока есть подключённые
+    линии — отказ с их перечислением: снимите нужные `disconnect_wire`
+    (он проверяет концы) или повторите вызов с `with_wires=True` — тогда
+    линии уйдут вместе с блоком, одним прогоном. Осторожно: у линии бывают
+    другие концы (ветвление) — снятие уносит их все; ответ называет число
+    линий страницы до и после.
+
+    **Подтверждение — по среде.** «Удалён» говорится, лишь когда блок
+    больше не находится на странице (адресация — как у `connect`: имя или
+    числовой id); при `with_wires` — и число линий уменьшилось; иначе
+    отказ. После удаления — перерисовка и трассировка (`NormalizeWire`),
+    как у `set_block_center`; реестр сессии забывает снятые линии.
+
+    Args:
+        block: имя блока или его числовой id (`list_blocks` печатает оба).
+        with_wires: True — снять подключённые к блоку линии вместе с ним.
+    """
+    project = session.ensure_project()
+    page = project.get_main_page()
+    target = _resolve_block(page, block)
+    if target is None:
+        return _missing_block(block)
+    try:
+        name = target.get_name()
+    except Exception:                                         # noqa: BLE001
+        name = block.strip()
+
+    before_ids = _page_wire_ids(page)
+    outcome = _run_contour_body(
+        _remove_block_body(target.id, with_wires),
+        failed="удалить блок не удалось")
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            "блок не удалён: тело не собралось (текст ошибки — в окне "
+            "сообщений редактора SimInTech; через COM он не читается). "
+            "Проект не изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        # Реестр — по факту перечисления: тело могло успеть снять линии до
+        # обрыва записи, и записи о них уже мёртвые.
+        for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
+            session.forget_wire(wire_id)
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"удаление не подтверждено: тело оборвалось на исполнении."
+            f"{detail} Успело ли удаление выполниться — по этому исходу не "
+            f"определить: проверьте схему (`list_blocks`, `list_wires`). "
+            f"Прежний скрипт страницы возвращён.")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            "удаление не подтверждено: секция `initialization` не "
+            "выполнилась — тело не запускалось, блок не удалён (причина по "
+            "этому признаку не определяется). Повторите вызов.")
+    reply = _parse_remove_reply(outcome.lines)
+    if reply.bad_port and reply.kind != "removed":
+        # Порт не отдался по индексу — тело ответа об удалении не оставило.
+        # Отказ; линии, снятые до места отказа, учитываются перечислением
+        # страницы, чтобы реестр не держал мёртвые записи (находка ревью
+        # 06.10.2026).
+        for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
+            session.forget_wire(wire_id)
+        raise ToolError(
+            "удаление не подтверждено: среда не отдала порт блока по "
+            "индексу в контуре (общий перебор портов). Порт мог "
+            "пересоздаться между проверкой и прогоном — повторите вызов; "
+            "если повтор не помогает, сверьте блок со схемой. Блок НЕ "
+            "удалён; проверьте, не осталось ли висячих линий.")
+    if reply.kind == "busy" and not with_wires:
+        listed = ", ".join(str(wire_id) for wire_id in reply.wires)
+        shown = f": {listed}" if listed else ""
+        raise ToolError(
+            f"блок '{name}' (id={target.id}) не удалён: к нему подключены "
+            f"линии ({len(reply.wires)}{shown}). Снимите нужные "
+            f"`disconnect_wire` или повторите с with_wires=True — тогда линии "
+            f"уйдут вместе с блоком. Проект не изменён.")
+    if reply.kind != "removed":
+        raise ToolError(
+            "удаление не подтверждено: тело отработало, но не оставило "
+            "ответа — что оно успело сделать, по этому признаку не "
+            "определить. Проверьте схему (`list_blocks`, `list_wires`).")
+    # «Удалён» — по среде и по ID, а не по исходному токену: у пары
+    # «В память»/«Из памяти» имя одно на две половины, и проверка токеном
+    # нашла бы вторую — «не подтверждено» после настоящего удаления (находка
+    # ревью 06.10.2026). При `with_wires` — ещё и число линий уменьшилось.
+    present = _page_has_block_id(page, target.id)
+    if present is None:
+        raise ToolError(
+            "удаление не подтверждено: перечислить блоки страницы не удалось "
+            "(сбой чтения через COM) — подтвердить нечем. Проверьте схему "
+            "(`list_blocks`).")
+    if present:
+        raise ToolError(
+            f"удаление не подтверждено: блок '{name}' (id={target.id}) "
+            f"по-прежнему найден на странице. Повторите вызов, а если повтор "
+            f"не помогает — сообщите среду и версию.")
+    after_ids = _page_wire_ids(page)
+    vanished = _vanished_wires(before_ids, after_ids)
+    if (with_wires and reply.wires
+            and before_ids is not None and after_ids is not None
+            and len(after_ids) >= len(before_ids)):
+        raise ToolError(
+            f"снятие линий не подтверждено: число линий страницы не "
+            f"уменьшилось ({len(before_ids)} → {len(after_ids)}), хотя тело "
+            f"сообщило о снятии. Проверьте схему (`list_wires`, "
+            f"`export_model_text`).")
+    for wire_id in vanished:
+        session.forget_wire(wire_id)
+    if with_wires:
+        for wire_id in reply.wires:
+            session.forget_wire(wire_id)
+    project.repaint()
+    notes: List[str] = []
+    if reply.bad_port:
+        notes.append(
+            "ВНИМАНИЕ: порт блока в контуре не читался — линия этого порта "
+            "могла не сняться; проверьте схему.")
+    try:
+        routes = normalize_page_wires(page)
+    except Exception:                                         # noqa: BLE001
+        routes = ""
+        notes.append("Линии не трассированы: перечислить их не удалось "
+                     "(сбой чтения через COM) — проверьте схему.")
+    if before_ids is not None and after_ids is not None:
+        note = (f"Линий связи на странице: {len(before_ids)} → "
+                f"{len(after_ids)}.")
+        if len(vanished) > len(reply.wires):
+            note += (" Исчезло больше линий, чем снимал инструмент: у линии "
+                     "были другие концы (ветвление) — проверьте схему.")
+        notes.append(note)
+    else:
+        notes.append("Число линий страницы прочитать не удалось — сверьтесь "
+                     "со схемой (`list_wires`, `export_model_text`).")
+    wires_note = (f" вместе с линиями ({len(reply.wires)})"
+                  if with_wires and reply.wires else "")
+    tail = "\n".join(notes)
+    return (f"Блок '{name}' (id={target.id}) удалён{wires_note}.\n"
+            f"{describe_outcome(outcome, what='Вердикт')}\n"
+            f"{tail}{routes}")
 
 
 # ─── Скрипт блока «Язык программирования» ────────────────────────────────────
