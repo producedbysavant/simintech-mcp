@@ -119,6 +119,19 @@ class _BridgeScripts:
             restored_script="")
 
 
+def _bridge(**attrs):
+    """Мост с конфигурацией на один тест: класс `_BridgeScripts` не мутируется.
+
+    anyio исполняет файл дважды — серия `[asyncio]`, затем серия `[trio]` —
+    и общая конфигурация делала состояние одного прогона частью следующего:
+    `old=""` из «пустого прежнего скрипта» доживал до повтора
+    `writes_and_returns_old` во второй серии, и тест падал только там
+    (находка #83). Подкласс на вызов держит настройку локально — так же, как
+    `monkeypatch` держит подмену.
+    """
+    return type("_ConfiguredBridge", (_BridgeScripts,), attrs)
+
+
 def _install(monkeypatch, tmp_path, project, bridge=None):
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
@@ -183,9 +196,9 @@ async def test_get_block_script_refuses_unknown_block(monkeypatch, tmp_path):
 async def test_set_block_script_writes_and_returns_old(monkeypatch, tmp_path):
     """Запись: setprop + reinitlangblock, прежний скрипт — в ответе."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
     new_script = "input\r\n    x: double;\r\noutput\r\n    y: double;\r\n"
-    _BridgeScripts.new = new_script
+    bridge = _bridge(new=new_script)
+    _install(monkeypatch, tmp_path, project, bridge)
 
     text = _text(await mcp.call_tool(
         "set_block_script", {"block": "LangBlock_0", "script": new_script}))
@@ -193,7 +206,7 @@ async def test_set_block_script_writes_and_returns_old(monkeypatch, tmp_path):
     assert "Скрипт блока 'LangBlock_0' записан. Портов: 1 → 4." in text
     assert "---- прежний скрипт ----" in text
     assert "y = u;" in text, "прежний скрипт не отдан клиенту"
-    body = _BridgeScripts.body
+    body = bridge.body
     assert 'setprop(obj, "script"' in body
     assert "reinitlangblock(obj);" in body, "пины не пересобираются"
     # Порядок обязателен: прежний скрипт читается ДО записи, новый — ПОСЛЕ;
@@ -209,8 +222,8 @@ async def test_set_block_script_writes_and_returns_old(monkeypatch, tmp_path):
 async def test_set_block_script_normalizes_lf(monkeypatch, tmp_path):
     """LF-текст нормализуется к CRLF и сравнивается после нормализации."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-    _BridgeScripts.new = "a\r\nb\r\n"
+    bridge = _bridge(new="a\r\nb\r\n")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     text = _text(await mcp.call_tool(
         "set_block_script", {"block": "LangBlock_0", "script": "a\nb\n"}))
@@ -222,21 +235,22 @@ async def test_set_block_script_normalizes_lf(monkeypatch, tmp_path):
 async def test_set_block_script_refuses_empty_script(monkeypatch, tmp_path):
     """Пустой скрипт — отказ: он оставляет блок без портов (замер: 2 → 0)."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+    bridge = _bridge()
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script",
                            {"block": "LangBlock_0", "script": "  \n"})
 
     assert "пуст" in message
-    assert _BridgeScripts.body == "", "контур запущен с пустым скриптом"
+    assert bridge.body == "", "контур запущен с пустым скриптом"
 
 
 @pytest.mark.anyio
 async def test_set_block_script_refuses_when_reread_differs(monkeypatch, tmp_path):
     """Перечитанный текст не совпал — «запись не подтверждена», не успех."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-    _BridgeScripts.new = "совсем другой текст"
+    bridge = _bridge(new="совсем другой текст")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script", {
         "block": "LangBlock_0", "script": "input\r\n    x: double;\r\n"})
@@ -249,14 +263,14 @@ async def test_set_block_script_refuses_when_reread_differs(monkeypatch, tmp_pat
 async def test_set_block_script_refuses_unknown_block(monkeypatch, tmp_path):
     """Несуществующий блок — отказ до контура."""
     project = _ScriptProject({})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-    _BridgeScripts.body = ""
+    bridge = _bridge()
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script",
                            {"block": "нет_такого", "script": "x = 1;"})
 
     assert "не найден на странице" in message
-    assert _BridgeScripts.body == "", "контур запущен, хотя блока нет"
+    assert bridge.body == "", "контур запущен, хотя блока нет"
 
 
 @pytest.mark.anyio
@@ -264,12 +278,8 @@ async def test_set_block_script_refuses_when_body_does_not_compile(
         monkeypatch, tmp_path):
     """Тело не собралось — отказ, проект не изменён."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-
-    class _Broken(_BridgeScripts):
-        kind = "not-compiled"
-
-    monkeypatch.setattr(page_script, "ScriptBridge", _Broken)
+    bridge = _bridge(kind="not-compiled")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script",
                            {"block": "LangBlock_0", "script": "x = 1;"})
@@ -333,13 +343,13 @@ async def test_set_block_script_body_escapes_literal(monkeypatch, tmp_path):
     неверно» осталась бы незамеченной (находка ревью тестов).
     """
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-    _BridgeScripts.new = "x = 1;\r\ny = 2;\r\n"
+    bridge = _bridge(new="x = 1;\r\ny = 2;\r\n")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     await mcp.call_tool("set_block_script",
                         {"block": "LangBlock_0", "script": "x = 1;\r\ny = 2;\r\n"})
 
-    body = _BridgeScripts.body
+    body = bridge.body
     assert '"x = 1;" + chr(13) + chr(10) + "y = 2;" + chr(13) + chr(10)' in body
     assert '"x = 1;\r' not in body, "сырой CR попал внутрь литерала"
 
@@ -383,26 +393,22 @@ async def test_set_block_script_refuses_ctx_markers(monkeypatch, tmp_path):
     строка `CTX_END` в нём рвёт разбор исхода (находка ревью).
     """
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
+    bridge = _bridge()
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script", {
         "block": "LangBlock_0", "script": 's = "CTX_END";'})
 
     assert "служебные маркеры" in message
-    assert _BridgeScripts.body == "", "контур запущен с текстом-маркером"
+    assert bridge.body == "", "контур запущен с текстом-маркером"
 
 
 @pytest.mark.anyio
 async def test_set_block_script_does_not_confirm_after_abort(monkeypatch, tmp_path):
     """Обрыв тела — «запись не подтверждена», а не успех."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-
-    class _Aborted(_BridgeScripts):
-        kind = "aborted"
-        new = "x = 1;\r\n"
-
-    monkeypatch.setattr(page_script, "ScriptBridge", _Aborted)
+    bridge = _bridge(kind="aborted", new="x = 1;\r\n")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     message = await _error("set_block_script",
                            {"block": "LangBlock_0", "script": "x = 1;"})
@@ -415,7 +421,6 @@ async def test_set_block_script_does_not_confirm_after_abort(monkeypatch, tmp_pa
 async def test_set_block_script_unknown_reply(monkeypatch, tmp_path):
     """Ответ без маркеров и без сентинелов — «не оставило распознаваемого»."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
 
     class _Mute(_BridgeScripts):
         old = ""
@@ -429,7 +434,7 @@ async def test_set_block_script_unknown_reply(monkeypatch, tmp_path):
                 outcome=ContourOutcome(kind="ok", lines=["нечто"]),
                 restored_script="")
 
-    monkeypatch.setattr(page_script, "ScriptBridge", _Mute)
+    _install(monkeypatch, tmp_path, project, _Mute)
 
     message = await _error("set_block_script",
                            {"block": "LangBlock_0", "script": "x = 1;"})
@@ -441,9 +446,8 @@ async def test_set_block_script_unknown_reply(monkeypatch, tmp_path):
 async def test_set_block_script_reports_empty_old_script(monkeypatch, tmp_path):
     """Пустой прежний скрипт назван словами, а не пустым блоком."""
     project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
-    _install(monkeypatch, tmp_path, project, _BridgeScripts)
-    _BridgeScripts.old = ""
-    _BridgeScripts.new = "x = 1;"
+    bridge = _bridge(old="", new="x = 1;")
+    _install(monkeypatch, tmp_path, project, bridge)
 
     text = _text(await mcp.call_tool("set_block_script",
                                      {"block": "LangBlock_0", "script": "x = 1;"}))
@@ -484,3 +488,52 @@ async def test_get_block_script_refuses_when_snapshot_missing(monkeypatch, tmp_p
     message = await _error("get_block_script", {"block": "LangBlock_0"})
 
     assert "выгрузка проекта не создана" in message
+
+
+# ─── Изоляция состояния моста: находка #83 ──────────────────────────────────
+#
+# anyio исполняет файл двумя сериями — `[asyncio]`, затем `[trio]`. Пока
+# конфигурация моста жила в общем классе (`_BridgeScripts.new = …`), состояние
+# одного случая становилось частью другого, и падение вылезало только во
+# второй серии — то есть только при установленном trio и только в полном
+# прогоне. Тесты ниже фиксируют изоляцию: настройка — подкласс на вызов.
+
+
+def test_bridge_factory_keeps_base_state_intact():
+    """Настройка живёт на подклассе; общий класс остаётся дефолтным.
+
+    Возврат к записи `_BridgeScripts.new = …` в любом тесте снова сделал бы
+    конфигурацию общим состоянием файла — вторая проверка ниже (дефолт после
+    пустого `old`) такого возврата не переживёт.
+    """
+    configured = _bridge(old="", new="x = 1;")
+
+    assert configured.old == "" and configured.new == "x = 1;"
+    assert "old" in configured.__dict__ and "new" in configured.__dict__
+    assert _BridgeScripts.old == "input u;\noutput y;\n\ny = u;"
+    assert _BridgeScripts.new == ""
+
+
+@pytest.mark.anyio
+async def test_bridge_configuration_does_not_leak_between_cases(
+        monkeypatch, tmp_path):
+    """Сценарий #83: настройка одного случая не видна следующему.
+
+    Обе настройки идут подряд — «пустой прежний скрипт», затем дефолтный:
+    вторая обязана видеть в ответе дефолтный прежний скрипт, а не пустоту,
+    оставшуюся от первой.
+    """
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 1)})
+    script = "x = 1;"
+
+    empty = _bridge(old="", new=script)
+    _install(monkeypatch, tmp_path, project, empty)
+    await mcp.call_tool("set_block_script",
+                        {"block": "LangBlock_0", "script": script})
+
+    default = _bridge(new=script)
+    _install(monkeypatch, tmp_path, project, default)
+    text = _text(await mcp.call_tool(
+        "set_block_script", {"block": "LangBlock_0", "script": script}))
+
+    assert "y = u;" in text, "дефолтный прежний скрипт испорчен прошлой настройкой"
