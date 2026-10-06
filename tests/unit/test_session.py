@@ -9,7 +9,6 @@ from simintech_api import ComConnectionError, SessionOwnership
 from simintech_mcp.server import mcp
 
 from simintech_mcp import session
-from simintech_mcp.tools import project as project_tools
 
 from _support import (
     _ClosableProject,
@@ -244,10 +243,9 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "_project_path", None)
     monkeypatch.setattr(session, "_client", client)
-    # «Завершён» называется по проверке исчезновения процесса: подделка
-    # сообщает «ушёл», чтобы утверждение опиралось на факт, а не на веру.
-    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
-                        lambda pid, timeout=3.0: True)
+    # «Завершён» называется по исходу `shutdown` (0.14.0): подделка по
+    # умолчанию сообщает «ушёл», чтобы утверждение опиралось на факт, а не
+    # на веру.
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
@@ -262,18 +260,16 @@ async def test_disconnect_resets_project_and_client(monkeypatch):
 
 @pytest.mark.anyio
 async def test_disconnect_warns_when_process_stays_alive(monkeypatch):
-    """«Завершён» — по проверке: живой процесс называется предупреждением.
+    """«Завершён» — по исходу: живой процесс называется предупреждением.
 
-    `shutdown` библиотеки об исчерпании попыток не сообщает (его завершение —
-    best-effort), поэтому безусловная формулировка выдавала бы недоказанное
-    за факт (ревью #41). Проверка делает ветку «всё ещё жив» живой.
+    `shutdown` возвращает исход снятия (0.14.0, проверка живости вместо
+    снимка процессов): False — процесс остался; безусловная формулировка
+    выдавала бы недоказанное за факт (ревью #41).
     """
 
-    client = _OwnedClientStub(pid=777)
+    client = _OwnedClientStub(pid=777, shutdown_result=False)
     monkeypatch.setattr(session, "_project", None)
     monkeypatch.setattr(session, "_client", client)
-    monkeypatch.setattr(project_tools, "wait_for_pid_exit",
-                        lambda pid, timeout=3.0: False)
 
     text = _text(await mcp.call_tool("disconnect", {}))
 
@@ -348,7 +344,7 @@ async def test_disconnect_reports_failed_close(monkeypatch):
         session_pid = None
 
         def shutdown(self, kill_pids=None):
-            pass
+            return True
 
     monkeypatch.setattr(session, "_project",
                         _ClosableProject(raises=True))

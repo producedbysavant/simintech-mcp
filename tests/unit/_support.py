@@ -59,10 +59,14 @@ class _OwnedClientStub:
 
     connected = True
 
-    def __init__(self, ownership=None, pid=4242):
+    def __init__(self, ownership=None, pid=4242, shutdown_result=True):
         from simintech_api import SessionOwnership
         self.ownership = ownership or SessionOwnership.OWNED
         self.session_pid = pid
+        #: Исход снятия, который вернёт `shutdown` (0.14.0: bool — процесс
+        #: исчез / остался жив). Подделка обязана отдавать его: инструмент
+        #: `disconnect` называет процесс «завершённым» именно по нему.
+        self.shutdown_result = shutdown_result
         self.probes = 0
         self.disconnected = False
         self.shutdown_called = False
@@ -80,6 +84,7 @@ class _OwnedClientStub:
     def shutdown(self, kill_pids=None):
         self.shutdown_called = True
         self.connected = False
+        return self.shutdown_result
 
 
 _XPRT_FIXTURE = """<?xml version="1.0" encoding="utf-8"?>
