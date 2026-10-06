@@ -29,7 +29,8 @@ from .. import catalog, runtime, session
 from ..app import mcp
 from ..geometry import CHAR_WIDTH_ESTIMATE
 from .check_model import read_port_names
-from .layout import normalize_page_wires
+from .layout import first_point, normalize_page_wires
+from .model_text import page_export_text
 from .page_script import (
     bridge,
     describe_outcome,
@@ -1677,9 +1678,15 @@ def set_block_size(block: str, width: float, height: float) -> str:
             f"{_size_text(after)}{note}")
 
 
-#: Предел обхода субмоделей при подгонке порт-блоков: дерево страниц конечно,
-#: но цикл в данных не должен вешать инструмент.
+#: Предел обхода субмоделей при подгонках: дерево страниц конечно, но цикл
+#: в данных не должен вешать инструмент.
 MAX_SUBMODEL_DEPTH = 8
+
+#: Отступ подписи значения от родителя: якорь — у левого верхнего угла
+#: блока, на 18 px выше. Образец — боевой проект evs360: `constLabel` с
+#: точкой (440, 46) у блока с центром (456, 72) и размером 32×16, то есть
+#: (cx − w/2, cy − h/2 − 18) — совпало точно (замер 06.10.2026).
+VALUE_LABEL_GAP = 18.0
 
 
 def _fit_one_port_block(block: Block, where: str,
@@ -1687,10 +1694,11 @@ def _fit_one_port_block(block: Block, where: str,
     """Расширить один порт-блок под самую длинную подпись.
 
     Ширина — по той же оценке, что ловит `check_model_layout`
-    (`CHAR_WIDTH_ESTIMATE` px на символ): правка и проверка обязаны сходиться,
-    иначе проверка продолжила бы ругаться на исправленное. Высота не
-    трогается — у порт-блоков она подчинена правилу 16 px на строку сигнала
-    (`set_block_size`). True — ширина изменена и подтверждена перечитыванием.
+    (`CHAR_WIDTH_ESTIMATE` px на символ): правка и проверка обязаны
+    сходиться, иначе проверка продолжила бы ругаться на исправленное.
+    Высота не трогается — у порт-блоков она подчинена правилу 16 px на
+    строку сигнала (`set_block_size`). True — ширина изменена и подтверждена
+    перечитыванием.
     """
     try:
         name = block.get_name()
@@ -1731,19 +1739,112 @@ def _fit_one_port_block(block: Block, where: str,
     return True
 
 
-def _fit_page_port_blocks(project: Any, page: Page, where: str, depth: int,
-                          seen: set[int], affected: List[Any],
-                          lines: List[str]) -> int:
-    """Обойти страницу и её субмодели; вернуть число расширенных порт-блоков.
+def _fit_submodel_height(block: Block, where: str,
+                         lines: List[str]) -> bool:
+    """Высота блока-субмодели — 16 px на его внешний порт.
 
-    `project` передаётся явно (а не берётся `page.project`): страницу
-    субмодели достаёт `Project.submodel_page`, и инструменту так проще
-    тестироваться на подделке.
+    Импорт ставит субмодели 48×32 независимо от числа портов (замеры
+    06.10.2026: и у нашей сборки, и у fdd002 при 6 портах — те же 48×32).
+    Читаемая высота — `PORT_ROW_HEIGHT` × число портов (6 портов → 96);
+    ширина не трогается. True — высота изменена и подтверждена.
     """
-    if depth > MAX_SUBMODEL_DEPTH:
-        lines.append(f"{where}: глубже {MAX_SUBMODEL_DEPTH} уровней не "
-                     f"обхожу.")
-        return 0
+    try:
+        name = block.get_name()
+    except Exception:                                         # noqa: BLE001
+        name = f"id={block.id}"
+    try:
+        ports = int(block.get_port_count())
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: {name}: порты не читаются "
+                     f"({type(exc).__name__}: {exc}) — высота не проверена.")
+        return False
+    if ports <= 0:
+        return False
+    want = float(ports * PORT_ROW_HEIGHT)
+    try:
+        height = float(block.get_size()[1])
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: {name}: высота не читается "
+                     f"({type(exc).__name__}: {exc}) — пропущена.")
+        return False
+    if height == want:
+        return False
+    block.set_graph_prop("Height", _size_value(want))
+    try:
+        after = float(block.get_size()[1])
+    except Exception:                                         # noqa: BLE001
+        lines.append(f"{where}: {name}: высота записана, но перечитать не "
+                     f"удалось — проверьте снимком.")
+        return True
+    if after == height:
+        lines.append(f"{where}: {name}: высота не изменилась "
+                     f"({_size_value(height)}) — среда не приняла запись.")
+        return False
+    lines.append(
+        f"{where}: {name}: высота {_size_value(height)} → "
+        f"{_size_value(after)} ({ports} порт(ов) × {PORT_ROW_HEIGHT:g}).")
+    return True
+
+
+def _walk_pages(project: Any, main: Page,
+                lines: List[str]) -> List[Any]:
+    """Страницы модели: [(страница, как назвать)] — главная и субмодели.
+
+    Единый обход подгонок: ширина портов ВНУТРИ субмоделей импортом тоже не
+    задаётся, и высота блоков-субмоделей видна только на их страницах.
+    Повторный вход в страницу не допускается, глубже `MAX_SUBMODEL_DEPTH` —
+    не обходим (с примечанием в `lines`).
+    """
+    found: List[Any] = [(main, "главная")]
+    seen = {main.id}
+
+    def walk(page: Page, label: str, depth: int) -> None:
+        if depth > MAX_SUBMODEL_DEPTH:
+            lines.append(f"{label}: глубже {MAX_SUBMODEL_DEPTH} уровней не "
+                         f"обхожу.")
+            return
+        try:
+            blocks = page.get_blocks()
+        except Exception as exc:                              # noqa: BLE001
+            lines.append(f"{label}: блоки не перечислить "
+                         f"({type(exc).__name__}: {exc}).")
+            return
+        for block in blocks:
+            try:
+                class_name = str(block.class_name).strip()
+            except Exception:                                 # noqa: BLE001
+                continue
+            if class_name != "Субмодель":
+                continue
+            try:
+                sub = project.submodel_page(block.id)
+            except Exception as exc:                          # noqa: BLE001
+                lines.append(
+                    f"{label}: страница субмодели блока id={block.id} не "
+                    f"читается ({type(exc).__name__}: {exc}) — пропущена.")
+                continue
+            if sub.id in seen:
+                continue
+            seen.add(sub.id)
+            try:
+                sub_name = block.get_name()
+            except Exception:                                 # noqa: BLE001
+                sub_name = str(block.id)
+            sub_label = f"{label} → субмодель '{sub_name}'"
+            found.append((sub, sub_label))
+            walk(sub, sub_label, depth + 1)
+
+    walk(main, "главная", 1)
+    return found
+
+
+def _fit_page_sizes(page: Page, where: str, affected: List[Any],
+                    lines: List[str]) -> int:
+    """Поправить габариты одной страницы; вернуть число изменённых блоков.
+
+    Порт-блоки — ширина по подписям (та же оценка, что у
+    `check_model_layout`); блоки-субмодели — высота по числу внешних портов.
+    """
     try:
         blocks = page.get_blocks()
     except Exception as exc:                                  # noqa: BLE001
@@ -1757,84 +1858,206 @@ def _fit_page_port_blocks(project: Any, page: Page, where: str, depth: int,
         except Exception:                                     # noqa: BLE001
             continue
         if class_name in _PORT_HEIGHT_CLASSES:
-            if _fit_one_port_block(block, where, lines):
-                changed += 1
-                if page not in affected:
-                    affected.append(page)
+            done = _fit_one_port_block(block, where, lines)
         elif class_name == "Субмодель":
-            try:
-                sub = project.submodel_page(block.id)
-            except Exception as exc:                          # noqa: BLE001
-                lines.append(
-                    f"{where}: страница субмодели блока id={block.id} не "
-                    f"читается ({type(exc).__name__}: {exc}) — пропущена.")
-                continue
-            if sub.id in seen:
-                continue
-            seen.add(sub.id)
-            try:
-                sub_name = block.get_name()
-            except Exception:                                 # noqa: BLE001
-                sub_name = str(block.id)
-            changed += _fit_page_port_blocks(
-                project, sub, f"{where} → субмодель '{sub_name}'", depth + 1,
-                seen, affected, lines)
+            done = _fit_submodel_height(block, where, lines)
+        else:
+            continue
+        if done:
+            changed += 1
+            if page not in affected:
+                affected.append(page)
     return changed
 
 
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def fit_port_blocks() -> str:
-    """Расширить порт-блоки под подписи — на главной и во всех субмоделях.
+    """Подогнать габариты блоков, связанных с портами, по правилам.
 
-    Импорт (`import_model_text`/`createmodel`) нормализует рамку порт-блока
-    (ширина ~32 px) независимо от поданных `points` — длинное имя сигнала
-    (`PortNames`) вылезает за рамку, и владелец растягивает блоки руками в
-    GUI. Инструмент делает это сам: ширина = max(текущая, длина самой
-    длинной подписи × `CHAR_WIDTH_ESTIMATE`) — **та же оценка**, которой
-    `check_model_layout` ловит «текст шире рамки», поэтому после подгонки
-    его предупреждение снимается. Высота не трогается: у порт-блоков она
-    подчинена правилу 16 px на строку сигнала (`set_block_size`).
+    Два правила (оба — из наблюдений владельца и замеров 06.10.2026):
+
+    * **ширина порт-блоков** — по длиннейшей подписи `PortNames`
+      (импорт нормализует рамку ~32 px независимо от поданных `points`, и
+      длинные имена вылезают). Оценка та же, что у `check_model_layout`
+      (`CHAR_WIDTH_ESTIMATE` px/символ), поэтому после подгонки его
+      предупреждение «подписи шире рамки» снимается;
+    * **высота блока-субмодели** — `PORT_ROW_HEIGHT` × число его внешних
+      портов (импорт ставит 48×32 независимо от портов). Ширина субмодели
+      не трогается.
 
     **Субмодели обходятся рекурсивно** (`Project.submodel_page`, предел
-    `MAX_SUBMODEL_DEPTH`): ширина портов ВНУТРИ субмоделей тем же импортом
-    тоже не задаётся (наблюдение владельца, 06.10.2026), а
-    `check_model_layout` смотрит только текущую страницу — без обхода такие
-    подписи не чинил бы никто. Активной в конце снова становится главная
-    страница.
+    `MAX_SUBMODEL_DEPTH`, защита от повторного входа): ширина портов ВНУТРИ
+    субмоделей тем же импортом тоже не задаётся, а `check_model_layout`
+    смотрит только текущую страницу. Активной в конце снова становится
+    главная страница.
 
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.
 
-    **Только расширение.** Если подпись уже в рамке (по оценке) — блок не
-    трогается: ширину, выставленную руками, инструмент не «оптимизирует».
+    **Только по правилам.** Блок, уже им соответствующий, не трогается:
+    ширину, выставленную руками с запасом, инструмент не «оптимизирует»
+    (сужает), высоту — не подгоняет под иные представления.
     """
     project = session.ensure_project()
     main = project.get_main_page()
     lines: List[str] = []
+    pages = _walk_pages(project, main, lines)
     affected: List[Any] = []
-    seen = {main.id}
-    changed = _fit_page_port_blocks(
-        project, main, "главная", 0, seen, affected, lines)
+    changed = 0
+    for page, where in pages:
+        changed += _fit_page_sizes(page, where, affected, lines)
     if not changed:
-        head = (f"Все подписи порт-блоков в рамках (оценка "
+        head = (f"Габариты по правилам: менять нечего (оценка "
                 f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
-                f"{len(seen)}).")
-        return head + ("\n" + "\n".join(lines) if lines else "")
-    project.repaint()
-    for page in affected:
-        try:
-            for wire in page.get_wires():
-                wire.normalize()
-        except Exception as exc:                              # noqa: BLE001
-            lines.append(f"линии страницы не трассированы "
-                         f"({type(exc).__name__}: {exc}).")
+                f"{len(pages)}).")
+        result = head + ("\n" + "\n".join(lines) if lines else "")
+    else:
+        project.repaint()
+        for page in affected:
+            try:
+                for wire in page.get_wires():
+                    wire.normalize()
+            except Exception as exc:                          # noqa: BLE001
+                lines.append(f"линии страницы не трассированы "
+                             f"({type(exc).__name__}: {exc}).")
+        result = (f"Габариты подогнаны: {changed} (страниц обойдено: "
+                  f"{len(pages)}).\n" + "\n".join(lines))
+    # Активной возвращается главная: обход активировал каждую страницу, а
+    # следующая контурная операция (выгрузка) снимает ИМЕННО активную.
     try:
         main.activate()
     except Exception:                                         # noqa: BLE001
         pass
-    return (f"Порт-блоки расширены под подписи: {changed} "
-            f"(страниц обойдено: {len(seen)}).\n" + "\n".join(lines))
+    return result
+
+
+def _constlabel_parents(text: str) -> Dict[str, str]:
+    """Карта «подпись значения → блок-родитель» из выгрузки страницы.
+
+    `parentblock` через COM не читается (замер 06.10.2026: `getpropasstring`
+    по обоим написаниям пуст), поэтому связь берётся из текста
+    `savemodeltofile` — того же источника, что у автографа `layout_place`.
+    """
+    result: Dict[str, str] = {}
+    name = ""
+    is_label = False
+    parent = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        match = re.match(r"^([A-Za-z_][\w]*):\s*\($", stripped)
+        if match:
+            if is_label and parent:
+                result[name] = parent
+            name = match.group(1)
+            is_label = False
+            parent = ""
+            continue
+        if not name:
+            continue
+        if stripped.startswith("type ="):
+            is_label = "constLabel" in stripped
+        elif "parentblock" in stripped and "=" in stripped:
+            parent = stripped.split("=", 1)[1].strip().strip(",").strip('"')
+    if is_label and parent:
+        result[name] = parent
+    return result
+
+
+def _fit_value_labels_page(page: Page, where: str,
+                           lines: List[str]) -> int:
+    """Подтянуть подписи значений одной страницы к их блокам.
+
+    Выгрузка идёт **текущей страницей** (контур ставит скрипт туда), поэтому
+    страница активируется здесь же — иначе снялась бы та, что осталась
+    активной от предыдущего обхода (живой случай 06.10.2026: после
+    `fit_port_blocks` активной была субмодель, и выгрузка принесла её текст
+    без единой подписи). Положение — с образца боевого проекта: якорь
+    подписи = `(cx − w/2, cy − h/2 − VALUE_LABEL_GAP)` у родителя.
+    `set_center` у подписи ставит её карточку (60×40) центром — поэтому к
+    цели добавляется полуразмер карточки (живой замер 06.10.2026: центру
+    (100, 100) отвечает якорь (70, 80)).
+    """
+    page.activate()
+    try:
+        text, _truncated, _outcome, _path = page_export_text()
+    except ToolError as exc:
+        lines.append(f"{where}: выгрузка для чтения parentblock не удалась "
+                     f"({exc}) — подписи не тронуты.")
+        return 0
+    pairs = _constlabel_parents(text)
+    moved = 0
+    for label_name, parent_name in pairs.items():
+        label = _resolve_block(page, label_name)
+        parent = _resolve_block(page, parent_name)
+        if label is None or parent is None:
+            lines.append(f"{where}: подпись «{label_name}» или её блок "
+                         f"«{parent_name}» не найдены — не тронута.")
+            continue
+        try:
+            center = first_point(parent.get_points())
+            width, height = parent.get_size()
+            anchor = first_point(label.get_points())
+            label_w, label_h = label.get_size()
+        except Exception as exc:                              # noqa: BLE001
+            lines.append(f"{where}: {label_name}: геометрия не читается "
+                         f"({type(exc).__name__}: {exc}) — пропущена.")
+            continue
+        if center is None or anchor is None:
+            lines.append(f"{where}: {label_name}: точки не разбираются — "
+                         f"пропущена.")
+            continue
+        want = (center[0] - float(width) / 2.0,
+                center[1] - float(height) / 2.0 - VALUE_LABEL_GAP)
+        if abs(anchor[0] - want[0]) < 0.5 and abs(anchor[1] - want[1]) < 0.5:
+            continue
+        label.set_center(want[0] + float(label_w) / 2.0,
+                         want[1] + float(label_h) / 2.0)
+        try:
+            after = first_point(label.get_points())
+        except Exception:                                     # noqa: BLE001
+            after = None
+        if after is None:
+            lines.append(f"{where}: {label_name}: подпись сдвинута, но точку "
+                         f"перечитать не удалось — проверьте снимком.")
+            moved += 1
+            continue
+        lines.append(
+            f"{where}: {label_name}: подпись ({anchor[0]:g}, {anchor[1]:g}) "
+            f"→ ({after[0]:g}, {after[1]:g}) — к блоку «{parent_name}».")
+        moved += 1
+    return moved
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def fit_value_labels() -> str:
+    """Вернуть подписи значений (`constLabel`) к их блокам-родителям.
+
+    Импорт создаёт подпись значения (например, «1» у усилителя) **всегда в
+    одной точке (248, 192)** — независимо от блока и от поданных `points`
+    (замер 06.10.2026: две подписи разных блоков получили одну и ту же
+    точку), и в GUI подпись «слетает» далеко от своего блока. Инструмент
+    ставит её к левому верхнему углу родителя, на `VALUE_LABEL_GAP` выше —
+    положение снято с боевого проекта evs360 (совпало точно).
+
+    Связь «подпись → родитель» читается **выгрузкой страницы**
+    (`parentblock` через COM не отдаётся — замер 06.10.2026): подпись без
+    родителя или уже стоящая на месте не трогается. Подгоняется **текущая
+    (главная) страница**; подписи внутри субмоделей — отдельным шагом:
+    выгрузка страницы субмодели на живом контуре ещё не проверена на
+    страницах с собственным скриптом.
+    """
+    project = session.ensure_project()
+    main = project.get_main_page()
+    lines: List[str] = []
+    moved = _fit_value_labels_page(main, "главная", lines)
+    if not moved:
+        head = "Подписи значений на месте."
+        return head + ("\n" + "\n".join(lines) if lines else "")
+    project.repaint()
+    return (f"Подписи значений подтянуты к блокам: {moved}.\n"
+            + "\n".join(lines))
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).
