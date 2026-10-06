@@ -608,6 +608,43 @@ async def test_layout_place_bare_reports_unknown_links(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_layout_place_aligns_by_exported_pairs(monkeypatch):
+    """Открытый проект: выравнивание работает и по связям из выгрузки (#33).
+
+    Реестр `connect` пуст, концов чужих линий через COM нет; но адреса
+    выгрузки (`src = "k_0:out:0"`, `dst = "kx_0:in:0"`) несут индексы портов —
+    приёмник выравнивается по выходу источника так же, как для связи сессии.
+    Пока такой пары не было, приёмники открытого проекта оставались не
+    выровненными (ограничение `layout_place`).
+    """
+    from simintech_mcp.tools import model_text
+
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("kx_0", 2)
+    dst.in_port_offset = 8.0
+    _install_wire_project(monkeypatch, {"k_0": src, "kx_0": dst})
+    # Линия на странице (для полного числа в метрике) — в реестр сессии она
+    # не попадает: проект «открытый», концы даёт выгрузка.
+    src.wires.append((_FakeWire(9), dst, 0, 0))
+    monkeypatch.setattr(model_text, "page_export_text", lambda: (
+        '  MBTYWire: (\n'
+        '    type = "wire",\n'
+        '    src = "k_0:out:0",\n'
+        '    dst = "kx_0:in:0"\n'
+        '  ),\n', False, None, None))
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert dst.center[1] == src.center[1] + 8.0, \
+        "вход приёмника не выровнен по выходу источника из выгрузки"
+    assert dst.center[0] > src.center[0], "связь из выгрузки не учтена"
+    assert "учтены связи открытого проекта" in text
+    # Метрика идёт по тем же парам, что выравнивание: строка есть и без
+    # реестра `connect` (follow-up PR #92 после мержа #91).
+    assert "Метрики маршрутов (известные связи — 1; линий на странице — 1)" in text
+
+
+@pytest.mark.anyio
 async def test_layout_place_reports_routing_metrics(monkeypatch):
     """Метрики маршрутов — по известным связям, остальные честно вне метрики.
 

@@ -304,14 +304,12 @@ def _routing_metrics(
     Числа считает та же чистая `audit_routing_segments`, что и `audit_routing`
     (пересечения, общий трек с перекрытием, попадание в чужой габарит,
     порядок входов, канал теснее разреза), но данные — только связи с
-    известными концами: реестр `connect` сессии. У проекта, открытого из
-    файла (реестр пуст), строки нет вовсе: пары его линий из выгрузки в
-    метрику пока не передаются — это следующий шаг после выравнивания по
-    ним, и честнее промолчать, чем показать нули по неизвестным связям.
-    Линии, которых мы не знаем, в метрику не входят — их число сказано
-    прямо, а полный аудит всех линий страницы (контур читает концы каждой)
-    даёт `audit_routing`. Пустые порты сюда не входят по той же причине:
-    `getportwireid` — функция языка, а не COM.
+    известными концами: реестр `connect`, а у открытого проекта — прямые
+    пары из выгрузки (`wire_pairs` — те же, по которым работает
+    выравнивание). Линии, которых мы не знаем, в метрику не входят — их
+    число сказано прямо, а полный аудит всех линий страницы (контур читает
+    концы каждой) даёт `audit_routing`. Пустые порты сюда не входят по той
+    же причине: `getportwireid` — функция языка, а не COM.
     """
     from .check_model import audit_routing_segments
 
@@ -439,14 +437,13 @@ def layout_place(block_ids: str = "", connections: str = "",
     «без наложений» виден фактом, а не предполагается. Пары считаются только
     с участием расставленных блоков — чужие наложения не наша правка.
 
-    **Метрики маршрутов.** По связям с известными концами (реестр `connect`)
-    в ответе считаются пересечения, общий трек с перекрытием, попадание в
-    чужой габарит, порядок входов и канал теснее разреза — той же чистой
-    функцией, что у `audit_routing`. Линии без известных концов в метрику не
-    входят, и это сказано её числом: полный аудит всех линий страницы (контур
-    читает концы каждой) — `audit_routing`. У открытого проекта, где реестр
-    пуст, метрики нет вовсе — пары его выгрузки в неё пока не передаются
-    (следующий шаг после выравнивания по ним), и молчание честнее нулей.
+    **Метрики маршрутов.** По связям с известными концами (реестр `connect`,
+    а у открытого проекта — прямые пары из выгрузки: те же, что у
+    выравнивания) в ответе считаются пересечения, общий трек с перекрытием,
+    попадание в чужой габарит, порядок входов и канал теснее разреза — той
+    же чистой функцией, что у `audit_routing`. Линии без известных концов в
+    метрику не входят, и это сказано её числом: полный аудит всех линий
+    страницы (контур читает концы каждой) — `audit_routing`.
 
     **Сетка 8 px и стопки порт-блоков** (стандарт оформления владельца,
     02.10.2026): 1 квадратик разметки — 8×8; центры ставятся на сетку,
@@ -487,13 +484,17 @@ def layout_place(block_ids: str = "", connections: str = "",
     расстановки блоки лежат в (0,0) друг на друге, и маршрут получается в обход
     наложенных блоков. Линии перечисляет `Page.get_wires` — то же, что делает
     `list_wires`; через COM не читаются только их концы (какие блоки соединены),
-    поэтому выравнивание по портам ниже применяется лишь к связям текущей
-    сессии, чьи концы запомнил `connect`.
+    поэтому выравнивание по портам ниже применяется к связям текущей сессии,
+    чьи концы запомнил `connect`, а у проекта, открытого из файла (реестр
+    пуст), — к прямым парам из выгрузки страницы: её адреса `block:out:N` /
+    `block:in:N` несут те же индексы портов (живой замер 06.10.2026 — провод
+    с `in:0` сошёлся с первым входом), а ветви пропускаются: у ветви не порт
+    источника, а точка съёма.
 
     **Уточнено 2026-09-28 (живой замер, поставка 2.26.6.23):** концы линий
-    по-прежнему не читаются через COM — обходной путь (выгрузка контейнера
-    встроенным языком) описан в README, «Ограничения»; выравнивание по-прежнему
-    работает только по связям текущей сессии.
+    через COM не читаются — их отдаёт выгрузка контейнера встроенным языком
+    (README, «Ограничения»). 06.10.2026 выравнивание по этим концам
+    распространено и на открытые проекты (реестр `connect` пуст).
 
     Args:
         block_ids: блоки через запятую — имена (`k_0`, `kx_0`, `ToFile_0`; их
@@ -584,6 +585,10 @@ def layout_place(block_ids: str = "", connections: str = "",
         except Exception:                                     # noqa: BLE001
             continue
 
+    #: Пары с индексами портов из выгрузки открытого проекта (реестр `connect`
+    #: пуст): ими выравнивание приёмников по источникам распространяется и на
+    #: чужие линии, концы которых COM не отдаёт (issue #33).
+    exported_pairs: "list[tuple[str, int, str, int]]" = []
     if bare_call:
         # «Все связи сессии»: концы чужих линий через COM не читаются, поэтому
         # честный максимум — реестр `connect`. Пары, чьи блоки не попали в
@@ -616,21 +621,40 @@ def layout_place(block_ids: str = "", connections: str = "",
             # их отдаёт только выгрузка, и она же называет ветви. Без этого
             # блоки встают в одну колонку, а ветви теряются вовсе — каналы
             # выходят уже канона на 8 px за каждую.
-            from .model_text import page_export_text, parse_page_graph
+            from .model_text import (
+                graph_from_wires,
+                page_export_text,
+                pairs_from_wires,
+                parse_page_wires,
+            )
             try:
                 graph_text, _trunc, _outcome, _path = page_export_text()
             except Exception:                            # noqa: BLE001
                 # Выгрузка — best-effort: не удалась, значит расстановка
                 # идёт без связей, и ответ об этом скажет, а не упадёт.
                 graph_text = ""
+            # Разбор выгрузки один: из записей проводов выводятся и граф, и
+            # пары — два `parse_page_wires` по одному тексту были бы лишней
+            # работой на больших страницах (находка ревью PR #91).
+            wires = parse_page_wires(graph_text)
             known = set(tokens)
-            for src_block, dst_block in parse_page_graph(graph_text):
+            for src_block, dst_block in graph_from_wires(wires):
                 if src_block not in known or dst_block not in known:
                     continue
                 if (src_block, dst_block) in seen_pairs:
                     continue
                 seen_pairs.add((src_block, dst_block))
                 links.append((src_block, dst_block))
+            # Пары с индексами портов — для выравнивания приёмников по
+            # источникам: тем же выравниванием, что и по связям сессии
+            # (ниже), но у открытого проекта концы линий даёт выгрузка.
+            # Ветви пропускает `pairs_from_wires`: у них не порт источника.
+            for src_block, out_index, dst_block, in_index in \
+                    pairs_from_wires(wires):
+                if src_block not in known or dst_block not in known:
+                    continue
+                exported_pairs.append(
+                    (src_block, out_index, dst_block, in_index))
     else:
         links = []
         for pair in connections.split(","):
@@ -732,11 +756,19 @@ def layout_place(block_ids: str = "", connections: str = "",
     # «Усилителя» посередине, и прямой участок не получается. Координаты
     # берём у самих портов, поэтому считаем по фактической геометрии.
     unaligned: list[str] = []
+    # Связи для выравнивания — реестр `connect`, а у открытого проекта (реестр
+    # пуст) ещё и прямые пары из выгрузки: индексы портов в адресах
+    # `:out:N`/`:in:N` совпадают с COM-адресацией, и выравнивание работает и
+    # для чужих линий, которых COM не отдаёт (issue #33).
+    wire_pairs: "list[tuple[str, int, str, int]]" = [
+        (src_name, out_index, dst_name, in_index)
+        for _wire, src_name, out_index, dst_name, in_index in session.WIRES
+    ] + exported_pairs
     # Смещения портов относительно центров читаем один раз: дальше блоки
     # двигаются, а COM отдаёт координаты портов только после перерисовки —
     # повторное чтение вернуло бы устаревшие значения.
     offsets: dict[tuple[str, int, bool], float] = {}
-    for _wire, src_name, out_index, dst_name, in_index in session.WIRES:
+    for src_name, out_index, dst_name, in_index in wire_pairs:
         src_token = aliases.get(src_name, src_name)
         dst_token = aliases.get(dst_name, dst_name)
         for token, index, is_output in ((src_token, out_index, True),
@@ -755,7 +787,7 @@ def layout_place(block_ids: str = "", connections: str = "",
                 unaligned.append(f"{token}[{index}] ({type(exc).__name__})")
 
     shifted = False
-    for _wire, src_name, out_index, dst_name, in_index in session.WIRES:
+    for src_name, out_index, dst_name, in_index in wire_pairs:
         if in_index != 0:
             continue
         src_token = aliases.get(src_name, src_name)
@@ -809,6 +841,10 @@ def layout_place(block_ids: str = "", connections: str = "",
     if unaligned:
         routes += (f"\nВНИМАНИЕ: выровнять не удалось для {len(unaligned)} "
                    f"связей: {', '.join(unaligned)}")
+    if exported_pairs:
+        routes += (f"\nВыравнивание по портам: учтены связи открытого проекта "
+                   f"({len(exported_pairs)} пар с индексами — из выгрузки, "
+                   f"реестр `connect` пуст)")
 
     # Наложения: контракт «без наложений» виден фактом — пары с участием
     # расставленных блоков считает `_overlap_report` (в нём же — почему
@@ -824,13 +860,12 @@ def layout_place(block_ids: str = "", connections: str = "",
     # всем блокам страницы был бы лишними COM-вызовами (находка ревью PR #92).
     rects, no_geometry = _page_rects(page)
     routes += _overlap_report(rects, no_geometry, placed)
-    metric_pairs: "list[tuple[str, int, str, int]]" = [
-        (src_name, out_index, dst_name, in_index)
-        for _wire, src_name, out_index, dst_name, in_index in session.WIRES
-    ]
-    if metric_pairs:
-        routes += _routing_metrics(rects, metric_pairs, aliases, available,
-                                   page)
+    # Метрики — по тем же парам, что и выравнивание: реестр `connect`, а у
+    # открытого проекта — прямые пары из выгрузки (`wire_pairs`). Так строка
+    # метрик появляется и там, где связей сессии нет вовсе (follow-up к PR
+    # #92 после мержа выравнивания по выгрузке).
+    if wire_pairs:
+        routes += _routing_metrics(rects, wire_pairs, aliases, available, page)
     return (repeated_note + "\n" +
             f"Расставлено блоков: {len(applied)}\n" + "\n".join(applied) + routes)
 

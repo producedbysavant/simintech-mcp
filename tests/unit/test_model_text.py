@@ -389,3 +389,28 @@ def test_parse_page_graph_resolves_branches():
 
     assert parse_page_graph(text) == [("n_dc", "ad_1"),
                                       ("n_dc", "portconnector_0")]
+
+
+def test_parse_page_pairs_keeps_direct_pairs_with_port_indexes():
+    """Прямые пары — с индексами портов; ветвь пропускается (mcp#33).
+
+    У ветви (`src = "wire_1:0"`) на месте источника не порт, а точка съёма
+    с линии: выравнивание по такому адресу поставило бы выход источника под
+    случайную точку маршрута.
+    """
+    from simintech_mcp.tools.model_text import parse_page_pairs
+
+    text = (
+        '  wire_1: (\n'
+        '    type = "wire",\n'
+        '    src = "n_dc:out:0",\n'
+        '    dst = "ad_1:in:2"\n'
+        '  ),\n'
+        '  branch_1: (\n'
+        '    type = "wire",\n'
+        '    src = "wire_1:0",\n'
+        '    dst = "portconnector_0:in:0"\n'
+        '  ),\n'
+    )
+
+    assert parse_page_pairs(text) == [("n_dc", 0, "ad_1", 2)]
