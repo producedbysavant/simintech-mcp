@@ -198,8 +198,14 @@ def scan_tree(root: Path, *, files: Optional[Iterable[Path]] = None) -> Findings
         # Каталоги пропуска берутся **относительно корня**: имена выше него
         # (репозиторий, лежащий внутри каталога `build`, в CI или у человека)
         # иначе выключили бы проверку целиком — и молча.
+        #
+        # Путь приводится к posix-форме (`as_posix`): исключения и зоны
+        # (`FIXTURE_DIR`, `ALLOWLIST_PATHS`) заданы прямыми слэшами, а
+        # `str(relative_to(...))` — форма ОС. На Windows она давала обратные
+        # слэши, и исключение фикстур не срабатывало: гейт помечал запрещённым
+        # собственную разрешённую фикстуру (находка #82).
         try:
-            relative = str(path.relative_to(root))
+            relative = path.relative_to(root).as_posix()
         except ValueError:
             continue
         if (SKIP_DIRS & set(Path(relative).parts)
