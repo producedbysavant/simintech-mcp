@@ -1809,14 +1809,19 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     Одним прогоном — не оптимизация, а условие: контур перезапускает расчёт,
     и прогон на каждый блок стоил бы его N раз (у порт-блоков N — десятки).
     Страница перед прогоном активируется: скрипт ставится в текущую страницу,
-    и блоки ищутся по id на ней. Подтверждение — перечитывание `get_size`:
-    «среда не приняла запись» остаётся примечанием, а не успехом.
+    и блоки ищутся по id на ней; не удалось активировать — **отказ**, а не
+    прогон вслепую: промах записи выглядел бы как «среда не приняла запись»
+    и увёл бы диагноз в сторону среды (находка ревью PR #102). Подтверждение
+    — перечитывание `get_size`: «среда не приняла запись» остаётся
+    примечанием, а не успехом.
     """
     try:
         page.activate()
     except Exception as exc:                                  # noqa: BLE001
-        lines.append(f"{where}: страницу не удалось сделать активной "
-                     f"({type(exc).__name__}: {exc}) — запись пойдёт по id.")
+        raise ToolError(
+            f"габариты не записаны: страницу «{where}» не удалось сделать "
+            f"активной ({type(exc).__name__}: {exc}) — запись по id могла бы "
+            f"уйти в блок другой страницы. Проект не изменён.") from exc
     outcome = _run_contour_body(_size_fixes_body(plan),
                                 failed="записать габариты не удалось")
     if outcome.kind == OUTCOME_NOT_COMPILED:
@@ -1986,8 +1991,18 @@ def fit_port_blocks() -> str:
     pages = _walk_pages(project, main, lines)
     affected: List[Any] = []
     changed = 0
-    for page, where in pages:
-        changed += _fit_page_sizes(page, where, affected, lines)
+    try:
+        for page, where in pages:
+            changed += _fit_page_sizes(page, where, affected, lines)
+    finally:
+        # Активной возвращается главная — и при отказе посередине обхода:
+        # `_apply_size_plan` мог отказать на странице субмодели, оставив её
+        # текущей, а следующая контурная операция (выгрузка, снимок) снимает
+        # ИМЕННО активную страницу (находка ревью PR #102).
+        try:
+            main.activate()
+        except Exception:                                     # noqa: BLE001
+            pass
     if not changed:
         head = (f"Габариты по правилам: менять нечего (оценка "
                 f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
@@ -2004,12 +2019,6 @@ def fit_port_blocks() -> str:
                              f"({type(exc).__name__}: {exc}).")
         result = (f"Габариты подогнаны: {changed} (страниц обойдено: "
                   f"{len(pages)}).\n" + "\n".join(lines))
-    # Активной возвращается главная: обход активировал каждую страницу, а
-    # следующая контурная операция (выгрузка) снимает ИМЕННО активную.
-    try:
-        main.activate()
-    except Exception:                                         # noqa: BLE001
-        pass
     return result
 
 

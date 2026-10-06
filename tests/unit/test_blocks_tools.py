@@ -1084,6 +1084,7 @@ class _FitBridge:
     """
 
     kind = "ok"
+    kinds: list | None = None    # исход по вызову: [1-й, 2-й, дальше — последний]
     registry: dict = {}          # id блока -> блок (на тест)
     body = ""
     calls = 0
@@ -1097,7 +1098,11 @@ class _FitBridge:
 
         type(self).body = body
         type(self).calls += 1
-        if type(self).kind == "ok":
+        kind = type(self).kind
+        if type(self).kinds:
+            index = min(type(self).calls - 1, len(type(self).kinds) - 1)
+            kind = type(self).kinds[index]
+        if kind == "ok":
             pair = re.compile(
                 r'blk = (\d+);\nsetpropformula\(blk, "(\w+)", ""\);\n'
                 r'setprop\(blk, "(\w+)", ([-\d.eE]+)\);')
@@ -1105,14 +1110,15 @@ class _FitBridge:
                 block = type(self).registry[int(match.group(1))]
                 block.set_size_value(match.group(2), match.group(4))
         return PageRunResult(
-            outcome=ContourOutcome(kind=type(self).kind, lines=[]),
+            outcome=ContourOutcome(kind=kind, lines=[]),
             restored_script="")
 
 
-def _fit_bridge(registry, kind="ok"):
+def _fit_bridge(registry, kind="ok", kinds=None):
     """Мост с конфигурацией на один тест: класс не мутируется (урок #83)."""
     return type("_ConfiguredFitBridge", (_FitBridge,), {
-        "registry": registry, "kind": kind, "calls": 0, "body": ""})
+        "registry": registry, "kind": kind, "kinds": kinds,
+        "calls": 0, "body": ""})
 
 
 def _install_fit_contour(monkeypatch, tmp_path, project, bridge):
@@ -1260,6 +1266,88 @@ async def test_fit_port_blocks_refuses_on_not_compiled(monkeypatch, tmp_path):
 
     assert "не собралось" in text
     assert block.graph_writes == [] and block.value_writes == []
+
+
+class _JournalPage(_FakePage):
+    """Страница, отмечающая активации в общем журнале теста."""
+
+    def __init__(self, blocks, journal, label):
+        super().__init__(blocks)
+        self._journal = journal
+        self._label = label
+
+    def activate(self):
+        self._journal.append(self._label)
+        return super().activate()
+
+
+class _JournalProject(_FakeProject):
+    """Проект с журнальной главной страницей и страницами субмоделей."""
+
+    def __init__(self, main_page, sub_pages):
+        super().__init__({})
+        self._page = main_page
+        self._subs = sub_pages
+
+    def submodel_page(self, block_id):
+        return self._subs[block_id]
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_returns_main_active_after_midwalk_failure(
+        monkeypatch, tmp_path):
+    """Отказ на странице субмодели не оставляет её активной — главная возвращается.
+
+    Находка ревью PR #102: `main.activate()` стоял после цикла обхода, а
+    отказ `_apply_size_plan` вылетал раньше — субмодель осталась бы текущей,
+    и следующая контурная операция (выгрузка, снимок) сняла бы её текст.
+    """
+    journal: list = []
+    port = _PortBlock(name="InputPort_0", names="Very_Long_Signal_Name\r\n")
+    sub_port = _PortBlock(name="in_1", names="Inner_Long_Name_Here\r\n")
+    sub_port.id = 4                       # id не должен совпадать с блоком главной
+    sub_page = _JournalPage({"in_1": sub_port}, journal, "субмодель")
+    main_page = _JournalPage({"InputPort_0": port}, journal, "главная")
+    main_page._blocks["sub_1"] = _SubmodelBlock(block_id=5)
+    project = _JournalProject(main_page, {5: sub_page})
+    bridge = _fit_bridge({port.id: port, sub_port.id: sub_port},
+                         kinds=["ok", "not-compiled"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = await _error("fit_port_blocks", {})
+
+    assert "не собралось" in text
+    assert journal[-1] == "главная", (
+        "отказ на субмодели оставил активной её, а не главную")
+
+
+class _UnactivatableFitPage(_FakePage):
+    """Страница, которую сделать текущей не удаётся (деградация сцены)."""
+
+    def activate(self):
+        raise RuntimeError("SetCurrentPage отказал")
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_refuses_when_page_activation_fails(monkeypatch,
+                                                                  tmp_path):
+    """Не удалось активировать страницу правки — отказ, а не прогон вслепую.
+
+    Находка ревью PR #102: провал активации проглатывался, прогон шёл по id,
+    и промах записи выглядел как «среда не приняла запись» — диагноз уходил
+    в сторону среды.
+    """
+    port = _PortBlock(name="InputPort_0", names="Very_Long_Signal_Name\r\n")
+    project = _FakeProject({})
+    project._page = _UnactivatableFitPage({"InputPort_0": port})
+    bridge = _fit_bridge({port.id: port})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = await _error("fit_port_blocks", {})
+
+    assert "активной" in text
+    assert bridge.calls == 0, "контур звали без активной страницы"
+    assert port.value_writes == [] and port.graph_writes == []
 
 
 class _AnchorBlock(_SizeBlock):
