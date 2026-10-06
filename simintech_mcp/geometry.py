@@ -35,6 +35,14 @@ STUB = float(_canon.STUB)
 channel_width = _canon.channel_width
 cut_sizes = _canon.cut_sizes
 
+#: Грубая оценка ширины символа подписи, px — общая для проверки и правки:
+#: `check_model_layout` ею ловит «текст шире блока», а `fit_port_blocks`
+#: расширяет рамку порт-блока до неё, чтобы проверка перестала срабатывать.
+#: Точную ширину шрифта COM не отдаёт, поэтому оценка намеренно названа
+#: оценкой: она ловит случаи с запасом (имя в 20+ символов на 32-пиксельной
+#: рамке), а не косметику.
+CHAR_WIDTH_ESTIMATE = 8.0
+
 
 def _ortho_orientation(p: "tuple[float, float]", q: "tuple[float, float]") -> \
         "str | None":

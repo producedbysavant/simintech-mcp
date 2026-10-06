@@ -117,7 +117,7 @@ def _snap_centers(centers: dict[str, tuple[float, float]]) -> None:
                           round(cy / GRID_STEP) * GRID_STEP)
 
 
-def _first_point(points_text: str) -> "tuple[float, float] | None":
+def first_point(points_text: str) -> "tuple[float, float] | None":
     """Первая точка `Points` — центр блока (замер 02.10.2026).
 
     `None` — свойство пусто или не разбирается: вызывающий обязан назвать
@@ -168,7 +168,7 @@ def _rect_of(points_text: str, size: "tuple[float, float]") -> \
     или размер недоступен: проверка обязана назвать такой блок, а не молча
     счесть его непересекающимся.
     """
-    center = _first_point(points_text)
+    center = first_point(points_text)
     if center is None:
         return None
     cx, cy = center
@@ -1005,7 +1005,7 @@ def set_block_center(block: str = "", x: Optional[float] = None,
         target = available[name]
         before = None
         try:
-            before = _first_point(target.get_points())
+            before = first_point(target.get_points())
         except Exception:                                     # noqa: BLE001
             before = None
         target.set_center(cx, cy)

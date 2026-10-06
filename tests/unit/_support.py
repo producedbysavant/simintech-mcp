@@ -350,6 +350,16 @@ class _FakePage:
     def __init__(self, blocks, created=None):
         self._blocks = blocks
         self._created = created if created is not None else []
+        #: Идентификатор страницы (у реальной — COM-id): нужен обходу
+        #: субмоделей, который защищается от повторного входа.
+        self.id = id(self)
+        #: Сколько раз страницу делали текущей (`SetCurrentPage`): по счётчику
+        #: проверяется, что обход субмоделей возвращает активной главную.
+        self.activations = 0
+
+    def activate(self):
+        """Сделать страницу текущей — подделка считает вызовы."""
+        self.activations += 1
 
     def find_block(self, name):
         return self._blocks.get(name)

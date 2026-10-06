@@ -12,6 +12,7 @@ from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
 
 from _support import (
     _FakeBlock,
+    _FakePage,
     _FakeProject,
     _FakeProjectWithCreate,
     _PlacedBlock,
@@ -1027,3 +1028,198 @@ async def test_set_block_size_port_unsat_also_at_bounds(monkeypatch):
 
     assert "нельзя вовсе" in text
     assert block.graph_writes == []
+
+
+# ─── fit_port_blocks: ширина порт-блоков по подписям (mcp#19) ──────
+
+
+class _SubmodelBlock(_SizeBlock):
+    """Блок-субмодель: страница берётся у проекта по id блока."""
+
+    def __init__(self, name="sub_1", block_id=5):
+        super().__init__(name=name)
+        self.class_name = "Субмодель"
+        self.id = block_id
+
+
+class _SubmodelProject(_FakeProject):
+    """Проект с субмоделью: `submodel_page(id)` отдаёт её страницу."""
+
+    def __init__(self, blocks, subs):
+        super().__init__(blocks)
+        self._subs = subs
+
+    def submodel_page(self, block_id):
+        return self._subs[block_id]
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_widens_long_labels(monkeypatch):
+    """Длинная подпись: ширина растёт по той же оценке, что у проверки."""
+    long_name = "CoolTT_C_CoolSt_WorkSt"
+    block = _PortBlock(names=long_name + "\r\n")
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.graph_writes == [("Width", str(len(long_name) * 8))]
+    assert "Габариты подогнаны: 1" in text
+    assert long_name in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_keeps_fitting_labels(monkeypatch):
+    """Подпись в рамке — блок не трогается: сужения нет; главная — активна."""
+    block = _PortBlock(names="in\r\n")
+    project = _FakeProject({"InputPort_0": block})
+    monkeypatch.setattr(session, "_project", project)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.graph_writes == []
+    assert "менять нечего" in text
+    assert project.get_main_page().activations >= 1, (
+        "обход оставил активной субмодель, а не главную")
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_walks_submodels(monkeypatch):
+    """Порт-блок ВНУТРИ субмодели расширяется; главная — снова активна."""
+    sub_block = _SubmodelBlock(block_id=5)
+    inner_name = "In_WorkSt_Channel_1"
+    inner = _PortBlock(name="in_1", names=inner_name + "\r\n")
+    sub_page = _FakePage({"in_1": inner})
+    project = _SubmodelProject({"sub_1": sub_block}, {5: sub_page})
+    monkeypatch.setattr(session, "_project", project)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert inner.graph_writes == [("Width", str(len(inner_name) * 8))]
+    assert "субмодель 'sub_1'" in text
+    assert project.get_main_page().activations >= 1, (
+        "после обхода субмоделей главная не возвращена активной")
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_names_unreadable_names(monkeypatch):
+    """Нечитаемый PortNames — примечанием, а не молчанием и не отказом."""
+    block = _UnreadableNamesPort()
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"InputPort_0": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert "PortNames не читается" in text
+    assert block.graph_writes == []
+
+
+class _PortedSubmodelBlock(_SizeBlock):
+    """Блок-субмодель с читаемым числом внешних портов."""
+
+    def __init__(self, name="sub_1", block_id=5, ports=6, size=(48.0, 32.0)):
+        super().__init__(name=name, size=size)
+        self.class_name = "Субмодель"
+        self.id = block_id
+        self._ports = ports
+
+    def get_port_count(self):
+        return self._ports
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_fits_submodel_height(monkeypatch):
+    """Высота блока-субмодели — 16 px на внешний порт (6 портов → 96)."""
+    block = _PortedSubmodelBlock(ports=6)
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"sub_1": block}))
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.graph_writes == [("Height", "96")]
+    assert "высота 32 → 96 (6 порт(ов) × 16)" in text
+
+
+class _AnchorBlock(_SizeBlock):
+    """Блок с читаемой точкой центра (как у настоящего блока)."""
+
+    def __init__(self, name="k_0", center=(456.0, 72.0), size=(32.0, 16.0)):
+        super().__init__(name=name, size=size)
+        self._center = center
+
+    def get_points(self):
+        return f"[({self._center[0]:g} , {self._center[1]:g})]"
+
+
+class _ValueLabelBlock(_SizeBlock):
+    """Подпись значения: якорь — левый верх карточки 60×40 (живой замер)."""
+
+    def __init__(self, name="TextLabel3", anchor=(248.0, 192.0)):
+        super().__init__(name=name, size=(60.0, 40.0))
+        self.class_name = "constLabel"
+        self._anchor = list(anchor)
+        self.centers = []
+
+    def get_points(self):
+        return f"[({self._anchor[0]:g} , {self._anchor[1]:g})]"
+
+    def set_center(self, cx, cy):
+        self.centers.append((cx, cy))
+        self._anchor = [cx - 30.0, cy - 20.0]
+        return self
+
+
+def _install_export(monkeypatch, text):
+    from simintech_mcp.tools import blocks as blocks_tools
+    monkeypatch.setattr(blocks_tools, "page_export_text",
+                        lambda: (text, False, None, None))
+
+
+def test_constlabel_parents_reads_pairs():
+    """Карта «подпись → родитель» из выгрузки (constLabel + parentblock)."""
+    from simintech_mcp.tools.blocks import _constlabel_parents
+
+    text = ('(\n  k_0: (\n    type = "Константа",\n'
+            '    points=[(456 , 72)]\n  ),\n'
+            '  TextLabel3: (\n    type = "constLabel",\n'
+            '    points=[(440 , 46)],\n    parentblock = "k_0"\n  )\n)')
+    assert _constlabel_parents(text) == {"TextLabel3": "k_0"}
+    assert _constlabel_parents("(\n)") == {}
+
+
+@pytest.mark.anyio
+async def test_fit_value_labels_moves_label_to_parent(monkeypatch):
+    """Подпись из (248,192) подтягивается к левому верхнему углу родителя."""
+    parent = _AnchorBlock()             # центр (456, 72), 32×16
+    label = _ValueLabelBlock()          # якорь (248, 192)
+    project = _FakeProject({"k_0": parent, "TextLabel3": label})
+    monkeypatch.setattr(session, "_project", project)
+    _install_export(monkeypatch,
+                    '(\n  TextLabel3: (\n    type = "constLabel",\n'
+                    '    points=[(248 , 192)],\n    parentblock = "k_0"\n  )\n)')
+
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    # Цель якоря (440, 46) = (456−16, 72−8−18); set_center — центром карточки.
+    assert label.centers == [(470.0, 66.0)]
+    assert "подпись (248, 192) → (440, 46)" in text
+    assert "к блоку «k_0»" in text
+    assert project.get_main_page().activations >= 1, (
+        "выгрузка пойдёт не по той странице: главная не активирована")
+
+
+@pytest.mark.anyio
+async def test_fit_value_labels_keeps_label_in_place(monkeypatch):
+    """Подпись уже у блока — центры не трогаются."""
+    parent = _AnchorBlock()
+    label = _ValueLabelBlock(anchor=(440.0, 46.0))
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject({"k_0": parent, "TextLabel3": label}))
+    _install_export(monkeypatch,
+                    '(\n  TextLabel3: (\n    type = "constLabel",\n'
+                    '    points=[(440 , 46)],\n    parentblock = "k_0"\n  )\n)')
+
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    assert label.centers == []
+    assert "на месте" in text
