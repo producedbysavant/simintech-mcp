@@ -72,14 +72,14 @@ dependencies = [
     # модулей не содержит — mcp-инструменты (layout_place: canon/repeat)
     # падали на импорте в CI, пока пин не поднят.
     # sha: c31cc96b2702285fd4d878ace1ee36a94dc60ca8
-    # ff87db1 — коммит main simintech-code после мержа PR #54 (squash):
-    # библиотека 0.14.0 — `shutdown` возвращает исход снятия (True/False;
-    # проверка живости `is_process_alive` вместо снимка процессов — dfae919,
-    # выпускная заметка d3de5fd). Тег v0.14.0 ещё не поставлен — пин на
-    # коммит выпуска, как и с c31cc96. Сервер `disconnect` называет процесс
-    # «завершённым» по этому исходу и больше не сканирует снимки.
+    # v0.14.0 — релизный тег simintech-code (библиотека 0.14.0): `shutdown`
+    # сообщает исход снятия — True/False по проверке живости `is_process_alive`
+    # вместо снимка процессов (dfae919; выпускная заметка d3de5fd; PR #54,
+    # issue #34; squash-коммит main ff87db1, тег указывает на него). Сервер
+    # `disconnect` называет процесс «завершённым» по этому исходу и больше не
+    # сканирует снимки.
     # sha: ff87db189b2e5569eeb0a704ebeab1bd0ae2fbb6
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@ff87db189b2e5569eeb0a704ebeab1bd0ae2fbb6",
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.14.0",
     "mcp>=1.0.0",
     "fastmcp>=2.0",
     # Импортируется напрямую — проверка корректности .xprt в
