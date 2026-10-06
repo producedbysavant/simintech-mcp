@@ -1938,18 +1938,29 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
     `parentblock` через COM не читается (замер 06.10.2026: `getpropasstring`
     по обоим написаниям пуст), поэтому связь берётся из текста
     `savemodeltofile` — того же источника, что у автографа `layout_place`.
+
+    **Только верхний уровень.** Выгрузка несёт вложенные страницы на всю
+    глубину — `subsystem:` и скобочный блок (замер 06.10.2026) — и без
+    фильтра пары субмоделей попадали бы в карту страницы-владельца: на
+    страницах с совпавшими автоименами (`TextLabel7` у главной и субмодели
+    в живой пробе) подпись могла быть «подтянута» по чужой паре. Глубина
+    считается по скобкам построчно (скобки `points=[…]` сбалансированы в
+    строке): записи при глубине 1 — верхний уровень.
     """
     result: Dict[str, str] = {}
     name = ""
     is_label = False
     parent = ""
+    depth = 0
     for line in text.splitlines():
         stripped = line.strip()
-        match = re.match(r"^([A-Za-z_][\w]*):\s*\($", stripped)
+        top_level = depth == 1
+        depth += stripped.count("(") - stripped.count(")")
+        match = re.match(r"^([A-Za-z_][\w]*):\s*\(\s*$", stripped)
         if match:
-            if is_label and parent:
+            if is_label and parent and name:
                 result[name] = parent
-            name = match.group(1)
+            name = match.group(1) if top_level else ""
             is_label = False
             parent = ""
             continue
@@ -1959,7 +1970,7 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
             is_label = "constLabel" in stripped
         elif "parentblock" in stripped and "=" in stripped:
             parent = stripped.split("=", 1)[1].strip().strip(",").strip('"')
-    if is_label and parent:
+    if is_label and parent and name:
         result[name] = parent
     return result
 
@@ -2043,21 +2054,35 @@ def fit_value_labels() -> str:
 
     Связь «подпись → родитель» читается **выгрузкой страницы**
     (`parentblock` через COM не отдаётся — замер 06.10.2026): подпись без
-    родителя или уже стоящая на месте не трогается. Подгоняется **текущая
-    (главная) страница**; подписи внутри субмоделей — отдельным шагом:
-    выгрузка страницы субмодели на живом контуре ещё не проверена на
-    страницах с собственным скриптом.
+    родителя или уже стоящая на месте не трогается.
+
+    **Субмодели обходятся рекурсивно** (`Project.submodel_page`, предел
+    `MAX_SUBMODEL_DEPTH`, защита от повторного входа) — тем же обходом, что у
+    `fit_port_blocks`: подписи значений бывают и на внутренних страницах, а
+    выгрузка снимается активной страницей, поэтому каждая страница
+    активируется перед съёмкой. Активной в конце снова становится главная.
     """
     project = session.ensure_project()
     main = project.get_main_page()
     lines: List[str] = []
-    moved = _fit_value_labels_page(main, "главная", lines)
+    pages = _walk_pages(project, main, lines)
+    moved = 0
+    for page, where in pages:
+        moved += _fit_value_labels_page(page, where, lines)
+    # Активной возвращается главная: обход активировал каждую страницу, а
+    # следующая контурная операция (выгрузка) снимает ИМЕННО активную
+    # (живой случай 06.10.2026: после fit_port_blocks активной была
+    # субмодель, и выгрузка принесла её текст без единой подписи).
+    try:
+        main.activate()
+    except Exception:                                         # noqa: BLE001
+        pass
     if not moved:
         head = "Подписи значений на месте."
         return head + ("\n" + "\n".join(lines) if lines else "")
     project.repaint()
-    return (f"Подписи значений подтянуты к блокам: {moved}.\n"
-            + "\n".join(lines))
+    return (f"Подписи значений подтянуты к блокам: {moved} "
+            f"(страниц обойдено: {len(pages)}).\n" + "\n".join(lines))
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).

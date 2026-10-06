@@ -1187,6 +1187,46 @@ def test_constlabel_parents_reads_pairs():
     assert _constlabel_parents("(\n)") == {}
 
 
+def test_constlabel_parents_skips_submodel_pairs():
+    """Пары вложенных страниц не попадают в карту страницы-владельца.
+
+    Выгрузка главной несёт субмодели целиком (`subsystem:` + скобочный
+    блок): без фильтра по глубине одноимённая подпись главной могла бы
+    «подтянуться» по паре субмодели (живой случай: `TextLabel7` есть и на
+    главной, и внутри `sub3`).
+    """
+    from simintech_mcp.tools.blocks import _constlabel_parents
+
+    text = (
+        '(\n'
+        '  TextLabel7: (\n'
+        '    type = "constLabel",\n'
+        '    points=[(184 , -34)],\n'
+        '    parentblock = "inner"\n'
+        '  ),\n'
+        '  sub3: (\n'
+        '    type = "Субмодель",\n'
+        '    points=[(600 , 0)],\n'
+        '    subsystem:\n'
+        '        (\n'
+        '          gain5: (\n'
+        '            type = "Усилитель",\n'
+        '            points=[(60 , 60)],\n'
+        '            a = 2\n'
+        '          ),\n'
+        '          TextLabel7: (\n'
+        '            type = "constLabel",\n'
+        '            points=[(248 , 192)],\n'
+        '            parentblock = "gain5"\n'
+        '          )\n'
+        '        )\n'
+        '  )\n'
+        ')'
+    )
+
+    assert _constlabel_parents(text) == {"TextLabel7": "inner"}
+
+
 @pytest.mark.anyio
 async def test_fit_value_labels_moves_label_to_parent(monkeypatch):
     """Подпись из (248,192) подтягивается к левому верхнему углу родителя."""
@@ -1223,3 +1263,46 @@ async def test_fit_value_labels_keeps_label_in_place(monkeypatch):
 
     assert label.centers == []
     assert "на месте" in text
+
+
+@pytest.mark.anyio
+async def test_fit_value_labels_walks_submodels(monkeypatch):
+    """Подписи внутри субмоделей подтягиваются тем же обходом (mcp#19, фаза 2).
+
+    Выгрузка снимается активной страницей, поэтому обход обязан активировать
+    субмодель перед съёмкой, а в конце вернуть активной главную (иначе
+    следующая контурная операция снимет текст субмодели).
+    """
+    parent = _AnchorBlock()                      # главная — без подписей
+    sub_parent = _AnchorBlock(name="k_1", center=(100.0, 100.0))
+    sub_label = _ValueLabelBlock(name="TextLabel5", anchor=(10.0, 10.0))
+    sub_page = _FakePage({"k_1": sub_parent, "TextLabel5": sub_label})
+    sub_block = _SubmodelBlock(name="sub_1", block_id=5)
+    project = _SubmodelProject({"k_0": parent, "sub_1": sub_block}, {5: sub_page})
+    monkeypatch.setattr(session, "_project", project)
+
+    texts = [
+        '(\n  k_0: (\n    type = "Константа",\n    points=[(456 , 72)]\n  )\n)',
+        '(\n  TextLabel5: (\n    type = "constLabel",\n'
+        '    points=[(10 , 10)],\n    parentblock = "k_1"\n  )\n)',
+    ]
+    calls = {"n": 0}
+
+    def fake_export():
+        # Порядок обхода — как у `_walk_pages`: главная, затем субмодель.
+        text = texts[min(calls["n"], len(texts) - 1)]
+        calls["n"] += 1
+        return (text, False, None, None)
+
+    from simintech_mcp.tools import blocks as blocks_tools
+    monkeypatch.setattr(blocks_tools, "page_export_text", fake_export)
+
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    # Цель якоря (84, 74) = (100−16, 100−8−18) у k_1; set_center — центром.
+    assert sub_label.centers == [(114.0, 94.0)], \
+        "подпись внутри субмодели не подтянута"
+    assert "страниц обойдено: 2" in text
+    assert "субмодель 'sub_1'" in text
+    assert project.get_main_page().activations >= 1, \
+        "главная не возвращена активной"
