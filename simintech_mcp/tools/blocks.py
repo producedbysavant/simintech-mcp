@@ -1699,16 +1699,28 @@ MAX_SUBMODEL_DEPTH = 8
 VALUE_LABEL_GAP = 18.0
 
 
-def _fit_one_port_block(block: Block, where: str,
-                        lines: List[str]) -> bool:
-    """Расширить один порт-блок под самую длинную подпись.
+#: Отложенная правка габарита: (блок, имя, свойство, было, станет, чем
+#: обосновано). Правки страницы собираются до общего контурного прогона
+#: (см. `_apply_size_plan`), а подтверждение идёт после него перечитыванием.
+class _SizeFix(NamedTuple):
+    block: Any
+    name: str
+    prop: str
+    before: float
+    want: float
+    note: str
+
+
+def _plan_port_width(block: Block, where: str,
+                     lines: List[str], plan: List[_SizeFix]) -> None:
+    """Запланировать расширение порт-блока под самую длинную подпись.
 
     Ширина — по той же оценке, что ловит `check_model_layout`
     (`CHAR_WIDTH_ESTIMATE` px на символ): правка и проверка обязаны
     сходиться, иначе проверка продолжила бы ругаться на исправленное.
     Высота не трогается — у порт-блоков она подчинена правилу 16 px на
-    строку сигнала (`set_block_size`). True — ширина изменена и подтверждена
-    перечитыванием.
+    строку сигнала (`set_block_size`). Записи здесь нет: саму правку
+    применяет общий прогон страницы.
     """
     try:
         name = block.get_name()
@@ -1718,45 +1730,35 @@ def _fit_one_port_block(block: Block, where: str,
     if names is None:
         lines.append(f"{where}: {name}: PortNames не читается — ширина не "
                      f"проверена.")
-        return False
+        return
     if not names:
-        return False
+        return
     try:
         width = float(block.get_size()[0])
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: ширина не читается "
                      f"({type(exc).__name__}: {exc}) — пропущен.")
-        return False
+        return
     longest = max(names, key=len)
     estimate = len(longest) * CHAR_WIDTH_ESTIMATE
     if estimate <= width:
-        return False
-    block.set_graph_prop("Width", _size_value(estimate))
-    try:
-        after = float(block.get_size()[0])
-    except Exception:                                         # noqa: BLE001
-        lines.append(f"{where}: {name}: ширина записана, но перечитать не "
-                     f"удалось — проверьте снимком.")
-        return True
-    if after == width:
-        lines.append(f"{where}: {name}: ширина не изменилась "
-                     f"({_size_value(width)}) — среда не приняла запись.")
-        return False
-    lines.append(
-        f"{where}: {name}: ширина {_size_value(width)} → "
-        f"{_size_value(after)} («{longest}» ~{estimate:g} px, оценка "
-        f"×{CHAR_WIDTH_ESTIMATE:g}).")
-    return True
+        return
+    plan.append(_SizeFix(
+        block=block, name=name, prop="Width", before=width,
+        want=float(estimate),
+        note=(f"«{longest}» ~{estimate:g} px, оценка "
+              f"×{CHAR_WIDTH_ESTIMATE:g}")))
 
 
-def _fit_submodel_height(block: Block, where: str,
-                         lines: List[str]) -> bool:
-    """Высота блока-субмодели — 16 px на его внешний порт.
+def _plan_submodel_height(block: Block, where: str,
+                          lines: List[str], plan: List[_SizeFix]) -> None:
+    """Запланировать высоту блока-субмодели — 16 px на его внешний порт.
 
     Импорт ставит субмодели 48×32 независимо от числа портов (замеры
     06.10.2026: и у нашей сборки, и у fdd002 при 6 портах — те же 48×32).
     Читаемая высота — `PORT_ROW_HEIGHT` × число портов (6 портов → 96);
-    ширина не трогается. True — высота изменена и подтверждена.
+    ширина не трогается. Записи здесь нет: саму правку применяет общий
+    прогон страницы.
     """
     try:
         name = block.get_name()
@@ -1767,33 +1769,94 @@ def _fit_submodel_height(block: Block, where: str,
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
-        return False
+        return
     if ports <= 0:
-        return False
+        return
     want = float(ports * PORT_ROW_HEIGHT)
     try:
         height = float(block.get_size()[1])
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: высота не читается "
                      f"({type(exc).__name__}: {exc}) — пропущена.")
-        return False
+        return
     if height == want:
-        return False
-    block.set_graph_prop("Height", _size_value(want))
+        return
+    plan.append(_SizeFix(
+        block=block, name=name, prop="Height", before=height, want=want,
+        note=f"{ports} порт(ов) × {PORT_ROW_HEIGHT:g}"))
+
+
+def _size_fixes_body(plan: List[_SizeFix]) -> str:
+    """Тело контура для плана правок — пары «снять формулу + записать значение».
+
+    Тот же путь, что у `set_block_size` (живые замеры 06.10.2026): COM-метод
+    `SetGraphBlockProp` кладёт число в «Формулу», а языковая пара — в
+    «Значение». Очистка формулы обязательна и стоит первой: при живой формуле
+    `setprop` маскируется (сохранение берёт формулу).
+    """
+    lines: List[str] = []
+    for fix in plan:
+        lines.append(f"blk = {fix.block.id};")
+        lines.append(f'setpropformula(blk, "{fix.prop}", "");')
+        lines.append(f'setprop(blk, "{fix.prop}", {_size_value(fix.want)});')
+    return "\n".join(lines) + "\n"
+
+
+def _apply_size_plan(page: Page, where: str, lines: List[str],
+                     plan: List[_SizeFix]) -> int:
+    """Применить план правок одним контурным прогоном; вернуть число сбывшихся.
+
+    Одним прогоном — не оптимизация, а условие: контур перезапускает расчёт,
+    и прогон на каждый блок стоил бы его N раз (у порт-блоков N — десятки).
+    Страница перед прогоном активируется: скрипт ставится в текущую страницу,
+    и блоки ищутся по id на ней. Подтверждение — перечитывание `get_size`:
+    «среда не приняла запись» остаётся примечанием, а не успехом.
+    """
     try:
-        after = float(block.get_size()[1])
-    except Exception:                                         # noqa: BLE001
-        lines.append(f"{where}: {name}: высота записана, но перечитать не "
-                     f"удалось — проверьте снимком.")
-        return True
-    if after == height:
-        lines.append(f"{where}: {name}: высота не изменилась "
-                     f"({_size_value(height)}) — среда не приняла запись.")
-        return False
-    lines.append(
-        f"{where}: {name}: высота {_size_value(height)} → "
-        f"{_size_value(after)} ({ports} порт(ов) × {PORT_ROW_HEIGHT:g}).")
-    return True
+        page.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: страницу не удалось сделать активной "
+                     f"({type(exc).__name__}: {exc}) — запись пойдёт по id.")
+    outcome = _run_contour_body(_size_fixes_body(plan),
+                                failed="записать габариты не удалось")
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            "габариты не записаны: тело не собралось (текст ошибки — в окне "
+            "сообщений редактора SimInTech; через COM он не читается). "
+            "Проект не изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"габариты не подтверждены: тело оборвалось на исполнении."
+            f"{detail} Часть правок могла примениться — проверьте габариты "
+            f"(`get_block_params` размер не читает; смотрите снимок или "
+            f"повторите `fit_port_blocks`).")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            "габариты не подтверждены: секция `initialization` не "
+            "выполнилась — тело не запускалось. Повторите вызов.")
+    changed = 0
+    for fix in plan:
+        word = "ширина" if fix.prop == "Width" else "высота"
+        index = 0 if fix.prop == "Width" else 1
+        try:
+            after = float(fix.block.get_size()[index])
+        except Exception:                                     # noqa: BLE001
+            lines.append(f"{where}: {fix.name}: {word} записана, но "
+                         f"перечитать не удалось — проверьте снимком.")
+            changed += 1
+            continue
+        if after == fix.before:
+            lines.append(f"{where}: {fix.name}: {word} не изменилась "
+                         f"({_size_value(fix.before)}) — среда не приняла "
+                         f"запись.")
+            continue
+        lines.append(
+            f"{where}: {fix.name}: {word} {_size_value(fix.before)} → "
+            f"{_size_value(after)} ({fix.note}).")
+        changed += 1
+    return changed
 
 
 def _walk_pages(project: Any, main: Page,
@@ -1854,6 +1917,8 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
 
     Порт-блоки — ширина по подписям (та же оценка, что у
     `check_model_layout`); блоки-субмодели — высота по числу внешних портов.
+    Правки собираются в план и применяются **одним** контурным прогоном
+    (`_apply_size_plan`): запись идёт в «Значение», а не в «Формулу».
     """
     try:
         blocks = page.get_blocks()
@@ -1861,22 +1926,21 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
         lines.append(f"{where}: блоки не перечислить "
                      f"({type(exc).__name__}: {exc}).")
         return 0
-    changed = 0
+    plan: List[_SizeFix] = []
     for block in blocks:
         try:
             class_name = str(block.class_name).strip()
         except Exception:                                     # noqa: BLE001
             continue
         if class_name in _PORT_HEIGHT_CLASSES:
-            done = _fit_one_port_block(block, where, lines)
+            _plan_port_width(block, where, lines, plan)
         elif class_name == "Субмодель":
-            done = _fit_submodel_height(block, where, lines)
-        else:
-            continue
-        if done:
-            changed += 1
-            if page not in affected:
-                affected.append(page)
+            _plan_submodel_height(block, where, lines, plan)
+    if not plan:
+        return 0
+    changed = _apply_size_plan(page, where, lines, plan)
+    if changed and page not in affected:
+        affected.append(page)
     return changed
 
 
@@ -1901,6 +1965,13 @@ def fit_port_blocks() -> str:
     субмоделей тем же импортом тоже не задаётся, а `check_model_layout`
     смотрит только текущую страницу. Активной в конце снова становится
     главная страница.
+
+    **Запись — в «Значение», а не в «Формулу».** Правки идут языковой парой
+    `setpropformula(…)` + `setprop(…)` (та же, что у `set_block_size`):
+    COM-путь `SetGraphBlockProp` кладёт число в «Формулу», и диалог свойств
+    показывает расхождение. План правок страницы применяется **одним**
+    контурным прогоном — контур перезапускает расчёт, и прогон на каждый
+    блок стоил бы его N раз; страница перед прогоном активируется.
 
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.

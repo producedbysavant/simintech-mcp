@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from simintech_api import ComCallError
 
 from simintech_mcp.server import mcp
 
 from simintech_mcp import catalog, session
+from simintech_mcp.tools import page_script
 from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
 
 from _support import (
@@ -717,13 +720,16 @@ class _SizeBlock:
     """Блок с размером: `set_graph_prop` пишет Width/Height, `get_size` читает.
 
     Подделка моделирует переход: замер 01.10.2026 — `SetGraphBlockProp`
-    принимает значения как есть, и чётные, и нечётные.
+    принимает значения как есть, и чётные, и нечётные. Вторая запись —
+    `set_size_value` («Значение» языковой пары `setprop`) — путь фитов:
+    она отдельная, чтобы тесты видели, каким путём пошла правка.
     """
 
     def __init__(self, name="kx_0", size=(32.0, 32.0)):
         self._name = name
         self._size = list(size)
         self.graph_writes = []
+        self.value_writes = []
         self.class_name = "Усилитель"
         self.id = 3
 
@@ -735,6 +741,12 @@ class _SizeBlock:
 
     def set_graph_prop(self, name, value):
         self.graph_writes.append((name, value))
+        self._size[0 if name == "Width" else 1] = float(value)
+        return self
+
+    def set_size_value(self, name, value):
+        """Языковая запись в «Значение» (не в «Формулу»)."""
+        self.value_writes.append((name, value))
         self._size[0 if name == "Width" else 1] = float(value)
         return self
 
@@ -1053,65 +1065,134 @@ class _SubmodelProject(_FakeProject):
         return self._subs[block_id]
 
 
+class _FitClient:
+    """COM-клиент: контуру достаточно пробного вызова `GetProcessID`."""
+
+    def get_process_id(self) -> int:
+        return 4242
+
+
+class _FitBridge:
+    """Мост-подделка: применяет `setprop` из тела контура к блокам по id.
+
+    Тело контура фитов — пары «`setpropformula(blk, "P", "")` + `setprop(blk,
+    "P", V)`» по строкам `blk = <id>;`. Подделка моделирует переход: правит
+    «Значение» подделки (`set_size_value`), а `graph_writes` («Формула») не
+    трогает — этим и проверяется смена пути. Конфигурация — через фабрику
+    подкласса (`_fit_bridge`): общий класс протекал бы между сериями anyio
+    (урок #83).
+    """
+
+    kind = "ok"
+    registry: dict = {}          # id блока -> блок (на тест)
+    body = ""
+    calls = 0
+
+    def __init__(self, client, project_id):
+        self.project_id = project_id
+
+    def run_page_script(self, body, result_path):
+        from simintech_api.core.script_bridge import PageRunResult
+        from simintech_api.script_probe import ContourOutcome
+
+        type(self).body = body
+        type(self).calls += 1
+        if type(self).kind == "ok":
+            pair = re.compile(
+                r'blk = (\d+);\nsetpropformula\(blk, "(\w+)", ""\);\n'
+                r'setprop\(blk, "(\w+)", ([-\d.eE]+)\);')
+            for match in pair.finditer(body):
+                block = type(self).registry[int(match.group(1))]
+                block.set_size_value(match.group(2), match.group(4))
+        return PageRunResult(
+            outcome=ContourOutcome(kind=type(self).kind, lines=[]),
+            restored_script="")
+
+
+def _fit_bridge(registry, kind="ok"):
+    """Мост с конфигурацией на один тест: класс не мутируется (урок #83)."""
+    return type("_ConfiguredFitBridge", (_FitBridge,), {
+        "registry": registry, "kind": kind, "calls": 0, "body": ""})
+
+
+def _install_fit_contour(monkeypatch, tmp_path, project, bridge):
+    """Подменить клиент, проект и мост фитов — как `_install` у скриптов."""
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_client", _FitClient())
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(page_script, "ScriptBridge", bridge)
+
+
 @pytest.mark.anyio
-async def test_fit_port_blocks_widens_long_labels(monkeypatch):
-    """Длинная подпись: ширина растёт по той же оценке, что у проверки."""
+async def test_fit_port_blocks_widens_long_labels(monkeypatch, tmp_path):
+    """Длинная подпись: ширина растёт записью в «Значение», не в «Формулу»."""
     long_name = "CoolTT_C_CoolSt_WorkSt"
     block = _PortBlock(names=long_name + "\r\n")
-    monkeypatch.setattr(session, "_project",
-                        _FakeProject({"InputPort_0": block}))
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.graph_writes == [("Width", str(len(long_name) * 8))]
+    assert block.value_writes == [("Width", str(len(long_name) * 8))]
+    assert block.graph_writes == [], "правка ушла в «Формулу» вместо «Значения»"
+    assert block.get_size()[0] == len(long_name) * 8.0
+    assert bridge.calls == 1
     assert "Габариты подогнаны: 1" in text
     assert long_name in text
 
 
 @pytest.mark.anyio
-async def test_fit_port_blocks_keeps_fitting_labels(monkeypatch):
-    """Подпись в рамке — блок не трогается: сужения нет; главная — активна."""
+async def test_fit_port_blocks_keeps_fitting_labels(monkeypatch, tmp_path):
+    """Подпись в рамке — блок не трогается, контур не зовётся; главная активна."""
     block = _PortBlock(names="in\r\n")
     project = _FakeProject({"InputPort_0": block})
-    monkeypatch.setattr(session, "_project", project)
+    bridge = _fit_bridge({})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.graph_writes == []
+    assert block.graph_writes == [] and block.value_writes == []
+    assert bridge.calls == 0, "контур звали, хотя менять нечего"
     assert "менять нечего" in text
     assert project.get_main_page().activations >= 1, (
         "обход оставил активной субмодель, а не главную")
 
 
 @pytest.mark.anyio
-async def test_fit_port_blocks_walks_submodels(monkeypatch):
-    """Порт-блок ВНУТРИ субмодели расширяется; главная — снова активна."""
+async def test_fit_port_blocks_walks_submodels(monkeypatch, tmp_path):
+    """Порт-блок ВНУТРИ субмодели расширяется этой же страницей."""
     sub_block = _SubmodelBlock(block_id=5)
     inner_name = "In_WorkSt_Channel_1"
     inner = _PortBlock(name="in_1", names=inner_name + "\r\n")
     sub_page = _FakePage({"in_1": inner})
     project = _SubmodelProject({"sub_1": sub_block}, {5: sub_page})
-    monkeypatch.setattr(session, "_project", project)
+    bridge = _fit_bridge({inner.id: inner})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert inner.graph_writes == [("Width", str(len(inner_name) * 8))]
+    assert inner.value_writes == [("Width", str(len(inner_name) * 8))]
+    assert sub_page.activations >= 1, (
+        "страница правки не активирована перед контурным прогоном")
     assert "субмодель 'sub_1'" in text
     assert project.get_main_page().activations >= 1, (
         "после обхода субмоделей главная не возвращена активной")
 
 
 @pytest.mark.anyio
-async def test_fit_port_blocks_names_unreadable_names(monkeypatch):
+async def test_fit_port_blocks_names_unreadable_names(monkeypatch, tmp_path):
     """Нечитаемый PortNames — примечанием, а не молчанием и не отказом."""
     block = _UnreadableNamesPort()
-    monkeypatch.setattr(session, "_project",
-                        _FakeProject({"InputPort_0": block}))
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
     assert "PortNames не читается" in text
-    assert block.graph_writes == []
+    assert block.graph_writes == [] and block.value_writes == []
+    assert bridge.calls == 0
 
 
 class _PortedSubmodelBlock(_SizeBlock):
@@ -1128,16 +1209,57 @@ class _PortedSubmodelBlock(_SizeBlock):
 
 
 @pytest.mark.anyio
-async def test_fit_port_blocks_fits_submodel_height(monkeypatch):
+async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
     """Высота блока-субмодели — 16 px на внешний порт (6 портов → 96)."""
     block = _PortedSubmodelBlock(ports=6)
-    monkeypatch.setattr(session, "_project",
-                        _FakeProject({"sub_1": block}))
+    project = _FakeProject({"sub_1": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.graph_writes == [("Height", "96")]
+    assert block.value_writes == [("Height", "96")]
+    assert block.graph_writes == []
     assert "высота 32 → 96 (6 порт(ов) × 16)" in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_applies_plan_in_one_contour_run(monkeypatch,
+                                                               tmp_path):
+    """Правки страницы — одним контурным прогоном, а не прогоном на блок.
+
+    Контур перезапускает расчёт: у страницы с десятками порт-блоков прогон
+    на каждый стоил бы его десятки раз. План собирается целиком и
+    применяется один раз.
+    """
+    port = _PortBlock(name="InputPort_0", names="Very_Long_Signal_Name\r\n")
+    sub = _PortedSubmodelBlock(name="sub_1", block_id=5, ports=6)
+    project = _FakeProject({"InputPort_0": port, "sub_1": sub})
+    bridge = _fit_bridge({port.id: port, 5: sub})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert bridge.calls == 1, (
+        "прогон на блок вместо одного прогона на страницу")
+    assert port.value_writes == [("Width", "168")]
+    assert sub.value_writes == [("Height", "96")]
+    assert "Габариты подогнаны: 2" in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_refuses_on_not_compiled(monkeypatch, tmp_path):
+    """Несобравшееся тело — отказ, а не «подогнано»: проект не изменён."""
+    long_name = "CoolTT_C_CoolSt_WorkSt"
+    block = _PortBlock(names=long_name + "\r\n")
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({block.id: block}, kind="not-compiled")
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = await _error("fit_port_blocks", {})
+
+    assert "не собралось" in text
+    assert block.graph_writes == [] and block.value_writes == []
 
 
 class _AnchorBlock(_SizeBlock):
