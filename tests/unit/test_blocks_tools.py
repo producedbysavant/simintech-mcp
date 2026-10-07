@@ -9,7 +9,7 @@ from simintech_api import ComCallError
 
 from simintech_mcp.server import mcp
 
-from simintech_mcp import catalog, session
+from simintech_mcp import catalog, runtime, session
 from simintech_mcp.tools import page_script
 from simintech_mcp.tools.blocks import (
     MAX_BLOCK_IN_PORTS,
@@ -1625,6 +1625,45 @@ async def test_fit_port_blocks_refuses_when_page_activation_fails(monkeypatch,
     assert port.value_writes == [] and port.graph_writes == []
 
 
+@pytest.mark.anyio
+async def test_fit_port_blocks_defers_pages_over_budget(monkeypatch, tmp_path):
+    """Лимит COM-вызова: обход порциями, отложенные названы (issue #117).
+
+    Каждая страница — контурный прогон (~20 с), и на многопстраничной модели
+    одна порция перекрывала `COM_CALL_TIMEOUT`: клиент получал «перезапустите
+    mmain.exe» (неверно — COM не завис), а правки доигрывали в фоне. Здесь
+    бюджет исчерпан после первой страницы: вторая отложена и названа, а
+    повтор её добирает (идемпотентность).
+    """
+    main_block = _PortBlock(name="in_main", names="Main_Long_Signal_Name\r\n")
+    sub_block = _SubmodelBlock(name="sub_1", block_id=5)
+    inner = _PortBlock(name="in_1", names="Inner_Long_Signal_Name\r\n")
+    inner.id = 7                      # иначе id поделок совпадут (оба 3)
+    sub_page = _FakePage({"in_1": inner})
+    project = _SubmodelProject({"in_main": main_block, "sub_1": sub_block},
+                               {5: sub_page})
+    bridge = _fit_bridge({main_block.id: main_block, inner.id: inner})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.01)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert main_block.value_writes, "первая страница обязана обойтись всегда"
+    assert inner.value_writes == [], "вторая страница должна быть отложена"
+    assert "страниц обойдено: 1 из 2" in text
+    assert "Обошёл не все страницы: 1 отложено" in text
+    assert "Повторите `fit_port_blocks`" in text
+    assert "субмодель 'sub_1'" in text, "отложенная страница не названа"
+
+    # Повтор с нормальным бюджетом добирает отложенную страницу.
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 120.0)
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert inner.value_writes, "повтор не добрал отложенную страницу"
+    assert "страниц обойдено: 2" in text
+    assert "отложено" not in text
+
+
 class _AnchorBlock(_SizeBlock):
     """Блок с читаемой точкой центра (как у настоящего блока)."""
 
@@ -1816,6 +1855,34 @@ async def test_fit_value_labels_walks_submodels(monkeypatch):
     assert "субмодель 'sub_1'" in text
     assert project.get_main_page().activations >= 1, \
         "главная не возвращена активной"
+
+
+@pytest.mark.anyio
+async def test_fit_value_labels_defers_pages_over_budget(monkeypatch):
+    """Бюджет порций — и у подписей: страница отложена и названа (issue #117).
+
+    Выгрузка страницы — тоже контурный прогон (~20 с): на многопстраничной
+    модели обход перекрывал `COM_CALL_TIMEOUT`, и клиент вместо честного
+    «продолжите повтором» видел отказ про зависший mmain.
+    """
+    parent = _AnchorBlock()                      # главная — без подписей
+    sub_parent = _AnchorBlock(name="k_1", center=(100.0, 100.0))
+    sub_label = _ValueLabelBlock(name="TextLabel5", anchor=(10.0, 10.0))
+    sub_page = _FakePage({"k_1": sub_parent, "TextLabel5": sub_label})
+    sub_block = _SubmodelBlock(name="sub_1", block_id=5)
+    project = _SubmodelProject({"k_0": parent, "sub_1": sub_block}, {5: sub_page})
+    monkeypatch.setattr(session, "_project", project)
+    _install_export(monkeypatch,
+                    '(\n  k_0: (\n    type = "Константа",\n'
+                    '    points=[(456 , 72)]\n  )\n)')
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.01)
+
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    assert "страниц обойдено: 1 из 2" in text
+    assert "Обошёл не все страницы: 1 отложено" in text
+    assert "Повторите `fit_value_labels`" in text
+    assert "субмодель 'sub_1'" in text, "отложенная страница не названа"
 
 
 def _many_blocks(count: int) -> dict:

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import re
 import tempfile
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import (
+    Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union,
+)
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page, Wire
@@ -1801,6 +1804,16 @@ _PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")
 #: и так далее. Правило жёсткое: любая другая высота ломает отображение.
 PORT_ROW_HEIGHT = 16
 
+#: Оценка времени одного контурного прогона страницы в фитах: живой замер
+#: 06–07.10.2026 — ~20 с (контур перезапускает расчёт), с запасом на
+#: перерисовку и трассировку. По ней фиты решают, влезает ли следующая
+#: страница в остаток COM_CALL_TIMEOUT.
+_PAGE_CONTOUR_ESTIMATE_SECONDS = 25.0
+
+#: Запас бюджета обхода страниц: после последнего прогона фита остаётся
+#: перерисовка, NormalizeWire и возврат активной страницы.
+_CONTOUR_BUDGET_MARGIN_SECONDS = 30.0
+
 
 def _port_signal_count(target: Block) -> Optional[int]:
     """Число сигналов порт-блока по `PortNames`; `None` — прочитать не удалось.
@@ -2352,6 +2365,56 @@ def _walk_pages(project: Any, main: Page,
     return found
 
 
+def _foreach_page_within_budget(
+        pages: List[Any],
+        run: Callable[[Any, str], int]) -> Tuple[int, List[Any]]:
+    """Обойти страницы порцией, укладывающейся в `COM_CALL_TIMEOUT`.
+
+    Каждая страница фитов стоит один контурный прогон (~20 с, живой замер
+    06–07.10.2026: контур перезапускает расчёт). Лимит `COM_CALL_TIMEOUT`
+    (120 с) — на ВЕСЬ вызов: на многопстраничной модели обход одной порцией
+    его перекрывал, клиент получал отказ «Перезапустите mmain.exe» (неверный
+    — COM не завис), а правки доигрывали в фоне (issue #117, находка
+    07.10.2026). Здесь обход останавливается **заранее** и называет
+    отложенные страницы; повторный вызов продолжит — фиты идемпотентны,
+    уже сделанное не трогается (живой замер 07.10.2026: повторный
+    `fit_port_blocks` — «менять нечего»).
+
+    Первая страница берётся **всегда**, даже если по оценке не влезает в
+    бюджет: «не обойти ни одной» на большой модели означало бы вечный отказ
+    на любом вызове.
+
+    Возврат — `(суммарный результат run, отложенные страницы)`; у
+    отложенных сохраняется их `(page, where)`.
+    """
+    budget = runtime.COM_CALL_TIMEOUT - _CONTOUR_BUDGET_MARGIN_SECONDS
+    started = time.monotonic()
+    total = 0
+    done = 0
+    for index, (page, where) in enumerate(pages):
+        if done and (time.monotonic() - started
+                     + _PAGE_CONTOUR_ESTIMATE_SECONDS > budget):
+            return total, list(pages[index:])
+        total += run(page, where)
+        done += 1
+    return total, []
+
+
+def _deferred_pages_note(deferred: List[Any], tool: str) -> str:
+    """Строка ответа про отложенные страницы — «повторите, он идемпотентен».
+
+    Не «ВНИМАНИЕ» и не отказ: порция — штатный режим инструмента на большой
+    модели, и адресат сообщения — не поломка, а неполный охват.
+    """
+    names = "; ".join(str(where) for _page, where in deferred)
+    return (f"Обошёл не все страницы: {len(deferred)} отложено — вызов "
+            f"ограничен временем одного COM-вызова "
+            f"({runtime.COM_CALL_TIMEOUT:.0f} с; каждая страница — контурный "
+            f"прогон ~{_PAGE_CONTOUR_ESTIMATE_SECONDS:.0f} с). Повторите "
+            f"`{tool}` — он идемпотентен: уже сделанное не трогается. "
+            f"Отложены: {names}.")
+
+
 def _fit_page_sizes(page: Page, where: str, affected: List[Any],
                     lines: List[str]) -> int:
     """Поправить габариты одной страницы; вернуть число изменённых блоков.
@@ -2427,6 +2490,14 @@ def fit_port_blocks() -> str:
     прогоном — контур перезапускает расчёт, и прогон на каждый блок стоил
     бы его N раз; страница перед прогоном активируется.
 
+    **Обход — порциями по бюджету.** Каждая страница стоит один контурный
+    прогон (~20 с), а COM-вызов ограничен `COM_CALL_TIMEOUT` (120 с): на
+    многопстраничной модели одна порция перекрывала лимит — клиент получал
+    отказ «Перезапустите mmain.exe» (неверный: COM не завис), а правки
+    доигрывали в фоне (issue #117). Теперь обход останавливается заранее и
+    называет отложенные страницы: повторный вызов продолжит — уже
+    подогнанное не трогается (идемпотентность замерена 07.10.2026).
+
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.
 
@@ -2439,10 +2510,10 @@ def fit_port_blocks() -> str:
     lines: List[str] = []
     pages = _walk_pages(project, main, lines)
     affected: List[Any] = []
-    changed = 0
     try:
-        for page, where in pages:
-            changed += _fit_page_sizes(page, where, affected, lines)
+        changed, deferred = _foreach_page_within_budget(
+            pages,
+            lambda page, where: _fit_page_sizes(page, where, affected, lines))
     finally:
         # Активной возвращается главная — и при отказе посередине обхода:
         # `_apply_size_plan` мог отказать на странице субмодели, оставив её
@@ -2452,11 +2523,15 @@ def fit_port_blocks() -> str:
             main.activate()
         except Exception:                                     # noqa: BLE001
             pass
+    walked = (f"{len(pages) - len(deferred)} из {len(pages)}" if deferred
+              else f"{len(pages)}")
+    tail = ("\n" + _deferred_pages_note(deferred, "fit_port_blocks")
+            if deferred else "")
     if not changed:
         head = (f"Габариты по правилам: менять нечего (оценка "
                 f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
-                f"{len(pages)}).")
-        result = head + ("\n" + "\n".join(lines) if lines else "")
+                f"{walked}).")
+        result = head + ("\n" + "\n".join(lines) if lines else "") + tail
     else:
         project.repaint()
         for page in affected:
@@ -2467,7 +2542,7 @@ def fit_port_blocks() -> str:
                 lines.append(f"линии страницы не трассированы "
                              f"({type(exc).__name__}: {exc}).")
         result = (f"Габариты подогнаны: {changed} (страниц обойдено: "
-                  f"{len(pages)}).\n" + "\n".join(lines))
+                  f"{walked}).\n" + "\n".join(lines)) + tail
     return result
 
 
@@ -2622,14 +2697,19 @@ def fit_value_labels() -> str:
     `fit_port_blocks`: подписи значений бывают и на внутренних страницах, а
     выгрузка снимается активной страницей, поэтому каждая страница
     активируется перед съёмкой. Активной в конце снова становится главная.
+
+    **Обход — порциями по бюджету** — как у `fit_port_blocks`: страница
+    стоит один контурный прогон (выгрузка), и на многопстраничной модели
+    одна порция перекрывала `COM_CALL_TIMEOUT`; отложенные страницы
+    называются в ответе, повторный вызов продолжит (уже подтянутое не
+    трогается — идемпотентность замерена 07.10.2026).
     """
     project = session.ensure_project()
     main = project.get_main_page()
     lines: List[str] = []
     pages = _walk_pages(project, main, lines)
-    moved = 0
-    for page, where in pages:
-        moved += _fit_value_labels_page(page, where, lines)
+    moved, deferred = _foreach_page_within_budget(
+        pages, lambda page, where: _fit_value_labels_page(page, where, lines))
     # Активной возвращается главная: обход активировал каждую страницу, а
     # следующая контурная операция (выгрузка) снимает ИМЕННО активную
     # (живой случай 06.10.2026: после fit_port_blocks активной была
@@ -2638,12 +2718,20 @@ def fit_value_labels() -> str:
         main.activate()
     except Exception:                                         # noqa: BLE001
         pass
+    walked = (f"{len(pages) - len(deferred)} из {len(pages)}" if deferred
+              else f"{len(pages)}")
+    tail = ("\n" + _deferred_pages_note(deferred, "fit_value_labels")
+            if deferred else "")
     if not moved:
-        head = "Подписи значений на месте."
-        return head + ("\n" + "\n".join(lines) if lines else "")
+        # «На месте» не должно звучать как «всё обойдено», если часть
+        # страниц отложена бюджетом: охват называется и здесь.
+        head = ("Подписи значений на месте." if not deferred else
+                f"Подписи значений на месте на обойдённых страницах "
+                f"(страниц обойдено: {walked}).")
+        return head + ("\n" + "\n".join(lines) if lines else "") + tail
     project.repaint()
     return (f"Подписи значений подтянуты к блокам: {moved} "
-            f"(страниц обойдено: {len(pages)}).\n" + "\n".join(lines))
+            f"(страниц обойдено: {walked}).\n" + "\n".join(lines)) + tail
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).
