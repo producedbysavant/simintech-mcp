@@ -1320,11 +1320,13 @@ async def test_fit_port_blocks_widens_long_labels(monkeypatch, tmp_path):
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.value_writes == [("Width", str(len(long_name) * 8))]
+    assert block.value_writes == [("Width", str(len(long_name) * 8)),
+                                  ("Height", "16")]
     assert block.graph_writes == [], "правка ушла в «Формулу» вместо «Значения»"
     assert block.get_size()[0] == len(long_name) * 8.0
     assert bridge.calls == 1
     assert "Габариты подогнаны: 1" in text
+    assert "высота 16 — приведена к «Значению»" in text
     assert long_name in text
 
 
@@ -1358,7 +1360,8 @@ async def test_fit_port_blocks_walks_submodels(monkeypatch, tmp_path):
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert inner.value_writes == [("Width", str(len(inner_name) * 8))]
+    assert inner.value_writes == [("Width", str(len(inner_name) * 8)),
+                                  ("Height", "16")]
     assert sub_page.activations >= 1, (
         "страница правки не активирована перед контурным прогоном")
     assert "субмодель 'sub_1'" in text
@@ -1382,21 +1385,33 @@ async def test_fit_port_blocks_names_unreadable_names(monkeypatch, tmp_path):
 
 
 class _PortedSubmodelBlock(_SizeBlock):
-    """Блок-субмодель с читаемым числом внешних портов."""
+    """Блок-субмодель с читаемым числом внешних ВХОДОВ.
 
-    def __init__(self, name="sub_1", block_id=5, ports=6, size=(48.0, 32.0)):
+    Правило высоты — по входным контактам (владелец 07.10.2026): выход
+    уходит на правую сторону рамки и строки не занимает. У боевых субмоделей
+    на входов-минус-один и разошлась прежняя формула «× все порты».
+    """
+
+    def __init__(self, name="sub_1", block_id=5, ports=6, in_ports=None,
+                 total_ports=None, size=(48.0, 32.0)):
         super().__init__(name=name, size=size)
         self.class_name = "Субмодель"
         self.id = block_id
-        self._ports = ports
+        self._in_ports = in_ports if in_ports is not None else ports
+        self._total = total_ports
+
+    def get_in_port_count(self):
+        return self._in_ports
 
     def get_port_count(self):
-        return self._ports
+        # Всего портов — для контроля расхождения формул (входы + выход).
+        return (self._total if self._total is not None
+                else self._in_ports + 1)
 
 
 @pytest.mark.anyio
 async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
-    """Высота блока-субмодели — 16 px на внешний порт (6 портов → 96)."""
+    """Высота субмодели — 16 px на входной контакт (6 входов → 96)."""
     block = _PortedSubmodelBlock(ports=6)
     project = _FakeProject({"sub_1": block})
     bridge = _fit_bridge({block.id: block})
@@ -1404,9 +1419,89 @@ async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.value_writes == [("Height", "96")]
+    assert block.value_writes == [("Height", "96"), ("Width", "48")]
     assert block.graph_writes == []
-    assert "высота 32 → 96 (6 порт(ов) × 16)" in text
+    assert "высота 32 → 96 (6 вход(ов) × 16)" in text
+    assert "ширина 48 — приведена к «Значению»" in text
+
+
+@pytest.mark.anyio
+async def test_fit_submodel_height_counts_in_ports_only(monkeypatch, tmp_path):
+    """Правило владельца: (nport − 1) × 16 при единственном выходе.
+
+    Блок с 7 портами (6 входов + выход) обязан получить 96, не 112 —
+    именно на +16 у всех субмоделей боевой модели владелец откатывал вручную.
+    """
+    block = _PortedSubmodelBlock(ports=6, in_ports=6, total_ports=7,
+                                 size=(120.0, 112.0))
+    project = _FakeProject({"sub_1": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert ("Height", "96") in block.value_writes
+    assert "высота 112 → 96 (6 вход(ов) × 16)" in text
+
+
+class _PinPort:
+    """Порт-пин: координаты считаются от центра и ширины блока (пин справа)."""
+
+    def __init__(self, block):
+        self._block = block
+
+    def get_coords(self):
+        center = self._block.center or (0.0, 0.0)
+        width = self._block.get_size()[0]
+        return (center[0] + width / 2.0, center[1])
+
+
+class _PinBlock(_PortBlock):
+    """Порт-блок с пином и центром: ширина меняется «влево от пина»."""
+
+    def __init__(self, names="in\r\n", name="InputPort_0", size=(64.0, 16.0),
+                 center=(0.0, 0.0)):
+        super().__init__(names=names, name=name, size=size)
+        self.center = center
+        self.centers = []
+
+    def get_in_port(self, index=0):
+        return _PinPort(self)
+
+    def get_points(self):
+        cx, cy = self.center
+        return f"[({cx:g} , {cy:g})]"
+
+    def set_center(self, cx, cy):
+        self.centers.append((cx, cy))
+        self.center = (cx, cy)
+        return self
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_restores_pin_x(monkeypatch, tmp_path):
+    """Пин не съезжает: центр компенсирует смену ширины.
+
+    Владелец держит пин на фиксированном X и меняет ширину «влево от пина»
+    (замечание 07.10.2026: прежняя подгонка от центра изламывала связи).
+    """
+    long_name = "CoolTT_C_CoolSt_WorkSt"
+    block = _PinBlock(names=long_name + "\r\n", size=(64.0, 16.0),
+                      center=(0.0, 0.0))
+    pin_x_before = block.get_in_port(0).get_coords()[0]
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    new_w = float(len(long_name) * 8)
+    assert block.get_size()[0] == new_w
+    assert block.centers == [(-new_w / 2.0 + 64.0 / 2.0, 0.0)], \
+        "центр не компенсировал сдвиг пина"
+    assert block.get_in_port(0).get_coords()[0] == pin_x_before, \
+        "пин съехал: линии изломаются"
+    assert "пин возвращён на место" in text
 
 
 @pytest.mark.anyio
@@ -1428,8 +1523,8 @@ async def test_fit_port_blocks_applies_plan_in_one_contour_run(monkeypatch,
 
     assert bridge.calls == 1, (
         "прогон на блок вместо одного прогона на страницу")
-    assert port.value_writes == [("Width", "168")]
-    assert sub.value_writes == [("Height", "96")]
+    assert port.value_writes == [("Width", "168"), ("Height", "16")]
+    assert sub.value_writes == [("Height", "96"), ("Width", "48")]
     assert "Габариты подогнаны: 2" in text
 
 

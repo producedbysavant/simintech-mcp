@@ -914,22 +914,10 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
     outcome = _run_contour_body(
         _connect_branch_body(b1.id, out_index, b2.id, in_index, point_index),
         failed="создать ветвление не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "ветвь не создана: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
-    if outcome.kind == OUTCOME_ABORTED:
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"ветвь не подтверждена: тело оборвалось на исполнении.{detail} "
-            f"Ветвь могла создаться — проверьте схему (`list_wires`, "
-            f"`export_model_text`).")
-    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
-        raise ToolError(
-            "ветвь не подтверждена: секция `initialization` не выполнилась — "
-            "тело не запускалось. Повторите вызов.")
+    _refuse_contour_failure(
+        outcome, failed="ветвь не создана", unsure="ветвь не подтверждена",
+        aborted_hint=("Ветвь могла создаться — проверьте схему (`list_wires`, "
+                      "`export_model_text`)."))
     reply = _parse_branch_reply(outcome.lines)
     if reply.kind == "no-parent-wire":
         raise ToolError(
@@ -2074,6 +2062,40 @@ class _SizeFix(NamedTuple):
     before: float
     want: float
     note: str
+    #: «Приведение к «Значению»»: число не меняется, снимается формула.
+    #: Владелец (07.10.2026): тронутый габаритами блок приводится к
+    #: «Значению» по ОБЕИМ осям — у субмоделей ширина оставалась с формулой
+    #: (`textvalue=120`), и он снимал её вручную.
+    touch: bool = False
+    #: Порт-«пин» и его координаты до правки: при смене ширины среда двигает
+    #: порты, и центр компенсируется так, чтобы пин остался на месте
+    #: (владелец держит пин на фиксированном X и меняет ширину «влево от
+    #: пина» — иначе связи изламывались, 26/86 прямых).
+    pin: Any = None
+    pin_before: Any = None
+
+
+def _port_pin(block: Block) -> Tuple[Any, Any]:
+    """Порт-«пин» блока и его координаты: `(порт, (x, y) | None)`.
+
+    Хватает **любого** порта: при смене ширины среда двигает все порты
+    одинаково по X, и по одному видно дельту, которую надо вернуть центру.
+    Координаты не читаются — `(порт, None)`: компенсации не будет, и это
+    назовётся примечанием, а не молчанием.
+    """
+    for name in ("get_in_port", "get_out_port"):
+        getter = getattr(block, name, None)
+        if getter is None:
+            continue
+        try:
+            port = getter(0)
+        except Exception:                                     # noqa: BLE001
+            continue
+        try:
+            return port, port.get_coords()
+        except Exception:                                     # noqa: BLE001
+            return port, None
+    return None, None
 
 
 def _plan_port_width(block: Block, where: str,
@@ -2083,8 +2105,9 @@ def _plan_port_width(block: Block, where: str,
     Ширина — по той же оценке, что ловит `check_model_layout`
     (`CHAR_WIDTH_ESTIMATE` px на символ): правка и проверка обязаны
     сходиться, иначе проверка продолжила бы ругаться на исправленное.
-    Высота не трогается — у порт-блоков она подчинена правилу 16 px на
-    строку сигнала (`set_block_size`). Записи здесь нет: саму правку
+    Высота не меняется, но **приводится к «Значению»** (владелец
+    07.10.2026: габариты тронутого блока — без формулы по обеим осям).
+    Пин запоминается для компенсации центра. Записи здесь нет: саму правку
     применяет общий прогон страницы.
     """
     try:
@@ -2100,6 +2123,7 @@ def _plan_port_width(block: Block, where: str,
         return
     try:
         width = float(block.get_size()[0])
+        height = float(block.get_size()[1])
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: ширина не читается "
                      f"({type(exc).__name__}: {exc}) — пропущен.")
@@ -2108,21 +2132,29 @@ def _plan_port_width(block: Block, where: str,
     estimate = len(longest) * CHAR_WIDTH_ESTIMATE
     if estimate <= width:
         return
+    pin, pin_before = _port_pin(block)
     plan.append(_SizeFix(
         block=block, name=name, prop="Width", before=width,
         want=float(estimate),
         note=(f"«{longest}» ~{estimate:g} px, оценка "
-              f"×{CHAR_WIDTH_ESTIMATE:g}")))
+              f"×{CHAR_WIDTH_ESTIMATE:g}"),
+        pin=pin, pin_before=pin_before))
+    plan.append(_SizeFix(
+        block=block, name=name, prop="Height", before=height, want=height,
+        note="", touch=True))
 
 
 def _plan_submodel_height(block: Block, where: str,
                           lines: List[str], plan: List[_SizeFix]) -> None:
-    """Запланировать высоту блока-субмодели — 16 px на его внешний порт.
+    """Запланировать высоту субмодели — 16 px на **входной** контакт.
 
-    Импорт ставит субмодели 48×32 независимо от числа портов (замеры
-    06.10.2026: и у нашей сборки, и у fdd002 при 6 портах — те же 48×32).
-    Читаемая высота — `PORT_ROW_HEIGHT` × число портов (6 портов → 96);
-    ширина не трогается. Записи здесь нет: саму правку применяет общий
+    Правило владельца (07.10.2026): «16 px (2 квадратика) на 1 порт» —
+    считаются входные контакты; при единственном выходе это его формула
+    `(nport − 1) × 16` (выход уходит на правую сторону рамки и строки не
+    занимает). Прежняя формула «× все порты» давала +16 всем девяти
+    субмоделям боевой модели — владелец откатил их вручную.
+    Ширина не меняется, но **приводится к «Значению»** (у субмоделей она
+    оставалась с формулой). Записи здесь нет: саму правку применяет общий
     прогон страницы.
     """
     try:
@@ -2130,16 +2162,17 @@ def _plan_submodel_height(block: Block, where: str,
     except Exception:                                         # noqa: BLE001
         name = f"id={block.id}"
     try:
-        ports = int(block.get_port_count())
+        in_ports = int(block.get_in_port_count())
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
         return
-    if ports <= 0:
+    if in_ports <= 0:
         return
-    want = float(ports * PORT_ROW_HEIGHT)
+    want = float(in_ports * PORT_ROW_HEIGHT)
     try:
         height = float(block.get_size()[1])
+        width = float(block.get_size()[0])
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: высота не читается "
                      f"({type(exc).__name__}: {exc}) — пропущена.")
@@ -2148,7 +2181,10 @@ def _plan_submodel_height(block: Block, where: str,
         return
     plan.append(_SizeFix(
         block=block, name=name, prop="Height", before=height, want=want,
-        note=f"{ports} порт(ов) × {PORT_ROW_HEIGHT:g}"))
+        note=f"{in_ports} вход(ов) × {PORT_ROW_HEIGHT:g}"))
+    plan.append(_SizeFix(
+        block=block, name=name, prop="Width", before=width, want=width,
+        note="", touch=True))
 
 
 def _size_fixes_body(plan: List[_SizeFix]) -> str:
@@ -2179,6 +2215,9 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     и увёл бы диагноз в сторону среды (находка ревью PR #102). Подтверждение
     — перечитывание `get_size`: «среда не приняла запись» остаётся
     примечанием, а не успехом.
+
+    Возврат — число изменённых **блоков** (не правок): у тронутого блока их
+    две (меняемая ось и приведение второй к «Значению»).
     """
     try:
         page.activate()
@@ -2195,7 +2234,7 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
         aborted_hint=("Часть правок могла примениться — проверьте габариты "
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
-    changed = 0
+    changed_blocks: set[int] = set()
     for fix in plan:
         word = "ширина" if fix.prop == "Width" else "высота"
         index = 0 if fix.prop == "Width" else 1
@@ -2204,18 +2243,61 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
         except Exception:                                     # noqa: BLE001
             lines.append(f"{where}: {fix.name}: {word} записана, но "
                          f"перечитать не удалось — проверьте снимком.")
-            changed += 1
+            changed_blocks.add(id(fix.block))
             continue
         if after == fix.before:
-            lines.append(f"{where}: {fix.name}: {word} не изменилась "
-                         f"({_size_value(fix.before)}) — среда не приняла "
-                         f"запись.")
+            if fix.touch:
+                lines.append(
+                    f"{where}: {fix.name}: {word} {_size_value(fix.before)} — "
+                    f"приведена к «Значению» (число не менялось).")
+                changed_blocks.add(id(fix.block))
+            else:
+                lines.append(f"{where}: {fix.name}: {word} не изменилась "
+                             f"({_size_value(fix.before)}) — среда не приняла "
+                             f"запись.")
             continue
         lines.append(
             f"{where}: {fix.name}: {word} {_size_value(fix.before)} → "
             f"{_size_value(after)} ({fix.note}).")
-        changed += 1
-    return changed
+        changed_blocks.add(id(fix.block))
+        if fix.pin is not None:
+            _restore_pin(fix, where, lines)
+    return len(changed_blocks)
+
+
+def _restore_pin(fix: _SizeFix, where: str, lines: List[str]) -> None:
+    """Вернуть пин блока на прежний X — сдвигом центра после смены ширины.
+
+    Владелец (07.10.2026): ширину порт-блока он меняет «влево от пина» —
+    тогда связи остаются прямыми; фит же расширял от центра, пины съезжали,
+    и после него прямых связей стало 26/86 против 69/86 до. Смена ширины
+    средой двигает порты на ΔX — центр компенсируется на
+    `pin_before.x − pin_after.x`; сторона пина при этом не угадывается:
+    дельта берётся фактом.
+    """
+    if fix.pin_before is None:
+        lines.append(f"{where}: {fix.name}: координаты пина не прочитались "
+                     f"до правки — центр не сдвинут (проверьте линии).")
+        return
+    try:
+        pin_after = fix.pin.get_coords()
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"{where}: {fix.name}: пин после правки не читается "
+                     f"({type(exc).__name__}: {exc}) — центр не сдвинут "
+                     f"(проверьте линии).")
+        return
+    dx = float(fix.pin_before[0]) - float(pin_after[0])
+    if abs(dx) < 0.01:
+        return
+    center = first_point(fix.block.get_points())
+    if center is None:
+        lines.append(f"{where}: {fix.name}: центр не читается — пин не "
+                     f"возвращён (проверьте линии).")
+        return
+    fix.block.set_center(center[0] + dx, center[1])
+    lines.append(
+        f"{where}: {fix.name}: пин возвращён на место — центр сдвинут на "
+        f"{_size_value(dx)} px (ширина меняется «влево от пина»).")
 
 
 def _walk_pages(project: Any, main: Page,
@@ -2275,9 +2357,10 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
     """Поправить габариты одной страницы; вернуть число изменённых блоков.
 
     Порт-блоки — ширина по подписям (та же оценка, что у
-    `check_model_layout`); блоки-субмодели — высота по числу внешних портов.
-    Правки собираются в план и применяются **одним** контурным прогоном
-    (`_apply_size_plan`): запись идёт в «Значение», а не в «Формулу».
+    `check_model_layout`); блоки-субмодели — высота по числу **входных**
+    контактов. Правки собираются в план и применяются **одним** контурным
+    прогоном (`_apply_size_plan`): запись идёт в «Значение», а не в
+    «Формулу», и обе оси тронутого блока приводятся к «Значению».
     """
     try:
         blocks = page.get_blocks()
@@ -2308,29 +2391,40 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
 def fit_port_blocks() -> str:
     """Подогнать габариты блоков, связанных с портами, по правилам.
 
-    Два правила (оба — из наблюдений владельца и замеров 06.10.2026):
+    Три правила (наблюдения владельца: замеры 06.10 и боевой прогон
+    с ручной доводкой 07.10.2026):
 
     * **ширина порт-блоков** — по длиннейшей подписи `PortNames`
       (импорт нормализует рамку ~32 px независимо от поданных `points`, и
       длинные имена вылезают). Оценка та же, что у `check_model_layout`
       (`CHAR_WIDTH_ESTIMATE` px/символ), поэтому после подгонки его
       предупреждение «подписи шире рамки» снимается;
-    * **высота блока-субмодели** — `PORT_ROW_HEIGHT` × число его внешних
-      портов (импорт ставит 48×32 независимо от портов). Ширина субмодели
-      не трогается.
+    * **высота блока-субмодели** — `PORT_ROW_HEIGHT` px на **входной**
+      контакт: считаются входы, не все порты (при единственном выходе это
+      `(nport − 1) × 16`; выход уходит на правую сторону рамки и строки не
+      занимает — правило владельца 07.10.2026). Импорт ставит 48×32
+      независимо от портов; ширина субмодели не меняется;
+    * **пин на месте** — при смене ширины порт-блока центр компенсируется
+      так, чтобы координата порта не сдвинулась: владелец держит пин на
+      фиксированном X и меняет ширину «влево от пина» — иначе связи
+      изламываются (после прежней подгонки от центра прямых связей стало
+      26/86 против 69/86 до).
+
+    **Обе оси — в «Значение».** Блок, тронутый правкой, приводится к
+    «Значению» и по ширине, и по высоте, даже если число не меняется:
+    прежняя версия трогала одну ось, и у субмоделей ширина оставалась с
+    формулой (`textvalue` = числу) — владелец снимал её вручную. Обычная
+    правка идёт языковой парой `setpropformula(…)` + `setprop(…)` (как у
+    `set_block_size`): COM-путь `SetGraphBlockProp` кладёт число в
+    «Формулу».
 
     **Субмодели обходятся рекурсивно** (`Project.submodel_page`, предел
     `MAX_SUBMODEL_DEPTH`, защита от повторного входа): ширина портов ВНУТРИ
     субмоделей тем же импортом тоже не задаётся, а `check_model_layout`
     смотрит только текущую страницу. Активной в конце снова становится
-    главная страница.
-
-    **Запись — в «Значение», а не в «Формулу».** Правки идут языковой парой
-    `setpropformula(…)` + `setprop(…)` (та же, что у `set_block_size`):
-    COM-путь `SetGraphBlockProp` кладёт число в «Формулу», и диалог свойств
-    показывает расхождение. План правок страницы применяется **одним**
-    контурным прогоном — контур перезапускает расчёт, и прогон на каждый
-    блок стоил бы его N раз; страница перед прогоном активируется.
+    главная страница; план правок страницы применяется **одним** контурным
+    прогоном — контур перезапускает расчёт, и прогон на каждый блок стоил
+    бы его N раз; страница перед прогоном активируется.
 
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.
