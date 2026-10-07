@@ -268,7 +268,11 @@ async def test_check_classifies_wires(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_check_reports_wide_label(monkeypatch, tmp_path):
-    """Длинная подпись порт-блока шире рамки — предупреждение с числами."""
+    """Длинная подпись порт-блока шире рамки — примечание с числами.
+
+    Примечание, не «ВНИМАНИЕ»: свисание подписи за рамку владелец
+    допускает, если текст читается (замечание 07.10.2026).
+    """
     blocks = [
         _CheckBlock("t_0", center=(0, 0),
                     portnames="CoolTT_C_CoolSt_WorkSt\n"),
@@ -277,7 +281,7 @@ async def test_check_reports_wide_label(monkeypatch, tmp_path):
 
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
-    assert "ВНИМАНИЕ: подписи шире рамки" in text
+    assert "Примечание: подписи шире рамки" in text
     assert "t_0" in text and "CoolTT_C_CoolSt_WorkSt" in text
 
 
