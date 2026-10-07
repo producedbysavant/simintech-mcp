@@ -732,21 +732,27 @@ def _connect_branch_body(src_id: int, out_index: int, dst_id: int,
     lines: List[str] = [
         "prj = getcurrentprojectid;",
         f"outport = getoutportid({src_id}, {out_index});",
-        "parent = getportwireid(outport);",
-        'if parent = 0 then writelnutf8(fid, "err=no-parent-wire");',
-        "if parent <> 0 then begin",
-        "  cnt = getpointcount(parent);",
-        f"  if ({point_index} > 0) and ({point_index} >= cnt) then",
-        '    writelnutf8(fid, "err=point-range cnt=" + inttostr(cnt));',
-        f"  if ({point_index} = 0) or ({point_index} < cnt) then begin",
+        'if outport = 0 then writelnutf8(fid, "err=no-out-port");',
+        "if outport <> 0 then begin",
+        "  parent = getportwireid(outport);",
+        '  if parent = 0 then writelnutf8(fid, "err=no-parent-wire");',
+        "  if parent <> 0 then begin",
         f"    inp = getinportid({dst_id}, {in_index});",
-        f"    new = createwire(prj, 0, parent, {point_index}, 0, inp, 0);",
-        '    if new = 0 then writelnutf8(fid, "err=not-created");',
-        "    if new <> 0 then begin",
-        "      node = getparentwirenodeindex(new);",
-        "      par = getparentwireid(new);",
-        '      writelnutf8(fid, "created=" + inttostr(new) + " parent=" +'
+        '    if inp = 0 then writelnutf8(fid, "err=no-in-port");',
+        "    if inp <> 0 then begin",
+        "      cnt = getpointcount(parent);",
+        f"      if ({point_index} > 0) and ({point_index} >= cnt) then",
+        '        writelnutf8(fid, "err=point-range cnt=" + inttostr(cnt));',
+        f"      if ({point_index} = 0) or ({point_index} < cnt) then begin",
+        f"        new = createwire(prj, 0, parent, {point_index}, 0, inp, 0);",
+        '        if new = 0 then writelnutf8(fid, "err=not-created");',
+        "        if new <> 0 then begin",
+        "          node = getparentwirenodeindex(new);",
+        "          par = getparentwireid(new);",
+        '          writelnutf8(fid, "created=" + inttostr(new) + " parent=" +'
         ' inttostr(par) + " node=" + inttostr(node));',
+        "        end;",
+        "      end;",
         "    end;",
         "  end;",
         "end;",
@@ -891,11 +897,24 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
             f"существующей линии: для первой связи с этим выходом — "
             f"`connect`. Проект не изменён.")
     if reply.kind == "point-range":
+        # Совет по диапазону — по числу точек: при нуле точек «K < 0» было бы
+        # невыполнимым советом, противоречащим запрету отрицательного K
+        # (находка ревью PR #110).
+        advice = ("`point_index=0` (проверенный случай)" if reply.points == 0
+                  else f"`point_index=0` (всегда) или `K < {reply.points}`")
         raise ToolError(
-            f"ветвь не создана: у линии выхода '{src}'[{out_index}] {reply.points} "
-            f"точек данных, а запрошена точка {point_index} — среда свернула "
-            f"бы ветвь к первой молча. Допустимо: `point_index=0` (всегда) "
-            f"или `K < {reply.points}`. Проект не изменён.")
+            f"ветвь не создана: у линии выхода '{src}'[{out_index}] "
+            f"{reply.points} точек данных, а запрошена точка {point_index} — "
+            f"среда свернула бы ветвь к первой молча. Допустимо: {advice}. "
+            f"Проект не изменён.")
+    if reply.kind in ("no-in-port", "no-out-port"):
+        which = "входной" if reply.kind == "no-in-port" else "выходной"
+        raise ToolError(
+            f"ветвь не создана: среда не нашла {which} порт у блока в "
+            f"контуре, хотя через COM он читается. Порт мог пересоздаться "
+            f"между проверкой и прогоном (пересчёт портов) — повторите "
+            f"вызов; если повтор не помогает, сверьте состав портов с "
+            f"моделью. Проект не изменён.")
     if reply.kind == "not-created":
         raise ToolError(
             "ветвь не создана: `createwire` вернул ноль. Проверьте, что у "
@@ -913,12 +932,21 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
                           dst_name, in_index))
     notes: List[str] = []
     if reply.node != point_index + 1:
-        notes.append(
-            f"ВНИМАНИЕ: среда сообщила узел {reply.node}, а точке "
-            f"{point_index} отвечает узел {point_index + 1}: точка "
-            f"недостижима на этой линии — ветвь легла к ближайшей. "
-            f"Проверьте схему (`export_model_text`: адрес ветви "
-            f"`src = \"<родитель>:K\"`).")
+        # Соответствие «узел = K+1» измерено только на K=0: для K>0 среда
+        # могла нумеровать иначе — примечание не имеет права утверждать
+        # «недостижима» на непроверенном соответствии (находка ревью).
+        if point_index == 0:
+            notes.append(
+                f"ВНИМАНИЕ: среда сообщила узел {reply.node} при K=0 "
+                f"(ожидался 1): точка недостижима на этой линии — ветвь "
+                f"легла к ближайшей. Проверьте схему (`export_model_text`: "
+                f"адрес ветви `src = \"<родитель>:K\"`).")
+        else:
+            notes.append(
+                f"ВНИМАНИЕ: узел {reply.node}, а точке {point_index} по "
+                f"замеру K=0 отвечал бы узел {point_index + 1} — "
+                f"соответствие для K>0 не измерено. Сверьте адрес ветви "
+                f"выгрузкой (`export_model_text`: `src = \"<родитель>:K\"`).")
     tail = "\n" + "\n".join(notes) if notes else ""
     return (f"Ветвь создана: {src_name}[{out_index}] → {dst_name}[{in_index}] "
             f"(wire={reply.wire_id}; родитель {reply.parent_id}, узел "

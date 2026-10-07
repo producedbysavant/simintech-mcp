@@ -1877,6 +1877,12 @@ async def test_connect_branch_body_passes_point_index(monkeypatch, tmp_path):
 
         assert "createwire(prj, 0, parent, 2, 0, inp, 0)" in bridge.body
         assert "getpointcount(parent)" in bridge.body
+        # Гарды портов — как у `_disconnect_wire_body`: нулевой порт иначе
+        # даёт мусорную линию или ложный диагноз (находка ревью PR #110).
+        assert 'if outport = 0 then writelnutf8(fid, "err=no-out-port");' \
+            in bridge.body
+        assert 'if inp = 0 then writelnutf8(fid, "err=no-in-port");' \
+            in bridge.body
         # Узел 3 при K=2 — ожидание сходится, примечания нет.
         assert "ВНИМАНИЕ" not in text
     finally:
@@ -1885,7 +1891,30 @@ async def test_connect_branch_body_passes_point_index(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_connect_branch_notes_node_mismatch(monkeypatch, tmp_path):
-    """Узел не K+1 — ветвь создана, но точка недостижима: примечание."""
+    """K=0, узел не 1 — точка недостижима: строгое примечание."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=4"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1"}))
+
+        assert "ВНИМАНИЕ" in text
+        assert "узел 4 при K=0" in text
+        assert "недостижима" in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_mismatch_on_k_gt0_hedges(monkeypatch, tmp_path):
+    """K>0 и узел не K+1 — не утверждаем «недостижима»: соответствие не измерено.
+
+    Соответствие «узел = K+1» замерено только на K=0 (находка ревью PR
+    #110): на K>0 строгое примечание «точка недостижима» могло бы ругать
+    корректную ветвь.
+    """
     project, _src, _dst = _branch_project()
     bridge = _branch_bridge(["created=777 parent=555 node=1"])
     _install_fit_contour(monkeypatch, tmp_path, project, bridge)
@@ -1896,7 +1925,8 @@ async def test_connect_branch_notes_node_mismatch(monkeypatch, tmp_path):
                                "point_index": 2}))
 
         assert "ВНИМАНИЕ" in text
-        assert "узел 1" in text and "узел 3" in text
+        assert "соответствие для K>0 не измерено" in text
+        assert "недостижима" not in text
     finally:
         session.WIRES[:] = saved
 
@@ -1935,6 +1965,53 @@ async def test_connect_branch_refuses_point_out_of_range(monkeypatch,
 
         assert "1 точек данных" in text
         assert "свернула бы ветвь к первой" in text
+        assert "`K < 1`" in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_zero_points_advice(monkeypatch, tmp_path):
+    """cnt=0: совет — только point_index=0, без невыполнимого «K < 0».
+
+    Находка ревью PR #110: при нуле точек формула «K < cnt» давала совет,
+    противоречащий собственному запрету отрицательного K.
+    """
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["err=point-range cnt=0"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = await _error("connect_branch",
+                            {"src": "k_0", "dst": "kx_1",
+                             "point_index": 1})
+
+        assert "0 точек данных" in text
+        assert "`point_index=0` (проверенный случай)" in text
+        assert "K < 0" not in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_refuses_when_port_blind_in_contour(monkeypatch,
+                                                                 tmp_path):
+    """Порт виден COM, но не контуру — отказ, а не мусорная линия.
+
+    Нулевой приёмник `createwire` превращает в реальную линию (находка
+    ревью PR #110) — гард в теле обязан ловить это до создания.
+    """
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["err=no-in-port"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = await _error("connect_branch",
+                            {"src": "k_0", "dst": "kx_1"})
+
+        assert "не нашла входной порт" in text
+        assert "пересоздаться" in text
+        assert not any(w[0].id == 777 for w in session.WIRES)
     finally:
         session.WIRES[:] = saved
 
