@@ -453,6 +453,40 @@ def _run_contour_body(body: str, *, failed: str) -> ContourOutcome:
     return run.outcome
 
 
+def _refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
+                            unsure: str, aborted_hint: str,
+                            section_note: str = "") -> None:
+    """Отказ по несделанному исходу контура — общий каркас пяти инструментов.
+
+    Пять контурных инструментов (`disconnect_wire`, `remove_block`,
+    `set_block_script`, `set_block_size`, фиты габаритов) дословно повторяли
+    разбор `not-compiled`/`aborted`/`section-not-run` — копии разъезжались бы
+    при первой правке текста (находка ревью). Каркас здесь один, различия —
+    в подлежащих: `failed` («размер не записан») — для «не собралось» и «не
+    запускалось», `unsure` («размер не подтверждён») — для обрыва,
+    `aborted_hint` — что проверить после обрыва, `section_note` — уточнение
+    после «тело не запускалось» (у `remove_block` оно своё).
+
+    Прелюдии (чистка реестра по перечислению страницы) инструменты делают
+    **до** вызова: у `aborted` она своя у каждого.
+    """
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            f"{failed}: тело не собралось (текст ошибки — в окне сообщений "
+            f"редактора SimInTech; через COM он не читается). Проект не "
+            f"изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"{unsure}: тело оборвалось на исполнении.{detail} "
+            f"{aborted_hint}")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            f"{unsure}: секция `initialization` не выполнилась — тело не "
+            f"запускалось{section_note}. Повторите вызов.")
+
+
 def _page_wire_ids(page: Any) -> Optional[List[int]]:
     """Идентификаторы линий страницы или None — перечислить не удалось.
 
@@ -621,11 +655,6 @@ def disconnect_wire(src: str, dst: str,
     outcome = _run_contour_body(
         _disconnect_wire_body(b1.id, out_index, b2.id, in_index),
         failed="снять линию не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "связь не снята: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
     if outcome.kind == OUTCOME_ABORTED:
         # Реестр сессии приводится по факту перечисления страницы: тело могло
         # успеть снять линию до обрыва записи, и запись о ней — уже мёртвая.
@@ -633,13 +662,12 @@ def disconnect_wire(src: str, dst: str,
         # права забывать (отказ об этом и так говорит).
         for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
             session.forget_wire(wire_id)
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"снятие не подтверждено: тело оборвалось на исполнении.{detail} "
-            "Успело ли удаление выполниться — по этому исходу не определить: "
-            "проверьте схему (`list_wires` — число линий, `export_model_text` "
-            "— концы). Прежний скрипт страницы возвращён.")
+    _refuse_contour_failure(
+        outcome, failed="связь не снята", unsure="снятие не подтверждено",
+        aborted_hint=("Успело ли удаление выполниться — по этому исходу не "
+                      "определить: проверьте схему (`list_wires` — число "
+                      "линий, `export_model_text` — концы). Прежний скрипт "
+                      "страницы возвращён."))
     reply = _parse_drop_reply(outcome.lines)
     if reply.kind == "not-connected":
         raise ToolError(
@@ -1137,28 +1165,18 @@ def remove_block(block: str, with_wires: bool = False) -> str:
     outcome = _run_contour_body(
         _remove_block_body(target.id, with_wires),
         failed="удалить блок не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "блок не удалён: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
     if outcome.kind == OUTCOME_ABORTED:
         # Реестр — по факту перечисления: тело могло успеть снять линии до
         # обрыва записи, и записи о них уже мёртвые.
         for wire_id in _vanished_wires(before_ids, _page_wire_ids(page)):
             session.forget_wire(wire_id)
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"удаление не подтверждено: тело оборвалось на исполнении."
-            f"{detail} Успело ли удаление выполниться — по этому исходу не "
-            f"определить: проверьте схему (`list_blocks`, `list_wires`). "
-            f"Прежний скрипт страницы возвращён.")
-    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
-        raise ToolError(
-            "удаление не подтверждено: секция `initialization` не "
-            "выполнилась — тело не запускалось, блок не удалён (причина по "
-            "этому признаку не определяется). Повторите вызов.")
+    _refuse_contour_failure(
+        outcome, failed="блок не удалён", unsure="удаление не подтверждено",
+        aborted_hint=("Успело ли удаление выполниться — по этому исходу не "
+                      "определить: проверьте схему (`list_blocks`, "
+                      "`list_wires`). Прежний скрипт страницы возвращён."),
+        section_note=(", блок не удалён (причина по этому признаку не "
+                      "определяется)"))
     reply = _parse_remove_reply(outcome.lines)
     if reply.bad_port and reply.kind != "removed":
         # Порт не отдался по индексу — тело ответа об удалении не оставило.
@@ -1512,18 +1530,11 @@ def set_block_script(block: str, script: str) -> str:
     outcome = _run_contour_body(
         _set_block_script_body(block, normalized, token),
         failed="записать скрипт блока не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "скрипт не записан: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
-    if outcome.kind == OUTCOME_ABORTED:
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"запись скрипта не подтверждена: тело оборвалось на "
-            f"исполнении.{detail} Скрипт блока мог измениться — проверьте "
-            f"его `get_block_script`.")
+    _refuse_contour_failure(
+        outcome, failed="скрипт не записан",
+        unsure="запись скрипта не подтверждена",
+        aborted_hint=("Скрипт блока мог измениться — проверьте его "
+                      "`get_block_script`."))
     reply = _parse_script_reply(outcome.lines, token)
     if reply.kind == "no-block":
         raise ToolError(
@@ -2004,21 +2015,10 @@ def set_block_size(block: str, width: float, height: float) -> str:
     outcome = _run_contour_body(
         _set_size_body(target.id, float(width), float(height)),
         failed="записать размер блока не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "размер не записан: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
-    if outcome.kind == OUTCOME_ABORTED:
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"размер не подтверждён: тело оборвалось на исполнении.{detail} "
-            f"Проверьте габарит в GUI (`get_size` прочитает фактический).")
-    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
-        raise ToolError(
-            "размер не подтверждён: секция `initialization` не выполнилась — "
-            "тело не запускалось. Повторите вызов.")
+    _refuse_contour_failure(
+        outcome, failed="размер не записан", unsure="размер не подтверждён",
+        aborted_hint=("Проверьте габарит в GUI (`get_size` прочитает "
+                      "фактический)."))
     # Порядок как у расстановки: изменённая геометрия → перерисовка →
     # трассировка линий (контракт `layout_place`).
     project.repaint()
@@ -2189,23 +2189,12 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
             f"уйти в блок другой страницы. Проект не изменён.") from exc
     outcome = _run_contour_body(_size_fixes_body(plan),
                                 failed="записать габариты не удалось")
-    if outcome.kind == OUTCOME_NOT_COMPILED:
-        raise ToolError(
-            "габариты не записаны: тело не собралось (текст ошибки — в окне "
-            "сообщений редактора SimInTech; через COM он не читается). "
-            "Проект не изменён.")
-    if outcome.kind == OUTCOME_ABORTED:
-        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
-                  if outcome.lines else "")
-        raise ToolError(
-            f"габариты не подтверждены: тело оборвалось на исполнении."
-            f"{detail} Часть правок могла примениться — проверьте габариты "
-            f"(`get_block_params` размер не читает; смотрите снимок или "
-            f"повторите `fit_port_blocks`).")
-    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
-        raise ToolError(
-            "габариты не подтверждены: секция `initialization` не "
-            "выполнилась — тело не запускалось. Повторите вызов.")
+    _refuse_contour_failure(
+        outcome, failed="габариты не записаны",
+        unsure="габариты не подтверждены",
+        aborted_hint=("Часть правок могла примениться — проверьте габариты "
+                      "(`get_block_params` размер не читает; смотрите снимок "
+                      "или повторите `fit_port_blocks`)."))
     changed = 0
     for fix in plan:
         word = "ширина" if fix.prop == "Width" else "высота"
