@@ -210,6 +210,27 @@ def add_block(class_name: str, name_hint: str = "",
             f"{tail}")
 
 
+def block_by_id(page: Page, block_id: int) -> Optional[Block]:
+    """Блок страницы с этим числовым id — или None.
+
+    Адресация по id нужна там, где имя неоднозначно: пара «В память» /
+    «Из памяти» делит одно имя ячейки, и поиск по имени вернул бы одну
+    половину вместо нужной. Единая точка для `resolve_block`, подтверждения
+    удаления (`wires._page_has_block_id`) и подписи источника в отказах
+    (`wires._block_caption`) — три копии скана расходились бы при первой
+    правке защиты (находка ревью PR #122). Провал чтения `block.id` на
+    одном блоке (сбой COM) его пропускает; сбой перечисления страницы —
+    наружу, вызывающие решают сами.
+    """
+    for block in page.get_blocks():
+        try:
+            if block.id == block_id:
+                return block
+        except Exception:                                     # noqa: BLE001
+            continue
+    return None
+
+
 def resolve_block(page: Page, token: str) -> Optional[Block]:
     """Найти блок по имени или по числовому id.
 
@@ -229,10 +250,7 @@ def resolve_block(page: Page, token: str) -> Optional[Block]:
     if found is not None:
         return found
     if token.isdecimal():
-        wanted = int(token)
-        for block in page.get_blocks():
-            if getattr(block, "id", None) == wanted:
-                return block
+        return block_by_id(page, int(token))
     return None
 
 

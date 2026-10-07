@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block
@@ -16,7 +16,12 @@ from simintech_api import Block
 from .. import runtime, session
 from ..app import mcp
 from .blocks import missing_block, resolve_block
-from .contour import refuse_contour_failure, run_contour_body
+from .contour import (
+    activate_or_refuse,
+    refuse_contour_failure,
+    run_contour_body,
+)
+from .layout import normalize_page_wires
 
 
 #: Предел размера блока в пикселях. Это не предел числа COM-вызовов, а
@@ -119,13 +124,25 @@ def _set_size_body(block_id: int, width: float, height: float) -> str:
     маскируется (сохранение берёт формулу) — потому очистка обязательна и
     стоит первой.
     """
-    return "\n".join([
+    return "\n".join(
+        size_pair_lines(block_id, "Width", width)
+        + size_pair_lines(block_id, "Height", height)) + "\n"
+
+
+def size_pair_lines(block_id: int, prop: str, value: float) -> List[str]:
+    """Строки тела контура для одной оси: снять формулу + записать «Значение».
+
+    Общий эмиттер обеих записей габаритов — `set_block_size` и плана фитов
+    (`fits._size_fixes_body`): рецепт («очистка формулы первой, иначе
+    `setprop` маскируется живой формулой») обязан жить в одной точке, иначе
+    инструменты начнут оставлять разный `.xprt` для одной операции (находка
+    ревью PR #122).
+    """
+    return [
         f"blk = {block_id};",
-        'setpropformula(blk, "Width", "");',
-        f'setprop(blk, "Width", {size_value(width)});',
-        'setpropformula(blk, "Height", "");',
-        f'setprop(blk, "Height", {size_value(height)});',
-    ]) + "\n"
+        f'setpropformula(blk, "{prop}", "");',
+        f'setprop(blk, "{prop}", {size_value(value)});',
+    ]
 
 
 @mcp.tool()
@@ -239,14 +256,8 @@ def set_block_size(block: str, width: float, height: float) -> str:
     # этого запись из GUI, уведённого в субмодель, ушла бы мимо блока или в
     # блок-двойник с тем же id (находка ревью PR #94): прежний COM-путь от
     # активной страницы не зависел. Не удалось активировать — отказ: писать
-    # вслепую нельзя.
-    try:
-        page.activate()
-    except Exception as exc:                                  # noqa: BLE001
-        raise ToolError(
-            f"размер не записан: страницу блока не удалось сделать активной "
-            f"({type(exc).__name__}: {exc}) — запись по id могла бы уйти в "
-            f"блок другой страницы. Проект не изменён.") from exc
+    # вслепую нельзя (каркас активации — `contour.activate_or_refuse`).
+    activate_or_refuse(page, action="размер не записан")
     # Запись — контуром, в «Значение» (см. `_set_size_body`): COM-путь
     # `SetGraphBlockProp` кладёт габарит в «Формулу».
     outcome = run_contour_body(
@@ -257,11 +268,17 @@ def set_block_size(block: str, width: float, height: float) -> str:
         aborted_hint=("Проверьте габарит в GUI (`get_size` прочитает "
                       "фактический)."))
     # Порядок как у расстановки: изменённая геометрия → перерисовка →
-    # трассировка линий (контракт `layout_place`).
+    # трассировка линий (контракт `layout_place`). Хвост идёт ПОСЛЕ
+    # состоявшейся записи: его сбой не должен выглядеть отказом правки
+    # (форма та же, что у `remove_block`; находка ревью PR #122 — ручной
+    # цикл по линиям не был защищён и ронял уже записанный размер).
     project.repaint()
-    for wire in page.get_wires():
-        # `normalize()` безопасен и на линии, созданной не этой сессией.
-        wire.normalize()
+    tail_note = ""
+    try:
+        normalize_page_wires(page)
+    except Exception:                                         # noqa: BLE001
+        tail_note = (" Линии не трассированы: перечислить их не удалось "
+                     "(сбой чтения через COM) — проверьте схему.")
     after = target.get_size()
     if required is not None and float(after[1]) != float(required):
         # Среда могла преобразовать запись (как `_EvenOnlyBlock` в тестах):
@@ -287,4 +304,4 @@ def set_block_size(block: str, width: float, height: float) -> str:
         note = (f" (среда приняла {_size_text(after)}, а запрошено "
                 f"{_size_text(requested)})")
     return (f"Размер блока '{block}': {_size_text(before)} → "
-            f"{_size_text(after)}{note}")
+            f"{_size_text(after)}{note}{tail_note}")

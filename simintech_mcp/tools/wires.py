@@ -10,14 +10,23 @@ import re
 from typing import Any, List, NamedTuple, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Block, Wire
+from simintech_api import Wire
 from simintech_api.exceptions import PortError
 from simintech_api.script_probe import OUTCOME_ABORTED
 
 from .. import runtime, session
 from ..app import mcp
-from .blocks import missing_block, resolve_block, resolved_name
-from .contour import int_after_eq, refuse_contour_failure, run_contour_body
+from .blocks import (
+    block_by_id,
+    missing_block,
+    resolve_block,
+    resolved_name,
+)
+from .contour import (
+    activate_or_refuse,
+    refuse_contour_failure,
+    run_contour_body,
+)
 from .layout import normalize_page_wires
 from .page_script import describe_outcome
 
@@ -204,8 +213,7 @@ def _page_has_block_id(page: Any, block_id: int) -> Optional[bool]:
     06.10.2026).
     """
     try:
-        return any(getattr(block, "id", None) == block_id
-                   for block in page.get_blocks())
+        return block_by_id(page, block_id) is not None
     except Exception:                                         # noqa: BLE001
         return None
 
@@ -231,18 +239,18 @@ def _block_caption(page: Any, block_id: int) -> str:
     источник линии может лежать на другой странице, и выдать id за имя было
     бы догадкой.
     """
-    blocks: list[Block] = []
     try:
-        blocks = page.get_blocks()
+        block = block_by_id(page, block_id)
     except Exception:                                             # noqa: BLE001
-        blocks = []
-    for block in blocks:
-        try:
-            if block.id == block_id:
-                return f"'{block.get_name()}' (id={block_id})"
-        except Exception:                                         # noqa: BLE001
-            continue
-    return f"id={block_id} (имя среди блоков страницы не найдено)"
+        block = None
+    if block is None:
+        return f"id={block_id} (имя среди блоков страницы не найдено)"
+    try:
+        name = block.get_name()
+    except Exception:                                             # noqa: BLE001
+        name = ""
+    return (f"'{name}' (id={block_id})" if name
+            else f"id={block_id} (имя блока не прочиталось)")
 
 
 @mcp.tool()
@@ -598,13 +606,7 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
             f"у блока '{dst}' нет входного порта {in_index}: {exc}. "
             f"Состав портов — `get_block_params` или выгрузка; проект не "
             f"изменён.") from exc
-    try:
-        page.activate()
-    except Exception as exc:                                  # noqa: BLE001
-        raise ToolError(
-            f"ветвь не создана: страницу блока не удалось сделать активной "
-            f"({type(exc).__name__}: {exc}) — тело искало бы блоки по id на "
-            f"другой странице. Проект не изменён.") from exc
+    activate_or_refuse(page, action="ветвь не создана")
     outcome = run_contour_body(
         _connect_branch_body(b1.id, out_index, b2.id, in_index, point_index),
         failed="создать ветвление не удалось")
@@ -764,6 +766,19 @@ class _RemoveReply(NamedTuple):
     bad_port: bool = False
 
 
+def _int_after_eq(text: str) -> int:
+    """Число после «=» в строке тела; не разобралось — 0.
+
+    Единственный потребитель — разбор ответа `remove_block`; живёт рядом с
+    ним, а не в общем каркасе контура (находка ревью PR #122): модуль-каркас
+    не должен знать формат ответа конкретного тела.
+    """
+    try:
+        return int(text.split("=", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def _parse_remove_reply(lines: List[str]) -> _RemoveReply:
     """Разобрать строки тела: что снято/занято — или «ответа нет»."""
     wires: List[int] = []
@@ -776,12 +791,12 @@ def _parse_remove_reply(lines: List[str]) -> _RemoveReply:
         if text == "err=no-port":
             bad_port = True
         elif text.startswith("removed="):
-            block_id = int_after_eq(text)
+            block_id = _int_after_eq(text)
             removed = True
         elif text.startswith("busy="):
             busy = True
         elif text.startswith(("wire=", "cut=")):
-            wires.append(int_after_eq(text))
+            wires.append(_int_after_eq(text))
     if removed:
         return _RemoveReply("removed", block_id=block_id, wires=tuple(wires),
                             bad_port=bad_port)
@@ -830,10 +845,9 @@ def remove_block(block: str, with_wires: bool = False) -> str:
     target = resolve_block(page, block)
     if target is None:
         return missing_block(block)
-    try:
-        name = target.get_name()
-    except Exception:                                         # noqa: BLE001
-        name = block.strip()
+    # Имя — из найденного объекта: тот же хелпер, что у `connect` и соседей
+    # (находка ревью PR #122 — здесь жила инлайн-копия).
+    name = resolved_name(target, block)
 
     before_ids = _page_wire_ids(page)
     outcome = run_contour_body(

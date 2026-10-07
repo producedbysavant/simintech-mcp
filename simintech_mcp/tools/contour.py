@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from typing import Any, List, Optional
+
 from fastmcp.exceptions import ToolError
 from simintech_api.exceptions import ScriptBridgeError
 from simintech_api.script_probe import (
@@ -75,9 +77,43 @@ def refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
             f"запускалось{section_note}. Повторите вызов.")
 
 
-def int_after_eq(text: str) -> int:
-    """Число после «=» в строке тела; не разобралось — 0."""
+def activate_or_refuse(page: Any, *, action: str,
+                       where: Optional[str] = None) -> None:
+    """Сделать страницу правки текущей или отказать — до контура.
+
+    Скрипт ставится в текущую страницу (`SetPageScript` → `GetCurentPage`),
+    и адресация по id ищется на ней: без активации запись ушла бы мимо блока
+    или в блок-двойник с тем же id (находка ревью PR #94). Не удалось
+    активировать — **отказ**, а не запись вслепую: промах выглядел бы как
+    «среда не приняла запись» и уводил бы диагноз в сторону среды.
+
+    Блок повторялся у трёх инструментов (ветвь, размер, габариты фитов) с
+    дословным обоснованием и разными текстами — тексты сведены сюда
+    (находка ревью PR #122): `action` называет действие («ветвь не
+    создана»), `where` — страницу, когда её имя известно (у фитов).
+    """
     try:
-        return int(text.split("=", 1)[1])
-    except (IndexError, ValueError):
-        return 0
+        page.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        named = f" «{where}»" if where else ""
+        raise ToolError(
+            f"{action}: страницу{named} не удалось сделать активной "
+            f"({type(exc).__name__}: {exc}) — запись по id могла бы уйти в "
+            f"блок другой страницы. Проект не изменён.") from exc
+
+
+def return_main_active(main: Any, lines: List[str]) -> None:
+    """Вернуть главную страницу активной, назвав провал возврата.
+
+    Обход фитов активирует каждую страницу, а следующая контурная операция
+    (выгрузка, снимок) снимает ИМЕННО активную (живой случай 06.10.2026).
+    Молчаливый `pass` здесь оставлял бы субмодель текущей и инструмент
+    отчитывался бы успехом (находка ревью PR #122): не получилось вернуть —
+    это примечание, а не отказ (правка-то сделана), но и не тишина.
+    """
+    try:
+        main.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"главную не удалось вернуть активной "
+                     f"({type(exc).__name__}: {exc}) — следующая контурная "
+                     f"операция снимет ТЕКУЩУЮ страницу, а не главную.")

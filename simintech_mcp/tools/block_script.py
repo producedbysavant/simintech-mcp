@@ -19,7 +19,7 @@ from simintech_api.exceptions import ScriptBridgeError
 
 from .. import runtime, session
 from ..app import mcp
-from .blocks import missing_block, resolve_block
+from .blocks import missing_block, resolve_block, resolved_name
 from .contour import refuse_contour_failure, run_contour_body
 from .page_script import describe_outcome
 
@@ -47,12 +47,16 @@ def _runtime_literal(text: str) -> str:
 
     Вход нормализуется к LF **внутри**: перевод строки в куске литерала
     недопустим, а собранный скрипт страницы прогоняется библиотечным
-    `build_page_script` через `splitlines()`, который режет и по сырому `\\r`
-    (находка ревью: CRLF-вход давал куски вида `"a\\r"` — вызов рвался посреди
-    литерала). Перевод строки выражается только `chr(13) + chr(10)`.
+    `build_page_script` через `splitlines()`. Границ у него больше, чем
+    CRLF: вертикальная табуляция, `\\f`, `\\x1c`–`\\x1e`, NEL (`\\x85`) и
+    разделители строк Unicode (U+2028/U+2029) режут так же — такой символ,
+    уйдя в литерал сырым, разрывал его и компиляция падала с диагнозом не
+    по адресу (находка ревью PR #122; CRLF-ветка — прежняя находка ревью).
+    Перевод строки выражается только `chr(13) + chr(10)`.
     """
     if not text:
         return '""'
+    text = re.sub(r"[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]", "\n", text)
     parts: List[str] = []
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     for index, line in enumerate(lines):
@@ -113,13 +117,18 @@ def get_block_script(block: str) -> str:
     target = resolve_block(project.get_main_page(), block)
     if target is None:
         return missing_block(block)
+    # Дальше адресат — по ИМЕНИ: и выгрузка (`parse_xprt_block_script`), и
+    # тело записи ищут объект по имени, а не по id — с сырым числовым
+    # токеном оба промахивались (ложное «скрипта нет» / «блок не найден»;
+    # находка ревью PR #122). Как у `connect`: имя — из найденного объекта.
+    name = resolved_name(target, block)
     try:
         class_name = target.class_name
     except Exception:                                             # noqa: BLE001
         class_name = ""
-    marked = f"'{block}'" + (f" [{class_name}]" if class_name else "")
+    marked = f"'{name}'" + (f" [{class_name}]" if class_name else "")
     try:
-        script = parse_xprt_block_script(_block_script_snapshot(project), block)
+        script = parse_xprt_block_script(_block_script_snapshot(project), name)
     except ScriptBridgeError as exc:
         raise ToolError(
             f"прочитать скрипт блока {marked} не удалось: {exc}. Снимок "
@@ -283,10 +292,13 @@ def set_block_script(block: str, script: str) -> str:
     target = resolve_block(project.get_main_page(), block)
     if target is None:
         return missing_block(block)
+    # Тело ищет объект по имени (`findobjectbyname`) — числовой id туда не
+    # годится; имя берётся из найденного блока (находка ревью PR #122).
+    name = resolved_name(target, block)
     normalized = _normalize_script(script)
     token = "BLK" + uuid.uuid4().hex[:12]
     outcome = run_contour_body(
-        _set_block_script_body(block, normalized, token),
+        _set_block_script_body(name, normalized, token),
         failed="записать скрипт блока не удалось")
     refuse_contour_failure(
         outcome, failed="скрипт не записан",
@@ -296,7 +308,7 @@ def set_block_script(block: str, script: str) -> str:
     reply = _parse_script_reply(outcome.lines, token)
     if reply.kind == "no-block":
         raise ToolError(
-            f"скрипт не записан: блок '{block}' не найден при исполнении "
+            f"скрипт не записан: блок '{name}' не найден при исполнении "
             f"тела — он мог исчезнуть со страницы. Проект не изменён.")
     if reply.kind != "written":
         raise ToolError(
@@ -309,6 +321,6 @@ def set_block_script(block: str, script: str) -> str:
             f"повторным вызовом — записи «наполовину» молча не проходят.")
     tail = (f"\n---- прежний скрипт ----\n{reply.old}" if reply.old
             else "\nПрежний скрипт был пуст.")
-    return (f"Скрипт блока '{block}' записан. Портов: {reply.ports_before} → "
+    return (f"Скрипт блока '{name}' записан. Портов: {reply.ports_before} → "
             f"{reply.ports_after}.\n"
             f"{describe_outcome(outcome, what='Вердикт')}{tail}")

@@ -1362,6 +1362,37 @@ async def test_fit_port_blocks_widens_memory_blocks(monkeypatch, tmp_path):
     assert "ToMem_0" in text and "FromMem_0" in text
 
 
+class _UnacceptingPort(_PortBlock):
+    """Порт-блок, не принимающий запись габарита: «среда не применила»."""
+
+    def set_size_value(self, name, value):
+        self.value_writes.append((name, value))
+        return self                        # размер не меняется — запись мимо
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_reports_rejected_write(monkeypatch, tmp_path):
+    """Среда не приняла запись — заголовок не говорит «подогнаны» (ревью #122).
+
+    Блок, чья рабочая ось отвергнута, не считается изменённым и не получает
+    строку «приведена к „Значению"»: раньше touch-ветка добавляла его в
+    изменённые, и ответ «Габариты подогнаны: 1» противоречил собственной
+    строке «среда не приняла запись».
+    """
+    block = _UnacceptingPort(names="Very_Long_Signal_Name\r\n")
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert "среда не приняла запись" in text
+    assert "Габариты не изменились" in text
+    assert "Габариты подогнаны" not in text, "отвергнутая запись выдана успехом"
+    assert "приведена к «Значению»" not in text, \
+        "приведение утверждается при отвергнутой рабочей оси"
+
+
 @pytest.mark.anyio
 async def test_fit_port_blocks_keeps_fitting_labels(monkeypatch, tmp_path):
     """Подпись в рамке — блок не трогается, контур не зовётся; главная активна."""

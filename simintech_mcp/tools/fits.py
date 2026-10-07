@@ -20,10 +20,20 @@ from ..app import mcp
 from ..geometry import CHAR_WIDTH_ESTIMATE
 from .blocks import resolve_block
 from .check_model import read_port_names
-from .contour import refuse_contour_failure, run_contour_body
+from .contour import (
+    activate_or_refuse,
+    refuse_contour_failure,
+    return_main_active,
+    run_contour_body,
+)
 from .layout import first_point
 from .model_text import page_export_text
-from .sizes import PORT_ROW_HEIGHT, PORT_HEIGHT_CLASSES, size_value
+from .sizes import (
+    PORT_ROW_HEIGHT,
+    PORT_HEIGHT_CLASSES,
+    size_pair_lines,
+    size_value,
+)
 
 
 #: Классы, которым `fit_port_blocks` подгоняет **ширину** по подписям
@@ -205,14 +215,12 @@ def _size_fixes_body(plan: List[_SizeFix]) -> str:
     """
     lines: List[str] = []
     for fix in plan:
-        lines.append(f"blk = {fix.block.id};")
-        lines.append(f'setpropformula(blk, "{fix.prop}", "");')
-        lines.append(f'setprop(blk, "{fix.prop}", {size_value(fix.want)});')
+        lines += size_pair_lines(fix.block.id, fix.prop, fix.want)
     return "\n".join(lines) + "\n"
 
 
 def _apply_size_plan(page: Page, where: str, lines: List[str],
-                     plan: List[_SizeFix]) -> int:
+                     plan: List[_SizeFix]) -> Tuple[int, bool]:
     """Применить план правок одним контурным прогоном; вернуть число сбывшихся.
 
     Одним прогоном — не оптимизация, а условие: контур перезапускает расчёт,
@@ -224,16 +232,13 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     — перечитывание `get_size`: «среда не приняла запись» остаётся
     примечанием, а не успехом.
 
-    Возврат — число изменённых **блоков** (не правок): у тронутого блока их
-    две (меняемая ось и приведение второй к «Значению»).
+    Возврат — `(число изменённых блоков, была ли отвергнутая запись)`:
+    у тронутого блока правок две (рабочая ось и приведение второй к
+    «Значению»), и заголовок ответа обязан знать про «среда не приняла
+    запись», иначе «Габариты подогнаны» противоречило бы собственной строке
+    (находка ревью PR #122).
     """
-    try:
-        page.activate()
-    except Exception as exc:                                  # noqa: BLE001
-        raise ToolError(
-            f"габариты не записаны: страницу «{where}» не удалось сделать "
-            f"активной ({type(exc).__name__}: {exc}) — запись по id могла бы "
-            f"уйти в блок другой страницы. Проект не изменён.") from exc
+    activate_or_refuse(page, action="габариты не записаны", where=where)
     outcome = run_contour_body(_size_fixes_body(plan),
                                failed="записать габариты не удалось")
     refuse_contour_failure(
@@ -243,7 +248,16 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
     changed_blocks: set[int] = set()
-    for fix in plan:
+    rejected = False
+    # Сначала — правки рабочих осей (`touch=False`), затем приведения
+    # (`touch=True`). Порядок важен: «приведена к „Значению"» говорится
+    # только у блока, чья рабочая ось действительно прошла; иначе строка
+    # выдавала бы приведение за состоявшееся (находка ревью PR #122:
+    # touch-ветка добавляла блок в изменённые даже при отвергнутой записи,
+    # и заголовок «Габариты подогнаны» был ложью).
+    ordered = ([fix for fix in plan if not fix.touch]
+               + [fix for fix in plan if fix.touch])
+    for fix in ordered:
         word = "ширина" if fix.prop == "Width" else "высота"
         index = 0 if fix.prop == "Width" else 1
         try:
@@ -255,11 +269,14 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
             continue
         if after == fix.before:
             if fix.touch:
-                lines.append(
-                    f"{where}: {fix.name}: {word} {size_value(fix.before)} — "
-                    f"приведена к «Значению» (число не менялось).")
-                changed_blocks.add(id(fix.block))
+                if id(fix.block) in changed_blocks:
+                    lines.append(
+                        f"{where}: {fix.name}: {word} {size_value(fix.before)}"
+                        f" — приведена к «Значению» (число не менялось).")
+                # Блок с отвергнутой рабочей осью уже назван — приведение
+                # здесь не утверждается.
             else:
+                rejected = True
                 lines.append(f"{where}: {fix.name}: {word} не изменилась "
                              f"({size_value(fix.before)}) — среда не приняла "
                              f"запись.")
@@ -270,7 +287,7 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
         changed_blocks.add(id(fix.block))
         if fix.pin is not None:
             _restore_pin(fix, where, lines)
-    return len(changed_blocks)
+    return len(changed_blocks), rejected
 
 
 def _restore_pin(fix: _SizeFix, where: str, lines: List[str]) -> None:
@@ -449,9 +466,36 @@ def _deferred_pages_note(deferred: List[Any], tool: str) -> str:
             f"сделанное не трогается). Отложены: {names}.")
 
 
+def _run_fits_over_pages(pages: List[Any], run_page: Callable[[Any, str], int],
+                         tool: str, main: Any,
+                         lines: List[str]) -> Tuple[int, List[Any], str, str]:
+    """Оркестровка порционного обхода — одна на оба фита.
+
+    Обход с курсором, возврат главной активной, строка продолжения и охват
+    (`_coverage_notes`) собираются здесь; в фитах остаётся только суть
+    страницы (`run_page`). Копия расходилась бы при правке курьера,
+    активации или формулировок (находка ревью PR #122).
+    """
+    try:
+        total, deferred, resumed = _foreach_page_within_budget(
+            pages, run_page, tool)
+    finally:
+        # Активной возвращается главная — и при отказе посередине обхода:
+        # `_apply_size_plan` мог отказать на странице субмодели, оставив её
+        # текущей, а следующая контурная операция (выгрузка, снимок) снимает
+        # ИМЕННО активную страницу (находка ревью PR #102). Провал возврата —
+        # примечанием: молчаливый `pass` выдавал бы успех с чужой активной
+        # страницей (находка ревью PR #122).
+        return_main_active(main, lines)
+    if resumed:
+        lines.append(f"Обход продолжен с отложенной страницы: {resumed}.")
+    walked, tail = _coverage_notes(pages, deferred, tool)
+    return total, deferred, walked, tail
+
+
 def _fit_page_sizes(page: Page, where: str, affected: List[Any],
-                    lines: List[str]) -> int:
-    """Поправить габариты одной страницы; вернуть число изменённых блоков.
+                    lines: List[str]) -> Tuple[int, bool]:
+    """Поправить габариты одной страницы; вернуть (число, был ли отказ записи).
 
     Порт-блоки — ширина по подписям (та же оценка, что у
     `check_model_layout`); блоки-субмодели — высота по числу **входных**
@@ -464,7 +508,7 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: блоки не перечислить "
                      f"({type(exc).__name__}: {exc}).")
-        return 0
+        return 0, False
     plan: List[_SizeFix] = []
     for block in blocks:
         try:
@@ -476,11 +520,11 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
         elif class_name == "Субмодель":
             _plan_submodel_height(block, where, lines, plan)
     if not plan:
-        return 0
-    changed = _apply_size_plan(page, where, lines, plan)
+        return 0, False
+    changed, rejected = _apply_size_plan(page, where, lines, plan)
     if changed and page not in affected:
         affected.append(page)
-    return changed
+    return changed, rejected
 
 
 @mcp.tool()
@@ -550,24 +594,25 @@ def fit_port_blocks() -> str:
     lines: List[str] = []
     pages = _walk_pages(project, main, lines)
     affected: List[Any] = []
-    try:
-        changed, deferred, resumed = _foreach_page_within_budget(
-            pages,
-            lambda page, where: _fit_page_sizes(page, where, affected, lines),
-            "fit_port_blocks")
-    finally:
-        # Активной возвращается главная — и при отказе посередине обхода:
-        # `_apply_size_plan` мог отказать на странице субмодели, оставив её
-        # текущей, а следующая контурная операция (выгрузка, снимок) снимает
-        # ИМЕННО активную страницу (находка ревью PR #102).
-        try:
-            main.activate()
-        except Exception:                                     # noqa: BLE001
-            pass
-    if resumed:
-        lines.append(f"Обход продолжен с отложенной страницы: {resumed}.")
-    walked, tail = _coverage_notes(pages, deferred, "fit_port_blocks")
-    if not changed:
+    rejected_any = False
+
+    def run_page(page: Any, where: str) -> int:
+        nonlocal rejected_any
+        changed_count, rejected = _fit_page_sizes(page, where, affected,
+                                                  lines)
+        rejected_any = rejected_any or rejected
+        return changed_count
+
+    changed, deferred, walked, tail = _run_fits_over_pages(
+        pages, run_page, "fit_port_blocks", main, lines)
+    if not changed and rejected_any:
+        # Запись не прошла: «менять нечего» тут — ложь (план был, среда его
+        # не приняла) — находка ревью PR #122.
+        head = (f"Габариты не изменились: среда не приняла запись (оценка "
+                f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
+                f"{walked}).")
+        result = head + ("\n" + "\n".join(lines) if lines else "") + tail
+    elif not changed:
         # «Менять нечего» не должно звучать как «всё осмотрено», если часть
         # страниц отложена бюджетом: вывод говорится только о виденном.
         what = ("менять нечего" if not deferred else
@@ -585,8 +630,10 @@ def fit_port_blocks() -> str:
             except Exception as exc:                          # noqa: BLE001
                 lines.append(f"линии страницы не трассированы "
                              f"({type(exc).__name__}: {exc}).")
-        result = (f"Габариты подогнаны: {changed} (страниц обойдено: "
-                  f"{walked}).\n" + "\n".join(lines)) + tail
+        caution = ("; часть записей среда не приняла — см. ниже"
+                   if rejected_any else "")
+        result = (f"Габариты подогнаны: {changed}{caution} (страниц обойдено:"
+                  f" {walked}).\n" + "\n".join(lines)) + tail
     return result
 
 
@@ -756,25 +803,10 @@ def fit_value_labels() -> str:
     main = project.get_main_page()
     lines: List[str] = []
     pages = _walk_pages(project, main, lines)
-    try:
-        moved, deferred, resumed = _foreach_page_within_budget(
-            pages,
-            lambda page, where: _fit_value_labels_page(page, where, lines),
-            "fit_value_labels")
-    finally:
-        # Активной возвращается главная — и при отказе посередине обхода
-        # (как у `fit_port_blocks`, находка ревью PR #118): обход
-        # активирует каждую страницу, а следующая контурная операция
-        # (выгрузка) снимает ИМЕННО активную (живой случай 06.10.2026:
-        # после прежнего обхода активной была субмодель, и выгрузка
-        # принесла её текст без единой подписи).
-        try:
-            main.activate()
-        except Exception:                                     # noqa: BLE001
-            pass
-    if resumed:
-        lines.append(f"Обход продолжен с отложенной страницы: {resumed}.")
-    walked, tail = _coverage_notes(pages, deferred, "fit_value_labels")
+    moved, deferred, walked, tail = _run_fits_over_pages(
+        pages,
+        lambda page, where: _fit_value_labels_page(page, where, lines),
+        "fit_value_labels", main, lines)
     if not moved:
         # «На месте» не должно звучать как «всё обойдено», если часть
         # страниц отложена бюджетом: охват называется и здесь.
