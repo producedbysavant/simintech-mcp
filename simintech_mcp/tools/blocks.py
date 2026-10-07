@@ -349,6 +349,12 @@ def _disconnect_wire_body(src_id: int, out_index: int,
     Защита от нулевых портов — на случай, когда тело исполнилось не на той
     странице, где искали блоки: `getportwireid(0)` не измерен, и вызов с
     нулевым портом мог бы оборвать тело посреди работы.
+
+    Имена — от трёх знаков и не `i`/`j`/`c`: кодогенерация SimInTech
+    резервирует их под свои счётчики (стандарт ЭВС360, code-style); тело
+    может быть скопировано в блок, и запас здесь бесплатен (находка ревью
+    PR #108: правило было применено к `remove_block`, а здесь остались
+    `w`/`fs`).
     """
     return (
         f"p_in = getinportid({dst_id}, {in_index});\n"
@@ -357,18 +363,18 @@ def _disconnect_wire_body(src_id: int, out_index: int,
         'if p_out = 0 then writelnutf8(fid, "err=no-out-port");\n'
         "if p_in <> 0 then begin\n"
         "  if p_out <> 0 then begin\n"
-        "    w = getportwireid(p_in);\n"
-        '    if w = 0 then writelnutf8(fid, "err=not-connected");\n'
-        "    if w <> 0 then begin\n"
-        "      fs = findstartport(p_in);\n"
-        "      if fs = p_out then begin\n"
-        "        removeprimitiv(w);\n"
-        '        writelnutf8(fid, "removed=" + inttostr(w) + " pw=" + '
+        "    wireId = getportwireid(p_in);\n"
+        '    if wireId = 0 then writelnutf8(fid, "err=not-connected");\n'
+        "    if wireId <> 0 then begin\n"
+        "      startPort = findstartport(p_in);\n"
+        "      if startPort = p_out then begin\n"
+        "        removeprimitiv(wireId);\n"
+        '        writelnutf8(fid, "removed=" + inttostr(wireId) + " pw=" + '
         "inttostr(getportwireid(p_in)));\n"
         "      end;\n"
-        "      if fs <> p_out then begin\n"
+        "      if startPort <> p_out then begin\n"
         '        writelnutf8(fid, "err=other-src blk=" + '
-        "inttostr(getportblockid(fs)));\n"
+        "inttostr(getportblockid(startPort)));\n"
         "      end;\n"
         "    end;\n"
         "  end;\n"
@@ -753,29 +759,34 @@ def _remove_block_body(block_id: int, with_wires: bool) -> str:
     lines.append('seen = "|";')
     if not with_wires:
         lines.append("busy = 0;")
-    # Цикл — `while`, а не `for`: форма `for i := 0 to N` в контуре не
+    # Цикл — `while`: паскалевская форма `for i := 0 to N` в контуре не
     # компилируется (живой прогон 06.10.2026, «тело не собралось»), а
-    # `while` проверена живыми телами проб (серия removeprimitiv 04.10).
-    lines.append("i = 0;")
-    lines.append("while i < nports do begin")
-    lines.append("  p = getblockportid(blk, i);")
-    lines.append('  if p = 0 then writelnutf8(fid, "err=no-port");')
-    lines.append("  if p <> 0 then begin")
-    lines.append("    w = getportwireid(p);")
-    lines.append("    if w <> 0 then begin")
-    lines.append('      if pos("|" + inttostr(w) + "|", seen) = 0 then '
+    # справочная форма «конечного цикла» `for (i = 0, N)` в контуре не
+    # пробована; `while` проверена живыми телами проб (серия removeprimitiv
+    # 04.10) и здесь ограничена числом портов — зацикливание невозможно.
+    # Имена — длиннее двух знаков и не `i`/`j`/`c`: кодогенерация SimInTech
+    # резервирует их под свои счётчики (стандарт ЭВС360, code-style); тело
+    # контура может быть скопировано в блок, и запас здесь бесплатен.
+    lines.append("portIdx = 0;")
+    lines.append("while portIdx < nports do begin")
+    lines.append("  portId = getblockportid(blk, portIdx);")
+    lines.append('  if portId = 0 then writelnutf8(fid, "err=no-port");')
+    lines.append("  if portId <> 0 then begin")
+    lines.append("    wireId = getportwireid(portId);")
+    lines.append("    if wireId <> 0 then begin")
+    lines.append('      if pos("|" + inttostr(wireId) + "|", seen) = 0 then '
                  "begin")
-    lines.append('        seen = seen + inttostr(w) + "|";')
+    lines.append('        seen = seen + inttostr(wireId) + "|";')
     if with_wires:
-        lines.append("        removeprimitiv(w);")
-        lines.append('        writelnutf8(fid, "cut=" + inttostr(w));')
+        lines.append("        removeprimitiv(wireId);")
+        lines.append('        writelnutf8(fid, "cut=" + inttostr(wireId));')
     else:
-        lines.append('        writelnutf8(fid, "wire=" + inttostr(w));')
+        lines.append('        writelnutf8(fid, "wire=" + inttostr(wireId));')
         lines.append("        busy = busy + 1;")
     lines.append("      end;")
     lines.append("    end;")
     lines.append("  end;")
-    lines.append("  i = i + 1;")
+    lines.append("  portIdx = portIdx + 1;")
     lines.append("end;")
     if with_wires:
         lines.append("removeprimitiv(blk);")
