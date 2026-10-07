@@ -342,6 +342,12 @@ def _disconnect_wire_body(src_id: int, out_index: int,
     Защита от нулевых портов — на случай, когда тело исполнилось не на той
     странице, где искали блоки: `getportwireid(0)` не измерен, и вызов с
     нулевым портом мог бы оборвать тело посреди работы.
+
+    Имена — от трёх знаков и не `i`/`j`/`c`: кодогенерация SimInTech
+    резервирует их под свои счётчики (стандарт ЭВС360, code-style); тело
+    может быть скопировано в блок, и запас здесь бесплатен (находка ревью
+    PR #108: правило было применено к `remove_block`, а здесь остались
+    `w`/`fs`).
     """
     return (
         f"p_in = getinportid({dst_id}, {in_index});\n"
@@ -350,18 +356,18 @@ def _disconnect_wire_body(src_id: int, out_index: int,
         'if p_out = 0 then writelnutf8(fid, "err=no-out-port");\n'
         "if p_in <> 0 then begin\n"
         "  if p_out <> 0 then begin\n"
-        "    w = getportwireid(p_in);\n"
-        '    if w = 0 then writelnutf8(fid, "err=not-connected");\n'
-        "    if w <> 0 then begin\n"
-        "      fs = findstartport(p_in);\n"
-        "      if fs = p_out then begin\n"
-        "        removeprimitiv(w);\n"
-        '        writelnutf8(fid, "removed=" + inttostr(w) + " pw=" + '
+        "    wireId = getportwireid(p_in);\n"
+        '    if wireId = 0 then writelnutf8(fid, "err=not-connected");\n'
+        "    if wireId <> 0 then begin\n"
+        "      startPort = findstartport(p_in);\n"
+        "      if startPort = p_out then begin\n"
+        "        removeprimitiv(wireId);\n"
+        '        writelnutf8(fid, "removed=" + inttostr(wireId) + " pw=" + '
         "inttostr(getportwireid(p_in)));\n"
         "      end;\n"
-        "      if fs <> p_out then begin\n"
+        "      if startPort <> p_out then begin\n"
         '        writelnutf8(fid, "err=other-src blk=" + '
-        "inttostr(getportblockid(fs)));\n"
+        "inttostr(getportblockid(startPort)));\n"
         "      end;\n"
         "    end;\n"
         "  end;\n"

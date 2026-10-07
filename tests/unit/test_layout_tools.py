@@ -768,11 +768,15 @@ def test_disconnect_wire_body_checks_the_source_before_removing():
     assert "getinportid(22, 1)" in body, "вход приёмника адресуется не тем портом"
     assert "getoutportid(11, 0)" in body, "выход источника адресуется не тем портом"
     assert "findstartport(p_in)" in body
-    assert "if fs = p_out then begin" in body, (
+    assert "if startPort = p_out then begin" in body, (
         "сравнение начала линии с ожидаемым выходом пропало — "
         "удаление сняло бы любую линию во входе")
     assert body.index("findstartport") < body.index("removeprimitiv"), (
         "удаление стоит до проверки источника")
+    for short in (" fs ", " w ", " p "):
+        assert short not in body, (
+            f"имя {short!r} из резерва кодогенератора (i/j/c) и однобуквенных"
+            " — стандарт ЭВС360 требует имена от трёх знаков")
 
 
 def test_parse_drop_reply_reads_body_lines():
