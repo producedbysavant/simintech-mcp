@@ -914,9 +914,10 @@ class _PortBlock(_SizeBlock):
     (`'in\\r\\n'` у однозначного порта, `'a1\\r\\na2\\r\\n'` у двухзначного).
     """
 
-    def __init__(self, names="in\r\n", name="InputPort_0", size=(64.0, 16.0)):
+    def __init__(self, names="in\r\n", name="InputPort_0", size=(64.0, 16.0),
+                 class_name="Порт входа"):
         super().__init__(name=name, size=size)
-        self.class_name = "Порт входа"
+        self.class_name = class_name
         self._port_names = names
 
     def get_property(self, prop):
@@ -1328,6 +1329,37 @@ async def test_fit_port_blocks_widens_long_labels(monkeypatch, tmp_path):
     assert "Габариты подогнаны: 1" in text
     assert "высота 16 — приведена к «Значению»" in text
     assert long_name in text
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_widens_memory_blocks(monkeypatch, tmp_path):
+    """«В память»/«Из памяти»: ширина по подписям, высота — в «Значение».
+
+    Замер 07.10.2026: импорт ставит блокам памяти 64×16 при любой длине
+    имени, и длинная надпись вылезает за рамку — прежние фиты эти классы не
+    трогали (в боевой модели таких блоков десятки). Правило высоты у них
+    не измерено, поэтому высота только приводится к «Значению», а не
+    подгоняется — в отличие от порт-блоков.
+    """
+    long_name = "Long_Memory_Value_Name_Alpha"      # 28 символов → 224
+    to_mem = _PortBlock(names=long_name + "\r\n", name="ToMem_0",
+                        class_name="В память")
+    from_mem = _PortBlock(names=long_name + "\r\n", name="FromMem_0",
+                          class_name="Из памяти")
+    from_mem.id = 5                                 # id поделок должны различаться
+    project = _FakeProject({"ToMem_0": to_mem, "FromMem_0": from_mem})
+    bridge = _fit_bridge({to_mem.id: to_mem, from_mem.id: from_mem})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    want = str(len(long_name) * 8)
+    for block in (to_mem, from_mem):
+        assert block.value_writes == [("Width", want), ("Height", "16")], \
+            "блок памяти не расширен или высота ушла из «Значения»"
+        assert block.graph_writes == []
+    assert "Габариты подогнаны: 2" in text
+    assert "ToMem_0" in text and "FromMem_0" in text
 
 
 @pytest.mark.anyio
