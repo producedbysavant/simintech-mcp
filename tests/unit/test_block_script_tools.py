@@ -74,6 +74,10 @@ class _ScriptProject:
     def find_block(self, name):
         return self._blocks.get(name)
 
+    def get_blocks(self):
+        # Для адресации по числовому id (`resolve_block` → `block_by_id`).
+        return list(self._blocks.values())
+
     def save_xml(self, path):
         self.saved += 1
         Path(path).write_text(self._xprt, encoding="utf-8")
@@ -164,6 +168,25 @@ async def test_get_block_script_reads_from_snapshot(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_get_block_script_addresses_numeric_id_by_name(monkeypatch,
+                                                             tmp_path):
+    """Числовой id: дальше адресует ИМЯ найденного блока (находка ревью #122).
+
+    Докстринг обещает «имя или числовой id», но снимок ищет объект по
+    имени: с сырым токеном-числом запись `Script` не нашлась бы, и ответ
+    был бы ложным «скрипта нет» — при том что скрипт у блока есть.
+    """
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 7)})
+    _install(monkeypatch, tmp_path, project)
+
+    text = _text(await mcp.call_tool("get_block_script", {"block": "7"}))
+
+    assert "Скрипт блока 'LangBlock_0' [Язык программирования]:" in text, \
+        "ответ назван не именем найденного блока"
+    assert "y = u;" in text
+
+
+@pytest.mark.anyio
 async def test_get_block_script_reports_absent_script(monkeypatch, tmp_path):
     """У блока без записи `Script` — «скрипта нет», а не отказ."""
     project = _ScriptProject(
@@ -216,6 +239,27 @@ async def test_set_block_script_writes_and_returns_old(monkeypatch, tmp_path):
             < body.index('setprop(obj, "script"'))
     assert (body.index('new_script = getpropasstring')
             > body.index('setprop(obj, "script"'))
+
+
+@pytest.mark.anyio
+async def test_set_block_script_addresses_numeric_id_by_name(monkeypatch,
+                                                             tmp_path):
+    """Запись по числовому id: тело ищет блок по ИМЕНИ (находка ревью #122).
+
+    `findobjectbyname` — единственный доступный телу поиск: с «7» в
+    литерале он дал бы ложное «блок '7' не найден при исполнении тела».
+    """
+    project = _ScriptProject({"LangBlock_0": _ScriptBlock("LangBlock_0", 7)})
+    bridge = _bridge(new="a\r\n")
+    _install(monkeypatch, tmp_path, project, bridge)
+
+    text = _text(await mcp.call_tool(
+        "set_block_script", {"block": "7", "script": "a\r\n"}))
+
+    assert "Скрипт блока 'LangBlock_0' записан" in text
+    assert 'findobjectbyname("LangBlock_0")' in bridge.body, \
+        "тело ищет не имя найденного блока"
+    assert 'findobjectbyname("7")' not in bridge.body
 
 
 @pytest.mark.anyio
@@ -318,7 +362,7 @@ def test_runtime_literal_uses_codes_for_line_breaks_only():
     `build_page_script` режет тело `splitlines()`, в том числе по `\\r`) рвался
     посреди литерала. Этот тест закрывает форму литерала напрямую.
     """
-    from simintech_mcp.tools.blocks import _runtime_literal
+    from simintech_mcp.tools.block_script import _runtime_literal
 
     literal = _runtime_literal("a\r\nb\r\n")
 
@@ -326,9 +370,25 @@ def test_runtime_literal_uses_codes_for_line_breaks_only():
     assert "\r" not in literal and "\n" not in literal
 
 
+def test_runtime_literal_normalizes_every_splitlines_boundary():
+    """Границы `str.splitlines` шире CRLF — U+2028 и \\v тоже не рвут литерал.
+
+    `build_page_script` режет тело `splitlines()`: вертикальная табуляция,
+    `\\f`, `\\x1c`–`\\x1e`, NEL и разделители строк Unicode рвали литерал
+    так же, как раньше сырой `\\r`, а диагноз указывал на компиляцию
+    (находка ревью PR #122).
+    """
+    from simintech_mcp.tools.block_script import _runtime_literal
+
+    for boundary in ("\u2028", "\u2029", "\x0b", "\x0c", "\x1c",
+                     "\x1d", "\x1e", "\x85"):
+        literal = _runtime_literal(f"a{boundary}b")
+        assert literal == '"a" + chr(13) + chr(10) + "b"', repr(boundary)
+
+
 def test_runtime_literal_escapes_quotes_and_handles_empty():
     """Кавычка — `chr(34)`; пустой текст — пустая строка."""
-    from simintech_mcp.tools.blocks import _runtime_literal
+    from simintech_mcp.tools.block_script import _runtime_literal
 
     assert _runtime_literal('say "hi"') == '"say " + chr(34) + "hi" + chr(34)'
     assert _runtime_literal("") == '""'
@@ -361,7 +421,7 @@ def test_parse_script_reply_ignores_sentinels_inside_script():
     `// ports=9->9` в прежнем скрипте перебивал настоящие числа, а строка
     ровно `err=no-block` давала ложный «блок не найден» после записи.
     """
-    from simintech_mcp.tools.blocks import _parse_script_reply
+    from simintech_mcp.tools.block_script import _parse_script_reply
 
     token = "BLKabc"
     # Строка ровно `err=no-block` — не комментарий: именно так сентинел
@@ -379,7 +439,7 @@ def test_parse_script_reply_ignores_sentinels_inside_script():
 
 def test_parse_script_reply_no_block_only_without_markers():
     """Сентинел `err=no-block` без маркеров — «блок не найден»."""
-    from simintech_mcp.tools.blocks import _parse_script_reply
+    from simintech_mcp.tools.block_script import _parse_script_reply
 
     assert _parse_script_reply(["err=no-block"], "BLKabc").kind == "no-block"
     assert _parse_script_reply(["мусор"], "BLKabc").kind == "unknown"

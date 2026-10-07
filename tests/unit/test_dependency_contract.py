@@ -36,7 +36,7 @@ REQUIRED = [
     ("simintech_api.catalog", "decode_xprt"),
     ("simintech_api.catalog", "parse_xprt_block_props"),
     ("simintech_api.catalog", "parse_xprt_readonly"),
-    # Скрипт блока ЯП из выгрузки (tools/blocks.py, `get_block_script`).
+    # Скрипт блока ЯП из выгрузки (tools/block_script.py, `get_block_script`).
     ("simintech_api.catalog", "parse_xprt_block_script"),
     ("simintech_api.constants", "SUPPORTED_COM_BLOCK_CLASSES"),
     ("simintech_api.constants", "default_output_dir"),
