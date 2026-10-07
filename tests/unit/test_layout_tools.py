@@ -863,16 +863,20 @@ def test_remove_block_body_when_wires_not_touched():
 
     assert "blk = 10;" in body
     assert "nports = getblockportcount(blk);" in body
-    assert "getblockportid(blk, i)" in body, "порты — общим индексом"
+    assert "getblockportid(blk, portIdx)" in body, "порты — общим индексом"
     assert "getinportid" not in body and "getoutportid" not in body, (
         "перебор по направлениям пропускал бы ненаправленные порты")
-    assert "while i < nports do begin" in body
+    assert "while portIdx < nports do begin" in body
     assert "for i :=" not in body, "`for` в контуре не компилируется"
     assert 'seen = "|";' in body, "нет набора линий: повтор не отсекается"
-    assert 'pos("|" + inttostr(w) + "|", seen) = 0' in body
+    assert 'pos("|" + inttostr(wireId) + "|", seen) = 0' in body
     assert 'writelnutf8(fid, "busy=" + inttostr(busy))' in body
     assert "removeprimitiv(blk)" in body
-    assert "removeprimitiv(w)" not in body, "линии не должны сниматься"
+    assert "removeprimitiv(wireId)" not in body, "линии не должны сниматься"
+    for short in (" i ", " p ", " w "):
+        assert short not in body, (
+            f"имя {short!r} из резерва кодогенератора (i/j/c) и однобуквенных"
+            " — стандарт ЭВС360 требует имена от трёх знаков")
 
 
 def test_remove_block_body_with_wires_cuts_lines():
@@ -881,10 +885,10 @@ def test_remove_block_body_with_wires_cuts_lines():
 
     body = _remove_block_body(10, True)
 
-    assert "removeprimitiv(w)" in body
+    assert "removeprimitiv(wireId)" in body
     assert "busy" not in body
     assert "removeprimitiv(blk)" in body
-    assert '"cut=" + inttostr(w)' in body
+    assert '"cut=" + inttostr(wireId)' in body
 
 
 @pytest.mark.anyio
