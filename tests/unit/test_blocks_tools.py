@@ -1771,3 +1771,196 @@ async def test_list_blocks_rejects_limit_out_of_range(monkeypatch):
     assert "вне диапазона" in await _error("list_blocks", {"limit": -1})
     assert "вне диапазона" in await _error(
         "list_blocks", {"limit": MAX_LIST_BLOCKS + 1})
+
+
+# ─── connect_branch: ветвление от существующей линии ───────────────
+
+
+class _BranchBlock:
+    """Блок с портами для connect_branch: id, имена и наличие портов."""
+
+    def __init__(self, name, block_id, out_ports=1, in_ports=1):
+        self._name = name
+        self.id = block_id
+        self._out = out_ports
+        self._in = in_ports
+        self.class_name = "Усилитель"
+
+    def get_name(self):
+        return self._name
+
+    def get_out_port(self, index=0):
+        from simintech_api import PortError
+        if index >= self._out:
+            raise PortError(f"блок {self.id}: выходной порт {index} не найден")
+        return object()
+
+    def get_in_port(self, index=0):
+        from simintech_api import PortError
+        if index >= self._in:
+            raise PortError(f"блок {self.id}: входной порт {index} не найден")
+        return object()
+
+
+class _BranchBridge:
+    """Мост-подделка тела ветвления: отвечает заданными строками.
+
+    Тело идёт контуром (`createwire` и чтения) — подделка фиксирует тело и
+    возвращает сценарий: успешный `created=… parent=… node=…` либо `err=…`.
+    Так проверяются диагнозы инструмента на каждый `err`, а не язык.
+    """
+
+    payload: list = []
+    kind = "ok"
+    body = ""
+
+    def __init__(self, client, project_id):
+        self.project_id = project_id
+
+    def run_page_script(self, body, result_path):
+        from simintech_api.core.script_bridge import PageRunResult
+        from simintech_api.script_probe import ContourOutcome
+
+        type(self).body = body
+        lines = [] if type(self).kind != "ok" else list(type(self).payload)
+        return PageRunResult(
+            outcome=ContourOutcome(kind=type(self).kind, lines=lines),
+            restored_script="")
+
+
+def _branch_bridge(payload=(), kind="ok"):
+    """Мост с конфигурацией на тест (фабрика подкласса — урок #83)."""
+    return type("_ConfiguredBranchBridge", (_BranchBridge,), {
+        "payload": list(payload), "kind": kind, "body": ""})
+
+
+def _branch_project():
+    """Проект: источник с выходом, приёмник с входом."""
+    src = _BranchBlock("k_0", 10)
+    dst = _BranchBlock("kx_1", 11)
+    return _FakeProject({"k_0": src, "kx_1": dst}), src, dst
+
+
+@pytest.mark.anyio
+async def test_connect_branch_creates_and_reports_node(monkeypatch, tmp_path):
+    """Успех: ветвь создана, узел K+1 и родитель названы, реестр пополнен."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=1"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1"}))
+
+        assert "Ветвь создана: k_0[0] → kx_1[0]" in text
+        assert "wire=777" in text and "узел 1" in text
+        assert "родитель 555" in text
+        assert project.get_main_page().activations >= 1, (
+            "контурный прогон без активной страницы")
+        assert any(w[0].id == 777 for w in session.WIRES), \
+            "ветвь не попала в реестр session.WIRES"
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_body_passes_point_index(monkeypatch, tmp_path):
+    """Точка и порты доезжают до тела: createwire получает K как есть."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=3"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1",
+                               "point_index": 2}))
+
+        assert "createwire(prj, 0, parent, 2, 0, inp, 0)" in bridge.body
+        assert "getpointcount(parent)" in bridge.body
+        # Узел 3 при K=2 — ожидание сходится, примечания нет.
+        assert "ВНИМАНИЕ" not in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_notes_node_mismatch(monkeypatch, tmp_path):
+    """Узел не K+1 — ветвь создана, но точка недостижима: примечание."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=1"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1",
+                               "point_index": 2}))
+
+        assert "ВНИМАНИЕ" in text
+        assert "узел 1" in text and "узел 3" in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_refuses_without_parent_wire(monkeypatch,
+                                                          tmp_path):
+    """У выхода нет линии — отказ с указанием `connect`."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["err=no-parent-wire"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = await _error("connect_branch",
+                            {"src": "k_0", "dst": "kx_1"})
+
+        assert "линия не идёт" in text
+        assert "`connect`" in text
+        assert not any(w[0].id == 777 for w in session.WIRES)
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_refuses_point_out_of_range(monkeypatch,
+                                                         tmp_path):
+    """K вне точек данных — отказ ДО создания (иначе молчаливый фолбэк)."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["err=point-range cnt=1"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = await _error("connect_branch",
+                            {"src": "k_0", "dst": "kx_1",
+                             "point_index": 1})
+
+        assert "1 точек данных" in text
+        assert "свернула бы ветвь к первой" in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_refuses_on_not_compiled(monkeypatch, tmp_path):
+    """Несобравшееся тело — отказ, а не «создано»."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(kind="not-compiled")
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = await _error("connect_branch", {"src": "k_0", "dst": "kx_1"})
+
+    assert "не собралось" in text
+
+
+@pytest.mark.anyio
+async def test_connect_branch_rejects_bad_port_before_contour(monkeypatch,
+                                                              tmp_path):
+    """Несуществующий порт — отказ через COM ДО контура (диагноз, не фолбэк)."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=1 parent=1 node=1"])
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = await _error("connect_branch",
+                        {"src": "k_0", "dst": "kx_1", "in_index": 5})
+
+    assert "нет входного порта 5" in text
+    assert bridge.body == "", "контур звали, хотя порт не существует"

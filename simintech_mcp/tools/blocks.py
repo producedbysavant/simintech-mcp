@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Block, Page
+from simintech_api import Block, Page, Wire
 from simintech_api.catalog import decode_xprt, parse_xprt_block_script
 from simintech_api.constants import standard_block_size
 from simintech_api.exceptions import PortError, ScriptBridgeError
@@ -712,6 +712,217 @@ def disconnect_wire(src: str, dst: str,
     tail = "\n" + "\n".join(notes) if notes else ""
     return (f"Связь {src}[{out_index}] → {dst}[{in_index}] снята "
             f"(wire={reply.wire_id}).\n"
+            f"{describe_outcome(outcome, what='Вердикт')}{tail}")
+
+
+def _connect_branch_body(src_id: int, out_index: int, dst_id: int,
+                         in_index: int, point_index: int) -> str:
+    """Тело ветвления: от линии выхода src к входу dst, точка point_index.
+
+    `createwire(prj, line_type=0, parent, K, start_port=0, end_port, 0)` —
+    `start_port = 0` значит «ветвь от линии, а не от порта». Живой замер
+    07.10.2026: тело отработало, ветвь легла (в выгрузке
+    `src = "MBTYWire:0"`), `getparentwirenodeindex` новой линии вернул 1 при
+    `K = 0`. `K` вне точек данных среда **молча сворачивает к первой**
+    (замер: `K = 1` при одной точке дал узел 1 и `src = "...:0"`) — поэтому
+    диапазон проверяется здесь, **до** `createwire`: `K = 0` допустим всегда
+    (при нуле точек создаёт первую — `getpointcount` 0 → 1), `K > 0` требует
+    `K < cnt`.
+    """
+    lines: List[str] = [
+        "prj = getcurrentprojectid;",
+        f"outport = getoutportid({src_id}, {out_index});",
+        "parent = getportwireid(outport);",
+        'if parent = 0 then writelnutf8(fid, "err=no-parent-wire");',
+        "if parent <> 0 then begin",
+        "  cnt = getpointcount(parent);",
+        f"  if ({point_index} > 0) and ({point_index} >= cnt) then",
+        '    writelnutf8(fid, "err=point-range cnt=" + inttostr(cnt));',
+        f"  if ({point_index} = 0) or ({point_index} < cnt) then begin",
+        f"    inp = getinportid({dst_id}, {in_index});",
+        f"    new = createwire(prj, 0, parent, {point_index}, 0, inp, 0);",
+        '    if new = 0 then writelnutf8(fid, "err=not-created");',
+        "    if new <> 0 then begin",
+        "      node = getparentwirenodeindex(new);",
+        "      par = getparentwireid(new);",
+        '      writelnutf8(fid, "created=" + inttostr(new) + " parent=" +'
+        ' inttostr(par) + " node=" + inttostr(node));',
+        "    end;",
+        "  end;",
+        "end;",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+class _BranchReply(NamedTuple):
+    """Разобранный ответ тела ветвления: исход и, при успехе, связи."""
+
+    kind: str                 # created | no-parent-wire | point-range | ...
+    wire_id: int = 0          # id новой ветви (created)
+    parent_id: int = 0        # родительская линия по среде
+    node: int = 0             # узел на родительской линии (у среды с единицы)
+    points: int = 0           # cnt из err=point-range
+
+
+def _parse_branch_reply(lines: List[str]) -> _BranchReply:
+    """Разобрать строки тела: `created=… parent=… node=…` или `err=…`."""
+    for raw in lines:
+        line = raw.strip()
+        match = re.match(
+            r"created=(\d+) parent=(\d+) node=(\d+)$", line)
+        if match:
+            return _BranchReply(
+                kind="created", wire_id=int(match.group(1)),
+                parent_id=int(match.group(2)), node=int(match.group(3)))
+        match = re.match(r"err=point-range cnt=(\d+)$", line)
+        if match:
+            return _BranchReply(kind="point-range", points=int(match.group(1)))
+        match = re.match(r"err=([a-z-]+)$", line)
+        if match:
+            return _BranchReply(kind=match.group(1))
+    return _BranchReply(kind="no-reply")
+
+
+@mcp.tool()
+@runtime.com_threaded(mutates_project=True)
+def connect_branch(src: str, dst: str, out_index: int = 0,
+                   in_index: int = 0, point_index: int = 0) -> str:
+    """Создать ветвление от существующей линии выхода src к входу dst.
+
+    Парный к `connect` случай: `connect` создаёт **линию**, этот инструмент —
+    **ветвь к уже идущей линии** (правка существующей модели). Сборке с нуля
+    он не нужен: среда сама сворачивает повторный `connect` из занятого
+    выхода в авто-ветвь (живой замер 05.10.2026) — но та ветвь идёт от точки,
+    которую выбрала среда, а этот инструмент даёт точку назвать.
+
+    **Точка ветвления — `point_index`, с нуля.** У линии из `connect` точек
+    данных нет (`getpointcount = 0`, живой замер 07.10.2026): `point_index=0`
+    крепит ветвь и создаёт первую точку (0 → 1). **K вне существующих точек
+    среда молча сворачивает к первой** (замер: `K = 1` при одной точке дал
+    узел 1 и `src = "<родитель>:0"` в выгрузке) — поэтому `K > 0` требует
+    `K < cnt`, а нулевой допустим всегда. Как создать вторую точку данных,
+    не измерено: на `K > 0` рассчитывайте осознанно и проверяйте ответ.
+
+    **Подтверждение — узел и родитель в ответе** (`getparentwirenodeindex`
+    новой линии = `point_index + 1` на проверенном `K = 0`;
+    `getparentwireid` — родитель). Выгрузкой (`export_model_text`) ветвь
+    видна как `src = "<имя родителя>:K"` — имя родителя автоимя
+    (`MBTYWire…`), не id; инструмент выгрузку не снимает: контурный прогон
+    дорог (≈20 с — перезапуск расчёта), а узел приходит из того же прогона.
+
+    **Один контурный прогон** на вызов. Страница блока активируется перед
+    прогоном: скрипт ставится в текущую страницу (находка ревью PR #94);
+    не удалось активировать — отказ, а не запись вслепую. Исходы
+    `not-compiled`/`aborted`/`section-not-run` — отказ, как у прочих
+    контурных инструментов.
+
+    **Существующие блоки не двигаются**: инструмент только добавляет ветвь
+    (контракт #24 п.6).
+
+    Args:
+        src: имя блока-источника или его числовой id — выход, ИЗ которого уже
+            идёт линия (`list_blocks` печатает оба).
+        dst: имя блока-приёмника или его числовой id.
+        out_index: номер выходного порта источника (0-based).
+        in_index: номер входного порта приёмника (0-based).
+        point_index: номер точки данных родительской линии с нуля (`0` —
+            проверенный случай, ≥ 0).
+    """
+    if point_index < 0:
+        raise ToolError(
+            f"point_index={point_index} отрицательный: точка данных — с нуля, "
+            f"проверенный случай — 0.")
+    project = session.ensure_project()
+    page = project.get_main_page()
+    b1 = _resolve_block(page, src)
+    b2 = _resolve_block(page, dst)
+    if b1 is None:
+        return _missing_block(src)
+    if b2 is None:
+        return _missing_block(dst)
+    # Порты проверяются до контура: тело получило бы нулевой порт на
+    # несуществующем номере, и диагноз вышел бы ложным («у выхода нет
+    # линии»). Тот же порядок, что у `disconnect_wire`.
+    try:
+        b1.get_out_port(out_index)
+    except PortError as exc:
+        raise ToolError(
+            f"у блока '{src}' нет выходного порта {out_index}: {exc}. "
+            f"Состав портов — `get_block_params` или выгрузка; проект не "
+            f"изменён.") from exc
+    try:
+        b2.get_in_port(in_index)
+    except PortError as exc:
+        raise ToolError(
+            f"у блока '{dst}' нет входного порта {in_index}: {exc}. "
+            f"Состав портов — `get_block_params` или выгрузка; проект не "
+            f"изменён.") from exc
+    try:
+        page.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        raise ToolError(
+            f"ветвь не создана: страницу блока не удалось сделать активной "
+            f"({type(exc).__name__}: {exc}) — тело искало бы блоки по id на "
+            f"другой странице. Проект не изменён.") from exc
+    outcome = _run_contour_body(
+        _connect_branch_body(b1.id, out_index, b2.id, in_index, point_index),
+        failed="создать ветвление не удалось")
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            "ветвь не создана: тело не собралось (текст ошибки — в окне "
+            "сообщений редактора SimInTech; через COM он не читается). "
+            "Проект не изменён.")
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        raise ToolError(
+            f"ветвь не подтверждена: тело оборвалось на исполнении.{detail} "
+            f"Ветвь могла создаться — проверьте схему (`list_wires`, "
+            f"`export_model_text`).")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            "ветвь не подтверждена: секция `initialization` не выполнилась — "
+            "тело не запускалось. Повторите вызов.")
+    reply = _parse_branch_reply(outcome.lines)
+    if reply.kind == "no-parent-wire":
+        raise ToolError(
+            f"ветвь не создана: из выхода '{src}'[{out_index}] линия не идёт "
+            f"(её id — ноль). `connect_branch` — только ветвление к "
+            f"существующей линии: для первой связи с этим выходом — "
+            f"`connect`. Проект не изменён.")
+    if reply.kind == "point-range":
+        raise ToolError(
+            f"ветвь не создана: у линии выхода '{src}'[{out_index}] {reply.points} "
+            f"точек данных, а запрошена точка {point_index} — среда свернула "
+            f"бы ветвь к первой молча. Допустимо: `point_index=0` (всегда) "
+            f"или `K < {reply.points}`. Проект не изменён.")
+    if reply.kind == "not-created":
+        raise ToolError(
+            "ветвь не создана: `createwire` вернул ноль. Проверьте, что у "
+            "выхода есть линия и приёмник на той же странице; проект не "
+            "изменён.")
+    if reply.kind != "created":
+        raise ToolError(
+            "ветвь не подтверждена: тело отработало, но не оставило "
+            "распознаваемого ответа — что оно успело сделать, по этому "
+            "признаку не определить. Проверьте схему (`list_wires`, "
+            "`export_model_text`).")
+    src_name = _resolved_name(b1, src)
+    dst_name = _resolved_name(b2, dst)
+    session.WIRES.append((Wire(project, reply.wire_id), src_name, out_index,
+                          dst_name, in_index))
+    notes: List[str] = []
+    if reply.node != point_index + 1:
+        notes.append(
+            f"ВНИМАНИЕ: среда сообщила узел {reply.node}, а точке "
+            f"{point_index} отвечает узел {point_index + 1}: точка "
+            f"недостижима на этой линии — ветвь легла к ближайшей. "
+            f"Проверьте схему (`export_model_text`: адрес ветви "
+            f"`src = \"<родитель>:K\"`).")
+    tail = "\n" + "\n".join(notes) if notes else ""
+    return (f"Ветвь создана: {src_name}[{out_index}] → {dst_name}[{in_index}] "
+            f"(wire={reply.wire_id}; родитель {reply.parent_id}, узел "
+            f"{reply.node}).\n"
             f"{describe_outcome(outcome, what='Вердикт')}{tail}")
 
 
