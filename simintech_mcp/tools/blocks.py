@@ -2367,7 +2367,8 @@ def _walk_pages(project: Any, main: Page,
 
 def _foreach_page_within_budget(
         pages: List[Any],
-        run: Callable[[Any, str], int]) -> Tuple[int, List[Any]]:
+        run: Callable[[Any, str], int],
+        resume_key: str) -> Tuple[int, List[Any], Optional[str]]:
     """Обойти страницы порцией, укладывающейся в `COM_CALL_TIMEOUT`.
 
     Каждая страница фитов стоит один контурный прогон (~20 с, живой замер
@@ -2376,28 +2377,66 @@ def _foreach_page_within_budget(
     его перекрывал, клиент получал отказ «Перезапустите mmain.exe» (неверный
     — COM не завис), а правки доигрывали в фоне (issue #117, находка
     07.10.2026). Здесь обход останавливается **заранее** и называет
-    отложенные страницы; повторный вызов продолжит — фиты идемпотентны,
-    уже сделанное не трогается (живой замер 07.10.2026: повторный
-    `fit_port_blocks` — «менять нечего»).
+    отложенные страницы.
 
-    Первая страница берётся **всегда**, даже если по оценке не влезает в
-    бюджет: «не обойти ни одной» на большой модели означало бы вечный отказ
-    на любом вызове.
+    **Продолжение — с отложенной, а не с первой.** Первая отложенная
+    страница запоминается курсором (`session.set_fit_resume`), и следующая
+    порция начинается с неё: без этого хвост не обошёлся бы никогда —
+    каждая порция снова платила бы за те же начальные страницы (у
+    `fit_value_labels` экспорт-разведка платна всегда; находка ревью
+    PR #118). Курсор сбрасывается при полном проходе и при смене проекта.
 
-    Возврат — `(суммарный результат run, отложенные страницы)`; у
-    отложенных сохраняется их `(page, where)`.
+    Первая страница порции берётся **всегда**, даже если по оценке не
+    влезает в бюджет: «не обойти ни одной» на большой модели означало бы
+    вечный отказ на любом вызове. Если и одна эта страница длится дольше
+    лимита, отказ `com_threaded` остаётся — для одиночной страницы бюджет
+    гарантий не даёт, и это цена безусловного прогресса (находка ревью
+    PR #118; разбить один прогон страницы нельзя — контур исполняется
+    целиком).
+
+    Возврат — `(суммарный результат run, отложенные страницы,
+    where продолженной страницы | None)`; у отложенных сохраняется их
+    `(page, where)`.
     """
     budget = runtime.COM_CALL_TIMEOUT - _CONTOUR_BUDGET_MARGIN_SECONDS
     started = time.monotonic()
     total = 0
-    done = 0
-    for index, (page, where) in enumerate(pages):
-        if done and (time.monotonic() - started
-                     + _PAGE_CONTOUR_ESTIMATE_SECONDS > budget):
-            return total, list(pages[index:])
-        total += run(page, where)
-        done += 1
-    return total, []
+    start = 0
+    resumed_where: Optional[str] = None
+    resume_id = session.fit_resume(resume_key)
+    if resume_id is not None:
+        for index, (page, _where) in enumerate(pages):
+            if getattr(page, "id", None) == resume_id:
+                start = index
+                resumed_where = pages[index][1]
+                break
+        # Страницы-курсора нет (модель изменилась): обход с начала — курсор
+        # снимается, чтобы не сбивать и следующие порции.
+        if resumed_where is None:
+            session.clear_fit_resume(resume_key)
+    for index in range(start, len(pages)):
+        if index > start and (time.monotonic() - started
+                              + _PAGE_CONTOUR_ESTIMATE_SECONDS > budget):
+            next_id = getattr(pages[index][0], "id", None)
+            if next_id is not None:
+                session.set_fit_resume(resume_key, next_id)
+            return total, list(pages[index:]), resumed_where
+        total += run(*pages[index])
+    session.clear_fit_resume(resume_key)
+    return total, [], resumed_where
+
+
+def _coverage_notes(pages: List[Any], deferred: List[Any],
+                    tool: str) -> Tuple[str, str]:
+    """Строки охвата для ответов обоих фитов: (счётчик, хвост отложенных).
+
+    Одна точка сборки — формулировки не могут разойтись между
+    `fit_port_blocks` и `fit_value_labels` (находка ревью PR #118).
+    """
+    walked = (f"{len(pages) - len(deferred)} из {len(pages)}" if deferred
+              else f"{len(pages)}")
+    tail = ("\n" + _deferred_pages_note(deferred, tool) if deferred else "")
+    return walked, tail
 
 
 def _deferred_pages_note(deferred: List[Any], tool: str) -> str:
@@ -2411,8 +2450,8 @@ def _deferred_pages_note(deferred: List[Any], tool: str) -> str:
             f"ограничен временем одного COM-вызова "
             f"({runtime.COM_CALL_TIMEOUT:.0f} с; каждая страница — контурный "
             f"прогон ~{_PAGE_CONTOUR_ESTIMATE_SECONDS:.0f} с). Повторите "
-            f"`{tool}` — он идемпотентен: уже сделанное не трогается. "
-            f"Отложены: {names}.")
+            f"`{tool}`: обход продолжится с отложенной страницы (уже "
+            f"сделанное не трогается). Отложены: {names}.")
 
 
 def _fit_page_sizes(page: Page, where: str, affected: List[Any],
@@ -2495,8 +2534,12 @@ def fit_port_blocks() -> str:
     многопстраничной модели одна порция перекрывала лимит — клиент получал
     отказ «Перезапустите mmain.exe» (неверный: COM не завис), а правки
     доигрывали в фоне (issue #117). Теперь обход останавливается заранее и
-    называет отложенные страницы: повторный вызов продолжит — уже
-    подогнанное не трогается (идемпотентность замерена 07.10.2026).
+    называет отложенные страницы; курсор сессии
+    (`session.set_fit_resume`) запоминает первую отложенную, и повторный
+    вызов **продолжает с неё** — без курсора порция снова платила бы за
+    начальные страницы, и хвост не обошёлся бы никогда (находка ревью
+    PR #118). Уже подогнанное не трогается (идемпотентность замерена
+    07.10.2026).
 
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.
@@ -2511,9 +2554,10 @@ def fit_port_blocks() -> str:
     pages = _walk_pages(project, main, lines)
     affected: List[Any] = []
     try:
-        changed, deferred = _foreach_page_within_budget(
+        changed, deferred, resumed = _foreach_page_within_budget(
             pages,
-            lambda page, where: _fit_page_sizes(page, where, affected, lines))
+            lambda page, where: _fit_page_sizes(page, where, affected, lines),
+            "fit_port_blocks")
     finally:
         # Активной возвращается главная — и при отказе посередине обхода:
         # `_apply_size_plan` мог отказать на странице субмодели, оставив её
@@ -2523,12 +2567,15 @@ def fit_port_blocks() -> str:
             main.activate()
         except Exception:                                     # noqa: BLE001
             pass
-    walked = (f"{len(pages) - len(deferred)} из {len(pages)}" if deferred
-              else f"{len(pages)}")
-    tail = ("\n" + _deferred_pages_note(deferred, "fit_port_blocks")
-            if deferred else "")
+    if resumed:
+        lines.append(f"Обход продолжен с отложенной страницы: {resumed}.")
+    walked, tail = _coverage_notes(pages, deferred, "fit_port_blocks")
     if not changed:
-        head = (f"Габариты по правилам: менять нечего (оценка "
+        # «Менять нечего» не должно звучать как «всё осмотрено», если часть
+        # страниц отложена бюджетом: вывод говорится только о виденном.
+        what = ("менять нечего" if not deferred else
+                "менять нечего на обойдённых страницах")
+        head = (f"Габариты по правилам: {what} (оценка "
                 f"×{CHAR_WIDTH_ESTIMATE:g} px/символ; страниц обойдено: "
                 f"{walked}).")
         result = head + ("\n" + "\n".join(lines) if lines else "") + tail
@@ -2701,27 +2748,36 @@ def fit_value_labels() -> str:
     **Обход — порциями по бюджету** — как у `fit_port_blocks`: страница
     стоит один контурный прогон (выгрузка), и на многопстраничной модели
     одна порция перекрывала `COM_CALL_TIMEOUT`; отложенные страницы
-    называются в ответе, повторный вызов продолжит (уже подтянутое не
-    трогается — идемпотентность замерена 07.10.2026).
+    называются в ответе, а курсор сессии запоминает первую из них — именно
+    **с неё** начнётся повторный вызов. Без курсора экспорт-разведка
+    (платная на каждой странице) заставляла бы каждую порцию заново
+    оплачивать начальные страницы, и хвост не обошёлся бы никогда
+    (находка ревью PR #118). Уже подтянутое не трогается (идемпотентность
+    замерена 07.10.2026).
     """
     project = session.ensure_project()
     main = project.get_main_page()
     lines: List[str] = []
     pages = _walk_pages(project, main, lines)
-    moved, deferred = _foreach_page_within_budget(
-        pages, lambda page, where: _fit_value_labels_page(page, where, lines))
-    # Активной возвращается главная: обход активировал каждую страницу, а
-    # следующая контурная операция (выгрузка) снимает ИМЕННО активную
-    # (живой случай 06.10.2026: после fit_port_blocks активной была
-    # субмодель, и выгрузка принесла её текст без единой подписи).
     try:
-        main.activate()
-    except Exception:                                         # noqa: BLE001
-        pass
-    walked = (f"{len(pages) - len(deferred)} из {len(pages)}" if deferred
-              else f"{len(pages)}")
-    tail = ("\n" + _deferred_pages_note(deferred, "fit_value_labels")
-            if deferred else "")
+        moved, deferred, resumed = _foreach_page_within_budget(
+            pages,
+            lambda page, where: _fit_value_labels_page(page, where, lines),
+            "fit_value_labels")
+    finally:
+        # Активной возвращается главная — и при отказе посередине обхода
+        # (как у `fit_port_blocks`, находка ревью PR #118): обход
+        # активирует каждую страницу, а следующая контурная операция
+        # (выгрузка) снимает ИМЕННО активную (живой случай 06.10.2026:
+        # после прежнего обхода активной была субмодель, и выгрузка
+        # принесла её текст без единой подписи).
+        try:
+            main.activate()
+        except Exception:                                     # noqa: BLE001
+            pass
+    if resumed:
+        lines.append(f"Обход продолжен с отложенной страницы: {resumed}.")
+    walked, tail = _coverage_notes(pages, deferred, "fit_value_labels")
     if not moved:
         # «На месте» не должно звучать как «всё обойдено», если часть
         # страниц отложена бюджетом: охват называется и здесь.

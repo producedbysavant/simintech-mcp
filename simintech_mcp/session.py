@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import os
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import (
@@ -66,6 +66,33 @@ _pack_path: Optional[str] = None
 #: ничего не меняет: сессия по-прежнему запоминает то, чего COM не отдаёт. Канон —
 #: README («Ограничения») и §10.20 журнала.
 WIRES: List[Tuple[Wire, str, int, str, int]] = []
+
+#: Курсор порционного обхода фитов: имя инструмента → id страницы, с которой
+#: продолжать (её отложил предыдущий вызов из-за бюджета COM-вызова).
+#:
+#: Нужен потому, что обход снова начинался бы с первой страницы, а каждая
+#: страница стоит контурный прогон (~20 с, замер 07.10.2026): у
+#: `fit_value_labels` экспорт-разведка платна всегда, и без курсора хвост
+#: списка не обошёлся бы ни за сколько повторов (находка ревью PR #118).
+#: Страницы принадлежат проекту — курсор сбрасывается вместе с ним
+#: (`set_project`), как линии и счётчик несохранённых правок.
+_FIT_RESUME: Dict[str, int] = {}
+
+
+def fit_resume(tool: str) -> Optional[int]:
+    """Id страницы, с которой продолжить порционный обход (None — с первой)."""
+    return _FIT_RESUME.get(tool)
+
+
+def set_fit_resume(tool: str, page_id: int) -> None:
+    """Запомнить отложенную страницу — следующая порция начнётся с неё."""
+    _FIT_RESUME[tool] = page_id
+
+
+def clear_fit_resume(tool: str) -> None:
+    """Сбросить курсор — обход дошёл до конца (или начат заново)."""
+    _FIT_RESUME.pop(tool, None)
+
 
 #: Путь, из которого открыт текущий проект (None — проект создан, а не открыт).
 #: Нужен там, где настройки лежат рядом с файлом проекта: `.dblocalconf`
@@ -278,6 +305,9 @@ def set_project(project: Optional[Project],
     _project = project
     _project_path = source_path
     WIRES.clear()
+    # Курсор порционного обхода фитов — тоже про страницы проекта: после
+    # смены проекта id страниц указывают в никуда.
+    _FIT_RESUME.clear()
     # Флаг несохранённых правок — про текущий проект: смена проекта (и его
     # сброс) его снимает, как и линии: оба живут ровно столько же.
     _unsaved = False
