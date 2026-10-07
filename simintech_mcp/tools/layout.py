@@ -998,8 +998,7 @@ def apply_fit_view(canvas_w: float = CANVAS_W,
 
     from simintech_api.model_operations import build_import_model_text_body
 
-    from .model_text import run_contour
-    from .page_script import refuse_on_bad_outcome
+    from .page_script import refuse_contour_failure, run_contour
 
     props = (
         "(\n"
@@ -1012,7 +1011,7 @@ def apply_fit_view(canvas_w: float = CANVAS_W,
     outcome, _restored = run_contour(
         build_import_model_text_body(props),
         failed="выставить кадр страницы не удалось")
-    refuse_on_bad_outcome(outcome, action="подгонка кадра")
+    refuse_contour_failure(outcome, failed="подгонка кадра")
     return (
         f"Кадр выставлен по рамке модели: {width:.0f}x{height:.0f} px "
         f"на полотне {canvas_w:.0f}x{canvas_h:.0f}.\n"

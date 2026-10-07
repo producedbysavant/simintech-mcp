@@ -161,3 +161,33 @@ def test_script_bridge_methods_exist():
                if not callable(getattr(ScriptBridge, name, None))]
 
     assert not missing, f"ScriptBridge: нет методов {missing}"
+
+
+def test_contour_core_lives_in_page_script():
+    """Мост зовётся только через контурное ядро — копии рецепта не возвращаются.
+
+    Рецепт «мост → `discard_result` → `ToolError` на `ScriptBridgeError`»
+    живёт в `page_script.run_contour` (issue #123): прежде он был четырьмя
+    копиями, и формулировки отказов расходились на одном состоянии среды.
+    Прямой `bridge().run_page_script(...)` в новом инструменте — та же ошибка
+    заново, а проявлялась бы она у клиента ответами-двойниками.
+
+    Исключение — `check_model.py`: у него **другой протокол** (файл отчёта
+    читается после прогона и не удаляется, исход — строка отчёта, а не
+    приговор), и он назван в докстринге ядра. Проверка это допускает, но
+    третий потребитель моста обязан сначала назвать свой протокол здесь.
+    """
+    from pathlib import Path
+
+    tools_dir = Path(__file__).resolve().parents[2] / "simintech_mcp" / "tools"
+    allowed = {"page_script.py", "check_model.py"}
+    offenders = []
+    for path in sorted(tools_dir.glob("*.py")):
+        if path.name in allowed:
+            continue
+        if "bridge().run_page_script(" in path.read_text(encoding="utf-8"):
+            offenders.append(path.name)
+
+    assert not offenders, (
+        "мост зовётся мимо контурного ядра `page_script.run_contour` — "
+        f"копия рецепта вернулась в: {offenders}")

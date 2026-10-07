@@ -21,18 +21,15 @@ import os
 from typing import Dict, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
-from simintech_api.exceptions import ScriptBridgeError
 from simintech_api.script_probe import ContourOutcome, OUTCOME_MODEL_NOT_RUNNING
 
 from .. import runtime, sandbox
 from ..app import mcp
-from .model_text import bridge
 from .page_script import (
     describe_outcome,
-    discard_result,
     fresh_name,
-    refuse_on_bad_outcome,
-    result_path,
+    refuse_contour_failure,
+    run_contour,
 )
 
 #: Форматы `savescreenshot`: имя → код типа в вызове (справка поставки).
@@ -161,19 +158,9 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
     def _shoot() -> "Tuple[ContourOutcome, str]":
         """Сделать снимок и вернуть (исход контура, путь файла)."""
         path = os.path.join(root, fresh_name(f"screenshot.{key}"))
-        contour = result_path()
-        try:
-            run = bridge().run_page_script(
-                build_screenshot_body(path, type_code), contour)
-        except ScriptBridgeError as exc:
-            discard_result(contour)
-            raise ToolError(
-                f"снимок не сделан: {exc}. Тело идёт в секцию `initialization`: "
-                "проверьте, что модель считает — неподключённый вход "
-                "останавливает расчёт всей модели молча."
-            ) from exc
-        discard_result(contour)
-        refuse_on_bad_outcome(run.outcome, action="съёмка схемы")
+        outcome, _restored = run_contour(
+            build_screenshot_body(path, type_code), failed="снимок не сделан")
+        refuse_contour_failure(outcome, failed="съёмка схемы")
         # Файла может не быть, даже если тело «отработало»: на неподходящем
         # типе savescreenshot молча ничего не создаёт (замер 03.10.2026, тип 0).
         if not os.path.isfile(path) or os.path.getsize(path) == 0:
@@ -182,7 +169,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
                 f"savescreenshot формата «{key}» ничего не записал — "
                 "проверьте поддержку формата в этой сборке."
             )
-        return (run.outcome, path)
+        return (outcome, path)
 
     outcome, shot_path = _shoot()
 

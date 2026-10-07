@@ -5,7 +5,7 @@
 импортировал, молча не отдаст свои инструменты в `tools/list`.
 """
 
-from . import (block_script, blocks, check_model, contour, files, fits, help,
+from . import (block_script, blocks, check_model, files, fits, help,
                layout, model_text, pack, page_script, project, screenshot,
                simulation, sizes, wires)
 
@@ -13,7 +13,6 @@ __all__ = [
     "block_script",
     "blocks",
     "check_model",
-    "contour",
     "files",
     "fits",
     "help",

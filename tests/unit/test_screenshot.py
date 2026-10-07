@@ -1,8 +1,8 @@
 """Снимок схемы: `savescreenshot` в контуре — файл в каталоге результатов.
 
-Мост подделывается целиком (`bridge` в модуле инструмента): настоящий требует
-Windows и живого `mmain.exe`, а проверяем мы контракт инструмента — какой тип
-формата уходит в тело, куда пишется файл и что ответ.
+Мост подделывается целиком (`ScriptBridge` в контурном ядре `page_script`):
+настоящий требует Windows и живого `mmain.exe`, а проверяем мы контракт
+инструмента — какой тип формата уходит в тело, куда пишется файл и что ответ.
 
 Подделка моделирует **переход**: файл снимка пишется по пути **из тела**
 (иначе тест не заметил бы, что путь потеряли), а исход задаётся тестом — так
@@ -22,9 +22,9 @@ from simintech_api.script_probe import (
     ContourOutcome,
 )
 
-import simintech_mcp.tools.screenshot as shot
 from simintech_mcp import session
 from simintech_mcp.server import mcp
+from simintech_mcp.tools import page_script
 
 from _support import _error, _text
 
@@ -84,7 +84,7 @@ def _install(monkeypatch, tmp_path: Path, bridge) -> None:
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
     monkeypatch.setattr(session, "_project", _FakeProject())
-    monkeypatch.setattr(shot, "bridge", lambda: bridge(None, 7))
+    monkeypatch.setattr(page_script, "ScriptBridge", bridge)
 
 
 @pytest.mark.anyio
@@ -171,9 +171,8 @@ async def test_save_screenshot_refuses_when_script_did_not_compile(
 
     text = await _error("save_screenshot", {})
 
-    assert "not-compiled" in text
-    assert "последняя строка тела" in text, \
-        "диагноз из строк тела — единственный доступный, обязан прийти"
+    assert "не собралось" in text
+    assert "окне сообщений" in text, "отказ не говорит, где искать причину"
 
 
 @pytest.mark.anyio

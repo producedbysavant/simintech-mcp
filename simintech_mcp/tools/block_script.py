@@ -20,8 +20,7 @@ from simintech_api.exceptions import ScriptBridgeError
 from .. import runtime, session
 from ..app import mcp
 from .blocks import missing_block, resolve_block, resolved_name
-from .contour import refuse_contour_failure, run_contour_body
-from .page_script import describe_outcome
+from .page_script import describe_outcome, refuse_contour_failure, run_contour
 
 
 #: Имя свойства скрипта блока в языке и выгрузке.
@@ -297,7 +296,7 @@ def set_block_script(block: str, script: str) -> str:
     name = resolved_name(target, block)
     normalized = _normalize_script(script)
     token = "BLK" + uuid.uuid4().hex[:12]
-    outcome = run_contour_body(
+    outcome, _restored = run_contour(
         _set_block_script_body(name, normalized, token),
         failed="записать скрипт блока не удалось")
     refuse_contour_failure(
