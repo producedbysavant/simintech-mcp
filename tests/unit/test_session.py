@@ -40,6 +40,21 @@ def test_replace_project_clears_wire_registry(monkeypatch):
         "прежний проект обязан быть закрыт — тест не должен обходить гвардом"
 
 
+def test_set_project_clears_fit_resume_cursor():
+    """Курсор порционного обхода фитов живёт ровно столько же, сколько проект.
+
+    Его значение — id страницы прежнего проекта: после смены проекта он
+    указывал бы в никуда, и следующий обход начинался бы «с середины»
+    несуществующего списка (находка ревью PR #118).
+    """
+    session.set_fit_resume("fit_port_blocks", 424242)
+    assert session.fit_resume("fit_port_blocks") == 424242
+
+    session.set_project(None)
+
+    assert session.fit_resume("fit_port_blocks") is None
+
+
 @pytest.mark.anyio
 async def test_close_project_clears_wire_registry(monkeypatch):
     """close_project обнуляет реестр линий вместе с проектом."""

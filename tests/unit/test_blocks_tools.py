@@ -1625,6 +1625,59 @@ async def test_fit_port_blocks_refuses_when_page_activation_fails(monkeypatch,
     assert port.value_writes == [] and port.graph_writes == []
 
 
+@pytest.mark.anyio
+async def test_fit_port_blocks_defers_pages_over_budget(monkeypatch, tmp_path):
+    """Лимит COM-вызова: обход порциями, отложенные названы (issue #117).
+
+    Каждая страница — контурный прогон (~20 с), и на многопстраничной модели
+    одна порция перекрывала `COM_CALL_TIMEOUT`: клиент получал «перезапустите
+    mmain.exe» (неверно — COM не завис), а правки доигрывали в фоне. Здесь
+    бюджет исчерпан после первой страницы: вторая отложена и названа, а
+    повтор её добирает (идемпотентность).
+    """
+    main_block = _PortBlock(name="in_main", names="Main_Long_Signal_Name\r\n")
+    sub_block = _SubmodelBlock(name="sub_1", block_id=5)
+    inner = _PortBlock(name="in_1", names="Inner_Long_Signal_Name\r\n")
+    inner.id = 7                      # иначе id поделок совпадут (оба 3)
+    sub_page = _FakePage({"in_1": inner})
+    project = _SubmodelProject({"in_main": main_block, "sub_1": sub_block},
+                               {5: sub_page})
+    bridge = _fit_bridge({main_block.id: main_block, inner.id: inner})
+    _install_fit_contour(monkeypatch, tmp_path, project, bridge)
+    # Бюджет ужимается запасом, а НЕ `runtime.COM_CALL_TIMEOUT`: тот же
+    # глобал — и таймаут обёртки вызова (`future.result`), и его правка
+    # делала тест чувствительным ко времени (находка ревью PR #118).
+    from simintech_mcp.tools import blocks as blocks_tools
+    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert main_block.value_writes, "первая страница обязана обойтись всегда"
+    assert inner.value_writes == [], "вторая страница должна быть отложена"
+    assert "страниц обойдено: 1 из 2" in text
+    assert "Обошёл не все страницы: 1 отложено" in text
+    assert "Повторите `fit_port_blocks`" in text
+    assert "субмодель 'sub_1'" in text, "отложенная страница не названа"
+    assert session.fit_resume("fit_port_blocks") == sub_page.id, (
+        "курсор не запомнил отложенную страницу")
+
+    # Повтор с нормальным бюджетом продолжает С ОТЛОЖЕННОЙ: без курсора
+    # (находка ревью PR #118) порция снова оплачивала бы начальные страницы,
+    # и хвост не обошёлся бы никогда.
+    writes_before = len(main_block.value_writes)
+    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert inner.value_writes, "повтор не добрал отложенную страницу"
+    assert len(main_block.value_writes) == writes_before, (
+        "повтор переобработал страницу до курсора")
+    assert "Обход продолжен с отложенной страницы" in text
+    assert "страниц обойдено: 2" in text
+    assert "отложено" not in text
+    assert session.fit_resume("fit_port_blocks") is None, (
+        "курсор не сброшен после полного прохода")
+
+
 class _AnchorBlock(_SizeBlock):
     """Блок с читаемой точкой центра (как у настоящего блока)."""
 
@@ -1816,6 +1869,63 @@ async def test_fit_value_labels_walks_submodels(monkeypatch):
     assert "субмодель 'sub_1'" in text
     assert project.get_main_page().activations >= 1, \
         "главная не возвращена активной"
+
+
+@pytest.mark.anyio
+async def test_fit_value_labels_defers_pages_over_budget(monkeypatch):
+    """Бюджет порций — и у подписей: страница отложена и названа (issue #117).
+
+    Выгрузка страницы — тоже контурный прогон (~20 с): на многопстраничной
+    модели обход перекрывал `COM_CALL_TIMEOUT`, и клиент вместо честного
+    «продолжите повтором» видел отказ про зависший mmain.
+    """
+    parent = _AnchorBlock()                      # главная — без подписей
+    sub_parent = _AnchorBlock(name="k_1", center=(100.0, 100.0))
+    sub_label = _ValueLabelBlock(name="TextLabel5", anchor=(10.0, 10.0))
+    sub_page = _FakePage({"k_1": sub_parent, "TextLabel5": sub_label})
+    sub_block = _SubmodelBlock(name="sub_1", block_id=5)
+    project = _SubmodelProject({"k_0": parent, "sub_1": sub_block}, {5: sub_page})
+    monkeypatch.setattr(session, "_project", project)
+
+    # Тексты по вызову: первый экспорт — главной, второй — субмодели (как
+    # при обходе: до отложенной страницы дело дошло только на повторе).
+    texts = [
+        '(\n  k_0: (\n    type = "Константа",\n'
+        '    points=[(456 , 72)]\n  )\n)',
+        '(\n  TextLabel5: (\n    type = "constLabel",\n'
+        '    points=[(10 , 10)],\n    parentblock = "k_1"\n  )\n)',
+    ]
+    calls = {"n": 0}
+
+    def fake_export():
+        export = texts[min(calls["n"], len(texts) - 1)]
+        calls["n"] += 1
+        return (export, False, None, None)
+
+    from simintech_mcp.tools import blocks as blocks_tools
+    monkeypatch.setattr(blocks_tools, "page_export_text", fake_export)
+    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
+
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    assert "страниц обойдено: 1 из 2" in text
+    assert "Обошёл не все страницы: 1 отложено" in text
+    assert "Повторите `fit_value_labels`" in text
+    assert "субмодель 'sub_1'" in text, "отложенная страница не названа"
+    assert session.fit_resume("fit_value_labels") == sub_page.id, (
+        "курсор не запомнил отложенную страницу")
+
+    # Повтор продолжает с отложенной: у подписей это критично — экспорт
+    # платен на любой странице, и без курсора хвост не достижим (находка
+    # ревью PR #118). Цель якоря (84, 74) у k_1 — как в walks-тесте.
+    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
+    text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
+
+    assert sub_label.centers == [(114.0, 94.0)], (
+        "повтор не добрал отложенную страницу")
+    assert "Обход продолжен с отложенной страницы" in text
+    assert session.fit_resume("fit_value_labels") is None, (
+        "курсор не сброшен после полного прохода")
 
 
 def _many_blocks(count: int) -> dict:
