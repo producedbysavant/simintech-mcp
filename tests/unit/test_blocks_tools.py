@@ -11,7 +11,11 @@ from simintech_mcp.server import mcp
 
 from simintech_mcp import catalog, session
 from simintech_mcp.tools import page_script
-from simintech_mcp.tools.blocks import MAX_BLOCK_IN_PORTS, MAX_BLOCK_PROPS
+from simintech_mcp.tools.blocks import (
+    MAX_BLOCK_IN_PORTS,
+    MAX_BLOCK_PROPS,
+    MAX_LIST_BLOCKS,
+)
 
 from _support import (
     _FakeBlock,
@@ -1717,3 +1721,53 @@ async def test_fit_value_labels_walks_submodels(monkeypatch):
     assert "субмодель 'sub_1'" in text
     assert project.get_main_page().activations >= 1, \
         "главная не возвращена активной"
+
+
+def _many_blocks(count: int) -> dict:
+    """Страница из `count` блоков с различимыми именами и id."""
+    return {f"k_{i}": _PlacedBlock(f"k_{i}", i, "Усилитель")
+            for i in range(count)}
+
+
+@pytest.mark.anyio
+async def test_list_blocks_truncates_and_names_the_rest(monkeypatch):
+    """Обрезка по умолчанию названа в ответе — с остатком и выходом.
+
+    Боль потребителя (06.10.2026): id блока дальше 50-го было не увидеть, и
+    агент перебирал числовые id вслепую. Ответ обязан называть и остаток, и
+    `limit=0` — иначе обрезка снова молчаливая.
+    """
+    _install_fake_project(monkeypatch, _many_blocks(60))
+
+    text = _tool_text(await mcp.call_tool("list_blocks", {}))
+
+    assert "k_49" in text
+    assert "k_50" not in text
+    assert "и ещё 10" in text
+    assert "всего 60" in text
+    assert "limit=0" in text
+
+
+@pytest.mark.anyio
+async def test_list_blocks_limit_zero_shows_everything(monkeypatch):
+    """`limit=0` — все блоки страницы, обрезки нет."""
+    _install_fake_project(monkeypatch, _many_blocks(60))
+
+    text = _tool_text(await mcp.call_tool("list_blocks", {"limit": 0}))
+
+    assert "k_59" in text
+    assert "и ещё" not in text
+
+
+@pytest.mark.anyio
+async def test_list_blocks_rejects_limit_out_of_range(monkeypatch):
+    """Отрицательный и сверхпредельный limit — отказ.
+
+    Предел — отсечка ошибок единиц (как `MAX_BLOCK_SIZE`): значение больше
+    `MAX_LIST_BLOCKS` — уже не «сколько показать», а недоразумение.
+    """
+    _install_fake_project(monkeypatch, _many_blocks(1))
+
+    assert "вне диапазона" in await _error("list_blocks", {"limit": -1})
+    assert "вне диапазона" in await _error(
+        "list_blocks", {"limit": MAX_LIST_BLOCKS + 1})
