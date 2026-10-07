@@ -1679,8 +1679,8 @@ async def test_fit_port_blocks_defers_pages_over_budget(monkeypatch, tmp_path):
     # Бюджет ужимается запасом, а НЕ `runtime.COM_CALL_TIMEOUT`: тот же
     # глобал — и таймаут обёртки вызова (`future.result`), и его правка
     # делала тест чувствительным ко времени (находка ревью PR #118).
-    from simintech_mcp.tools import blocks as blocks_tools
-    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
+    from simintech_mcp.tools import fits as fits_tools
+    monkeypatch.setattr(fits_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
@@ -1697,7 +1697,7 @@ async def test_fit_port_blocks_defers_pages_over_budget(monkeypatch, tmp_path):
     # (находка ревью PR #118) порция снова оплачивала бы начальные страницы,
     # и хвост не обошёлся бы никогда.
     writes_before = len(main_block.value_writes)
-    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
+    monkeypatch.setattr(fits_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
     assert inner.value_writes, "повтор не добрал отложенную страницу"
@@ -1740,14 +1740,14 @@ class _ValueLabelBlock(_SizeBlock):
 
 
 def _install_export(monkeypatch, text):
-    from simintech_mcp.tools import blocks as blocks_tools
-    monkeypatch.setattr(blocks_tools, "page_export_text",
+    from simintech_mcp.tools import fits as fits_tools
+    monkeypatch.setattr(fits_tools, "page_export_text",
                         lambda: (text, False, None, None))
 
 
 def test_constlabel_parents_reads_pairs():
     """Карта «подпись → родитель» из выгрузки (constLabel + parentblock)."""
-    from simintech_mcp.tools.blocks import _constlabel_parents
+    from simintech_mcp.tools.fits import _constlabel_parents
 
     text = ('(\n  k_0: (\n    type = "Константа",\n'
             '    points=[(456 , 72)]\n  ),\n'
@@ -1765,7 +1765,7 @@ def test_constlabel_parents_skips_submodel_pairs():
     «подтянуться» по паре субмодели (живой случай: `TextLabel7` есть и на
     главной, и внутри `sub3`).
     """
-    from simintech_mcp.tools.blocks import _constlabel_parents
+    from simintech_mcp.tools.fits import _constlabel_parents
 
     text = (
         '(\n'
@@ -1806,7 +1806,7 @@ def test_constlabel_parents_ignores_brackets_in_quoted_values():
     записями, карта возвращалась пустой — и `fit_value_labels` молча отвечал
     «подписи на месте» (находка ревью PR #96).
     """
-    from simintech_mcp.tools.blocks import _constlabel_parents
+    from simintech_mcp.tools.fits import _constlabel_parents
 
     text = (
         '(\n'
@@ -1889,8 +1889,8 @@ async def test_fit_value_labels_walks_submodels(monkeypatch):
         calls["n"] += 1
         return (text, False, None, None)
 
-    from simintech_mcp.tools import blocks as blocks_tools
-    monkeypatch.setattr(blocks_tools, "page_export_text", fake_export)
+    from simintech_mcp.tools import fits as fits_tools
+    monkeypatch.setattr(fits_tools, "page_export_text", fake_export)
 
     text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
 
@@ -1934,9 +1934,9 @@ async def test_fit_value_labels_defers_pages_over_budget(monkeypatch):
         calls["n"] += 1
         return (export, False, None, None)
 
-    from simintech_mcp.tools import blocks as blocks_tools
-    monkeypatch.setattr(blocks_tools, "page_export_text", fake_export)
-    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
+    from simintech_mcp.tools import fits as fits_tools
+    monkeypatch.setattr(fits_tools, "page_export_text", fake_export)
+    monkeypatch.setattr(fits_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 1e6)
 
     text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
 
@@ -1950,7 +1950,7 @@ async def test_fit_value_labels_defers_pages_over_budget(monkeypatch):
     # Повтор продолжает с отложенной: у подписей это критично — экспорт
     # платен на любой странице, и без курсора хвост не достижим (находка
     # ревью PR #118). Цель якоря (84, 74) у k_1 — как в walks-тесте.
-    monkeypatch.setattr(blocks_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
+    monkeypatch.setattr(fits_tools, "_CONTOUR_BUDGET_MARGIN_SECONDS", 0.0)
     text = _tool_text(await mcp.call_tool("fit_value_labels", {}))
 
     assert sub_label.centers == [(114.0, 94.0)], (

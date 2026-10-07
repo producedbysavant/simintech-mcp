@@ -318,7 +318,7 @@ def test_runtime_literal_uses_codes_for_line_breaks_only():
     `build_page_script` режет тело `splitlines()`, в том числе по `\\r`) рвался
     посреди литерала. Этот тест закрывает форму литерала напрямую.
     """
-    from simintech_mcp.tools.blocks import _runtime_literal
+    from simintech_mcp.tools.block_script import _runtime_literal
 
     literal = _runtime_literal("a\r\nb\r\n")
 
@@ -328,7 +328,7 @@ def test_runtime_literal_uses_codes_for_line_breaks_only():
 
 def test_runtime_literal_escapes_quotes_and_handles_empty():
     """Кавычка — `chr(34)`; пустой текст — пустая строка."""
-    from simintech_mcp.tools.blocks import _runtime_literal
+    from simintech_mcp.tools.block_script import _runtime_literal
 
     assert _runtime_literal('say "hi"') == '"say " + chr(34) + "hi" + chr(34)'
     assert _runtime_literal("") == '""'
@@ -361,7 +361,7 @@ def test_parse_script_reply_ignores_sentinels_inside_script():
     `// ports=9->9` в прежнем скрипте перебивал настоящие числа, а строка
     ровно `err=no-block` давала ложный «блок не найден» после записи.
     """
-    from simintech_mcp.tools.blocks import _parse_script_reply
+    from simintech_mcp.tools.block_script import _parse_script_reply
 
     token = "BLKabc"
     # Строка ровно `err=no-block` — не комментарий: именно так сентинел
@@ -379,7 +379,7 @@ def test_parse_script_reply_ignores_sentinels_inside_script():
 
 def test_parse_script_reply_no_block_only_without_markers():
     """Сентинел `err=no-block` без маркеров — «блок не найден»."""
-    from simintech_mcp.tools.blocks import _parse_script_reply
+    from simintech_mcp.tools.block_script import _parse_script_reply
 
     assert _parse_script_reply(["err=no-block"], "BLKabc").kind == "no-block"
     assert _parse_script_reply(["мусор"], "BLKabc").kind == "unknown"

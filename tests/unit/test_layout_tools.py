@@ -158,17 +158,17 @@ def test_resolve_block_prefers_name_and_tolerates_non_decimal_digits():
     вместо дружелюбного «блок не найден».
     """
     from _support import _FakePage
-    from simintech_mcp.tools.blocks import _resolve_block
+    from simintech_mcp.tools.blocks import resolve_block
 
     named_five = _PlacedBlock("5", 99)
     by_id = _PlacedBlock("k_0", 7)
     page = _FakePage({"5": named_five, "k_0": by_id})
 
-    assert _resolve_block(page, "5") is named_five, "имя числового блока"
-    assert _resolve_block(page, "7") is by_id, "id — запасной путь"
-    assert _resolve_block(page, " k_0 ") is by_id, "пробелы отбрасываются"
-    assert _resolve_block(page, "²") is None, "«²» — не десятичное число"
-    assert _resolve_block(page, "нет_такого") is None
+    assert resolve_block(page, "5") is named_five, "имя числового блока"
+    assert resolve_block(page, "7") is by_id, "id — запасной путь"
+    assert resolve_block(page, " k_0 ") is by_id, "пробелы отбрасываются"
+    assert resolve_block(page, "²") is None, "«²» — не десятичное число"
+    assert resolve_block(page, "нет_такого") is None
 
 
 @pytest.mark.anyio
@@ -761,7 +761,7 @@ def test_disconnect_wire_body_checks_the_source_before_removing():
     `findstartport` — выходной порт начала линии во входе. Без этой проверки
     снялась бы чужая связь — то, от чего инструмент и защищает.
     """
-    from simintech_mcp.tools.blocks import _disconnect_wire_body
+    from simintech_mcp.tools.wires import _disconnect_wire_body
 
     body = _disconnect_wire_body(11, 0, 22, 1)
 
@@ -781,7 +781,7 @@ def test_disconnect_wire_body_checks_the_source_before_removing():
 
 def test_parse_drop_reply_reads_body_lines():
     """Разбор ответа тела: снятие, несколько причин отказа, мусор — как unknown."""
-    from simintech_mcp.tools.blocks import _parse_drop_reply
+    from simintech_mcp.tools.wires import _parse_drop_reply
 
     assert _parse_drop_reply(["removed=5 pw=0"]).wire_id == 5
     assert _parse_drop_reply(["removed=5 pw=8"]).port_left == 8
@@ -861,7 +861,7 @@ async def test_disconnect_wire_addressed_by_id(monkeypatch, tmp_path):
 
 def test_remove_block_body_when_wires_not_touched():
     """Тело при with_wires=False линии только называет — не снимает."""
-    from simintech_mcp.tools.blocks import _remove_block_body
+    from simintech_mcp.tools.wires import _remove_block_body
 
     body = _remove_block_body(10, False)
 
@@ -885,7 +885,7 @@ def test_remove_block_body_when_wires_not_touched():
 
 def test_remove_block_body_with_wires_cuts_lines():
     """Тело при with_wires=True снимает линии и блок, без ветки busy."""
-    from simintech_mcp.tools.blocks import _remove_block_body
+    from simintech_mcp.tools.wires import _remove_block_body
 
     body = _remove_block_body(10, True)
 
@@ -1419,7 +1419,7 @@ async def test_disconnect_wire_refuses_when_line_start_unreadable(
 
 def test_vanished_wires_compares_sets():
     """Разница перечислений — чистая функция: пропавшие id и «не знаем»."""
-    from simintech_mcp.tools.blocks import _vanished_wires
+    from simintech_mcp.tools.wires import _vanished_wires
 
     assert _vanished_wires([1, 2, 3], [3, 4]) == [1, 2]
     assert _vanished_wires([1], []) == [1]
