@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -624,3 +625,101 @@ def _write_skill(root, name: str, body: str) -> None:
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "SKILL.md").write_text(body, encoding="utf-8")
+
+
+# ─── Габаритные фейки и контурная установка (общие: sizes/fits/wires) ────────
+
+
+class _SizeBlock:
+    """Блок с размером: два пути записи — оба в «Значение».
+
+    `apply_body` моделирует переход по тексту тела контура (`setprop(…)`) —
+    путь `set_block_size`; `set_size_value` — запись «Значения» для фитов
+    (`fit_port_blocks`). Оба пути применяются к одному состоянию — как у
+    среды, где габарит в итоге один; `graph_writes` («Формула») должен
+    оставаться пустым, и это проверяется тестами обоих инструментов.
+
+    Живёт в `_support.py`, потому что нужен и тестам размеров, и тестам
+    фитов (issue #124): `_SubmodelBlock` фитов наследует этот фейк.
+    """
+
+    def __init__(self, name="kx_0", size=(32.0, 32.0)):
+        self._name = name
+        self._size = list(size)
+        self.graph_writes = []
+        self.value_writes = []
+        self.class_name = "Усилитель"
+        self.id = 3
+
+    def get_name(self):
+        return self._name
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def set_graph_prop(self, name, value):
+        self.graph_writes.append((name, value))
+        self._size[0 if name == "Width" else 1] = float(value)
+        return self
+
+    def set_size_value(self, name, value):
+        """Языковая запись в «Значение» (не в «Формулу»)."""
+        self.value_writes.append((name, value))
+        self._size[0 if name == "Width" else 1] = float(value)
+        return self
+
+    def apply_body(self, body: str) -> None:
+        """Применить `setprop(blk, "Width", N)`/`Height` из тела контура."""
+        width = re.search(r'setprop\(blk, "Width", ([0-9.]+)\)', body)
+        height = re.search(r'setprop\(blk, "Height", ([0-9.]+)\)', body)
+        assert width and height, f"тело без записи Width/Height: {body!r}"
+        self._size = [float(width.group(1)), float(height.group(1))]
+
+
+class _PortBlock(_SizeBlock):
+    """Порт-блок: класс «Порт входа», список сигналов читается из PortNames.
+
+    Подделка моделирует замер 01.10.2026: имена приходят строкой с `\\r\\n`
+    (`'in\\r\\n'` у однозначного порта, `'a1\\r\\na2\\r\\n'` у двухзначного).
+    """
+
+    def __init__(self, names="in\r\n", name="InputPort_0", size=(64.0, 16.0),
+                 class_name="Порт входа"):
+        super().__init__(name=name, size=size)
+        self.class_name = class_name
+        self._port_names = names
+
+    def get_property(self, prop):
+        if prop == "PortNames":
+            return self._port_names
+        raise AssertionError(
+            f"подделка читает только PortNames, а спрошено {prop!r}")
+
+
+class _UnreadableNamesPort(_PortBlock):
+    """Порт-блок, у которого список сигналов не читается (отказ COM)."""
+
+    def get_property(self, prop):
+        raise OSError("COM недоступен")
+
+
+class _FakeProcessClient:
+    """COM-клиент: сессии достаточно пробного вызова `GetProcessID`."""
+
+    def get_process_id(self) -> int:
+        return 4242
+
+
+def _install_contour(monkeypatch, tmp_path, project, bridge) -> None:
+    """Подменить каталог результатов, клиента, проект и мост контура.
+
+    Прежде звалась `_install_fit_contour` и жила в тестах фитов, но годится
+    любому контурному инструменту (issue #124): ставит мост
+    `page_script.ScriptBridge` — общую точку входа контурного ядра.
+    """
+    from simintech_mcp.tools import page_script
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(session, "_client", _FakeProcessClient())
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(page_script, "ScriptBridge", bridge)
