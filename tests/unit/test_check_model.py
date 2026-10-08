@@ -711,6 +711,38 @@ def test_audit_routing_tracks_clear_the_stub():
                 "трек лёг ближе вылета STUB")
 
 
+def test_audit_routing_far_wire_trunk_midpoint_flags_block():
+    """Дальняя связь: вертикаль у середины пролёта — занятый створ виден.
+
+    Живые снимки 08.10.2026 (#94): среда ведёт связь через две и более
+    колонок «двумя плечами», вертикаль у `(x_src + x_dst) / 2`, и
+    препятствия не обходит — блок, стоящий у середины, обязан ловиться
+    «линией через габарит». Прежнее «трек первого зазора» давало ложный
+    `readable`: вертикаль шла сквозь габарит, а предсказание — мимо.
+    """
+    rects = [("U1", (0.0, 0.0, 32.0, 32.0)),
+             ("MID", (584.0, 184.0, 616.0, 216.0)),
+             ("U2", (1184.0, 384.0, 1216.0, 416.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((32.0, 16.0), (1184.0, 400.0))})
+
+    assert problems.block_hits == [(1, "MID")]
+
+
+def test_audit_routing_far_wire_trunk_clear_is_clean():
+    """Дальняя связь со свободной серединой пролёта — попаданий нет."""
+    rects = [("U1", (0.0, 0.0, 32.0, 32.0)),
+             ("MID", (288.0, 184.0, 312.0, 216.0)),
+             ("U2", (1184.0, 384.0, 1216.0, 416.0))]
+
+    problems = cm.audit_routing_segments(
+        rects, {1: ((32.0, 16.0), (1184.0, 400.0))})
+
+    assert not problems.block_hits
+    assert not problems.coincident and not problems.crossings
+
+
 def test_audit_routing_flags_wire_through_block():
     """Линия сквозь чужой габарит названа вместе с блоком."""
     rects = [("U1", (0.0, 0.0, 32.0, 64.0)),
