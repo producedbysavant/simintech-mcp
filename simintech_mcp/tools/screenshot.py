@@ -13,17 +13,47 @@
 (`export_model_text`) или `.xprt`. Файл пишется в каталог результатов
 (песочница), имя уникально на вызов — серия снимков «до/после» не затирает
 предыдущие.
+
+**Размер снимка — это размер окна.** Живой замер 08.10.2026 (2.26.9.29):
+сохранённое изображение равно клиентской области окна графического
+контейнера — минус 32 px по ширине и 200 по высоте (постоянно на всех
+замерах: окно 1920×903 → PNG 1888×703, окно 3072×1100 → 3040×900). Отсюда и
+«плавающее» полотно у прошлых снимков (1026×580 против 1888×703) — это были
+разные окна. Поэтому у одиночного снимка больших схем подписи мелкие: схема
+высокой формы вписывается в широкое низкое окно.
+
+**Высокое качество.** Два режима поднимают окно сами (`normalizeform` +
+`setformbounds(0, 0, 4000, 1100)`; без `normalizeform` на развёрнутом окне
+`setformbounds` молча без эффекта, а применённое видно со **следующего**
+прогона — асинхронность замера) и возвращают прежние границы окна после
+съёмки:
+
+* `hires=True` — один файл на максимальном полотне (клиент до 3968×900;
+  выше мешает кламп высоты окна — 1100);
+* `zoom=1.0` — снимок крупным планом: сетка плиток по рамке модели в
+  заданном масштабе (1 — 1:1, как вид в GUI), каждая плитка своим файлом;
+  живой замер: схема 1672×2368 — три плитки 1696×900, все подписи читаются.
+
+А для **вектора** размер не нужен вовсе: `format="svg"` отдаёт настоящий
+вектор (подписи — элементы `<text>`, замер: 217 штук), качество не
+ограничено окном. У корня SVG нет `width`/`height`/`viewBox` — простые
+вьюеры покажут его мелким (300×150) или обрезанным, поэтому крупный растр
+из него рендерят отдельно: браузером или, например,
+`inkscape --export-area-drawing --export-width=4000` (живой рендер:
+PNG 4000×5472, подписи читаются).
 """
 
 from __future__ import annotations
 
+import math
 import os
-from typing import Dict, Optional, Tuple
+import re
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.script_probe import ContourOutcome, OUTCOME_MODEL_NOT_RUNNING
 
-from .. import runtime, sandbox
+from .. import runtime, sandbox, session
 from ..app import mcp
 from .page_script import (
     describe_outcome,
@@ -39,6 +69,40 @@ FORMATS: Dict[str, int] = {"png": 2, "bmp": 1, "svg": 3}
 #: читается мультимодальными клиентами напрямую — снимок делается, чтобы на
 #: него смотрели.
 DEFAULT_FORMAT = "png"
+
+#: Целевое окно режимов `hires`/`zoom` — живой замер 08.10.2026 (2.26.9.29):
+#: окно 4000×1100 среда приняла; высота 1100 — потолок клампа (клиент 900),
+#: его не пробивают ни `setformbounds` с высотой 1728/2000/3000, ни
+#: `setformsize(3968, 2000)`; ширина 4000 >= проверенной. Больше заказывать
+#: незачем: кламп срежет, а лишняя ширина пикселей не добавит.
+HIRES_WINDOW_W = 4000
+HIRES_WINDOW_H = 1100
+
+#: Поправка «окно → снимок» — тот же замер: PNG равен клиентской области
+#: окна, минус 32 px по ширине и 200 по высоте (постоянно: 1920×903→1888×703,
+#: 3072×1100→3040×900, 3968×1100→3936×900).
+WINDOW_BORDER_W = 32
+WINDOW_CHROME_H = 200
+
+#: Объявление переменных для `getformbounds` — форма из справки поставки
+#: («var L: integer, T: integer, …»). Запись короче (`var L, T, W, H:
+#: integer;`) живым замером 08.10.2026 отвергнута: not-compiled.
+_BOUNDS_VARS = "var L: integer, T: integer, W: integer, H: integer;\n"
+
+#: Плитки режима `zoom`: перекрытие соседних (единицы модели) — стык без
+#: разрыва на границе; плиток за один прогон контура — пачка
+#: (`build_tile_batch_body`); предел общего числа — прогон длится десятки
+#: секунд, а таймаут COM-вызова 120 с, поэтому весь zoom — до четырёх
+#: прогонов: подъём окна, две пачки, возврат окна.
+TILE_MARGIN = 32.0
+TILES_PER_RUN = 6
+MAX_TILES = 12
+
+#: Границы параметра `zoom`: ниже — плитка мельче полезного (подписи слились
+#: бы, проще взять `hires`), выше — пиксель дороже единицы модели вчетверо;
+#: растровому снимку это уже не добавляет деталей.
+ZOOM_MIN = 0.1
+ZOOM_MAX = 4.0
 
 
 #: Фактический размер полотна последнего снимка (ширина, высота).
@@ -69,24 +133,374 @@ def _png_size(path: str) -> "Optional[Tuple[int, int]]":
             int.from_bytes(head[20:24], "big"))
 
 
-def build_screenshot_body(path: str, type_code: int) -> str:
-    """Тело контура: `savescreenshot("<путь>", <тип>)`.
+def _path_literal(path: str) -> str:
+    """Путь снимка литералом встроенного языка — с проверкой кавычек.
 
-    Путь подставляется в литерал встроенного языка: кавычка или перевод
-    строки в нём сломали бы скрипт, поэтому отвергаются — как у остальных
-    тел контура.
+    Кавычка или перевод строки в пути сломали бы скрипт, поэтому отвергаются
+    до COM-вызова — как у остальных тел контура.
     """
     literal = path.replace("\\", "/")
     if '"' in literal or "\n" in literal or "\r" in literal:
         raise ToolError(
             "путь снимка не может содержать кавычку или перевод строки: "
             f"{path!r} — он подставляется в литерал встроенного языка.")
-    return f'savescreenshot("{literal}", {type_code});'
+    return literal
+
+
+def build_screenshot_body(path: str, type_code: int) -> str:
+    """Тело контура: `savescreenshot("<путь>", <тип>)`."""
+    return f'savescreenshot("{_path_literal(path)}", {type_code});'
+
+
+def build_tile_batch_body(tiles: "Sequence[Tuple[str, float, float, float]]",
+                          type_code: int) -> str:
+    """Тело контура: пачка плиток — кадр и снимок каждой, **один прогон**.
+
+    Замеры 08.10.2026: PNG после тела «кадр + снимок» байт-в-байт совпал со
+    снимком после отдельной записи кадра (`md5` тот же) — кадр применяется
+    до `savescreenshot` внутри прогона; а тело с двумя парами
+    «`createmodel` + `savescreenshot`» создало **два разных файла** за один
+    прогон. Отсюда пачка: каждый прогон контура занимает десятки секунд, и
+    съёмка плиток по одной упиралась бы в таймаут COM-вызова (живой случай
+    08.10.2026: zoom из шести прогонов ≈ 120 с — ровно на границе).
+
+    Имена записей уникальны (`model1`, `model2`, …): повтор имени записи в
+    тексте отвергается компилятором (замер 08.10.2026). Семантика свойств —
+    как у `fit_geometry`: экран = модель × масштаб + смещение.
+    """
+    lines: List[str] = []
+    for index, (path, view_x, view_y, scale) in enumerate(tiles, start=1):
+        lines.append(
+            f"const model{index} : ("
+            f"x_center = {view_x:g}, y_center = {view_y:g}, "
+            f"x_scale = {scale:g}, y_scale = {scale:g});\n"
+            f"createmodel(getcurrentprojectid, model{index});\n"
+            f'savescreenshot("{_path_literal(path)}", {type_code});'
+        )
+    return "\n".join(lines)
+
+
+def _raise_window_body() -> str:
+    """Тело контура: границы «до» и подъём окна до целевого — один прогон.
+
+    Поднимаем, только если окно меньше целевого: уже большое окно не
+    уменьшаем (лишние пиксели не мешают, а вид окна — состояние проекта, и
+    трогать его без нужды незачем). `normalizeform` обязателен перед
+    `setformbounds`: на развёрнутом окне тот молча без эффекта (замер
+    08.10.2026). Строка `before=…` — для возврата окна после съёмки.
+    """
+    return (
+        _BOUNDS_VARS
+        + "getformbounds(L, T, W, H);\n"
+        + 'writelnutf8(fid, "before=" + inttostr(L) + "," + inttostr(T)'
+          ' + "," + inttostr(W) + "," + inttostr(H));\n'
+        + f"if (W < {HIRES_WINDOW_W}) or (H < {HIRES_WINDOW_H}) then begin\n"
+        + "  normalizeform;\n"
+        + f"  setformbounds(0, 0, {HIRES_WINDOW_W}, {HIRES_WINDOW_H});\n"
+        + '  writelnutf8(fid, "raised");\n'
+        + "end;"
+    )
+
+
+def _restore_window_body(bounds: "Tuple[int, int, int, int]") -> str:
+    """Тело контура: вернуть окну прежние границы."""
+    left, top, width, height = bounds
+    return f"setformbounds({left}, {top}, {width}, {height});"
+
+
+def _bounds_from_lines(lines: Sequence[str],
+                       prefix: str) -> "Optional[Tuple[int, int, int, int]]":
+    """Границы из строк тела: `bounds=` или `before=` — `None`, если нет."""
+    pattern = re.compile(re.escape(prefix) + r"(-?\d+),(-?\d+),(\d+),(\d+)")
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            return (int(match.group(1)), int(match.group(2)),
+                    int(match.group(3)), int(match.group(4)))
+    return None
+
+
+def _axis_positions(low: float, high: float, span: float,
+                    margin: float) -> "List[float]":
+    """Центры плиток по одной оси: покрыть [low, high] отрезками `span`.
+
+    Первая плитка начинается на `low`, последняя кончается на `high`, между
+    соседними остаётся перекрытие `margin` — стык без разрыва (объект на
+    границе попадёт в обе плитки, а не в щель). Один отрезок — центр рамки.
+    """
+    size = high - low
+    if size <= span or span <= margin:
+        return [(low + high) / 2.0]
+    step = span - margin
+    count = max(int(math.ceil((size - margin) / step)), 1)
+    if count == 1:
+        return [(low + high) / 2.0]
+    return [low + (size - span) * index / (count - 1) + span / 2.0
+            for index in range(count)]
+
+
+def tile_centers(frame: "Tuple[float, float, float, float]",
+                 client_w: float, client_h: float, zoom: float,
+                 margin: float = TILE_MARGIN) -> "List[Tuple[float, float]]":
+    """Центры плиток (координаты модели): сверху вниз, слева вправо.
+
+    Плитка охватывает `client / zoom` единиц модели — при `zoom = 1` это
+    масштаб 1:1 (пиксель полотна на единицу модели, как вид в GUI).
+    """
+    left, top, right, bottom = frame
+    span_x = client_w / zoom
+    span_y = client_h / zoom
+    xs = _axis_positions(left, right, span_x, margin)
+    ys = _axis_positions(top, bottom, span_y, margin)
+    return [(x, y) for y in ys for x in xs]
+
+
+def _tile_span(client: float, zoom: float) -> float:
+    """Охват плитки в единицах модели по одной оси."""
+    return client / zoom
+
+
+def _frame_or_error() -> "Tuple[float, float, float, float]":
+    """Рамка модели для крупных режимов — или отказ.
+
+    `model_frame` — тот же расчёт, что у `fit_geometry` и метрики наложений:
+    объединение габаритов блоков (`Points` + `get_size`). `None` — считать
+    кадр и плитки не по чему, и молча снять «как получится» значило бы
+    выдать неизвестно что за качественный снимок.
+    """
+    from .layout import model_frame
+
+    frame = model_frame(session.ensure_project().get_main_page())
+    if frame is None:
+        raise ToolError(
+            "рамка модели не читается: на странице нет блоков с габаритами "
+            "(`Points` и `get_size`) — считать кадр не по чему.")
+    return frame
+
+
+def _shoot_batch(paths: "Sequence[str]", body: str) -> ContourOutcome:
+    """Сделать снимки телом контура; каждый файл обязан появиться."""
+    outcome, _restored = run_contour(body, failed="снимок не сделан")
+    refuse_contour_failure(outcome, failed="съёмка схемы")
+    # Файла может не быть, даже если тело «отработало»: на неподходящем
+    # типе savescreenshot молча ничего не создаёт (замер 03.10.2026, тип 0).
+    missing = [path for path in paths
+               if not os.path.isfile(path) or os.path.getsize(path) == 0]
+    if missing:
+        raise ToolError(
+            f"скрипт отработал, но файлов снимка нет: {', '.join(missing)}. "
+            "savescreenshot ничего не записал — проверьте поддержку "
+            "формата в этой сборке."
+        )
+    return outcome
+
+
+def _shot_head(outcome: ContourOutcome) -> str:
+    """Префикс ответа: снимок есть и на несчитающей модели — сказать это."""
+    if outcome.kind == OUTCOME_MODEL_NOT_RUNNING:
+        return (describe_outcome(outcome, what="Снимок")
+                + " Снимок при этом есть: savescreenshot пишется из секции "
+                  "`initialization`, а не из шагов расчёта.\n")
+    return ""
+
+
+def _raise_window() -> "Tuple[bool, Tuple[int, int, int, int]]":
+    """Поднять окно до целевого; вернуть (поднимали, границы «до»).
+
+    Границы «до» нужны, чтобы вернуть окно после съёмки; без них (тело не
+    отдало строку `before=…`) — отказ: окно осталось бы раздутым, вернуть
+    его прежним было бы нечем.
+    """
+    outcome, _restored = run_contour(
+        _raise_window_body(), failed="поднять окно под снимок не удалось")
+    refuse_contour_failure(outcome, failed="подъём окна")
+    before = _bounds_from_lines(outcome.lines, "before=")
+    if before is None:
+        raise ToolError(
+            "границы окна не прочитались: тело контура не отдало строку "
+            "`before=…` — поднимать окно вслепую нельзя.")
+    raised = any(line.strip() == "raised" for line in outcome.lines)
+    return raised, before
+
+
+def _restore_window(bounds: "Tuple[int, int, int, int]") -> "Optional[str]":
+    """Вернуть окну прежние границы; `None` — удалось, иначе текст отказа.
+
+    Отказ возврата — не отказ инструмента: снимок уже сделан, и терять его
+    из-за окна нельзя; но молчать нельзя вдвойне — окно осталось бы чужим.
+    """
+    try:
+        outcome, _restored = run_contour(
+            _restore_window_body(bounds), failed="вернуть окно не удалось")
+        refuse_contour_failure(outcome, failed="возврат окна")
+    except Exception as exc:  # noqa: BLE001
+        return (f"ВНИМАНИЕ: окно вернуть не удалось "
+                f"({type(exc).__name__}: {exc}) — границы, выставленные под "
+                f"снимок, могли сохраниться.")
+    return None
+
+
+def _client_of(bounds: "Tuple[int, int, int, int]") -> "Tuple[float, float]":
+    """Клиентская область окна — это и есть полотно снимка (−32/−200)."""
+    return (max(float(bounds[2] - WINDOW_BORDER_W), 1.0),
+            max(float(bounds[3] - WINDOW_CHROME_H), 1.0))
+
+
+def _large_shot(root: str, key: str, type_code: int, fit: bool,
+                zoom: Optional[float]) -> str:
+    """Режимы `hires`/`zoom`: поднять окно, снять, вернуть окно прежним.
+
+    Каждый прогон контура занимает десятки секунд (живой замер 08.10.2026:
+    ~20 с на проект в 168 блоков), а таймаут COM-вызова — 120 с, поэтому
+    число прогонов посчитано: подъём (1), съёмка (1–2 пачки, см.
+    `TILES_PER_RUN`), возврат окна (1) — всего 3–4. Чтения фактических
+    границ после подъёма здесь нет намеренно: оно стоило бы ещё прогон, а
+    его роль берёт проверка полотна по готовому PNG (`_hires_shot`) и
+    предсказание клиента по замеренной поправке −32/−200.
+    """
+    raised, before = _raise_window()
+    if raised:
+        # Подъём заказан до 4000x1100 (замеренный потолок высоты окна),
+        # поэтому клиент предсказывается точно; кламп на другой машине
+        # поймает проверка полотна по PNG — она дешевле прогона чтения.
+        client_w = float(HIRES_WINDOW_W - WINDOW_BORDER_W)
+        client_h = float(HIRES_WINDOW_H - WINDOW_CHROME_H)
+    else:
+        client_w, client_h = _client_of(before)
+
+    notes: List[str] = []
+    if raised:
+        notes.append(
+            f"Окно под снимок: {before[2]}x{before[3]} → {HIRES_WINDOW_W}x"
+            f"{HIRES_WINDOW_H} (заказано); клиент (полотно) — "
+            f"{client_w:.0f}x{client_h:.0f}.")
+    else:
+        notes.append(
+            f"Окно не меньше целевого: {before[2]}x{before[3]}; клиент "
+            f"(полотно) — {client_w:.0f}x{client_h:.0f}.")
+
+    try:
+        if zoom is None:
+            text = _hires_shot(root, key, type_code, fit, client_w, client_h)
+        else:
+            text = _tiles_shot(root, key, type_code, zoom, client_w, client_h)
+    finally:
+        # Возврат окна — в `finally`: отказ в середине съёмки (предел плиток,
+        # обрыв контура) не имеет права оставить окно раздутым — это
+        # состояние проекта, чужое для вызывающего.
+        if raised:
+            failure = _restore_window(before)
+            notes.append(failure if failure else
+                         f"Окно возвращено: {before[2]}x{before[3]} "
+                         "(разворот, если он был, вернёт `maximizeform`).")
+
+    return text + "\n" + "\n".join(notes)
+
+
+def _hires_shot(root: str, key: str, type_code: int, fit: bool,
+                client_w: float, client_h: float) -> str:
+    """Один снимок на поднятом полотне; кадр — вписанная по рамке модель."""
+    path = os.path.join(root, fresh_name(f"screenshot.{key}"))
+    note = ""
+    if not fit:
+        outcome = _shoot_batch([path], build_screenshot_body(path, type_code))
+    else:
+        from .layout import fit_geometry
+
+        frame = _frame_or_error()
+        scale, view_x, view_y = fit_geometry(frame, client_w, client_h)
+        outcome = _shoot_batch([path], build_tile_batch_body(
+            [(path, view_x, view_y, scale)], type_code))
+        actual = _png_size(path) if key == "png" else None
+        if actual is not None and (abs(actual[0] - client_w) > 1.0
+                                   or abs(actual[1] - client_h) > 1.0):
+            # Предсказанный клиент разошёлся с фактом — кадр пересчитывается
+            # под фактическое полотно (тем же приёмом: кадр и снимок в одном
+            # прогоне). Один повтор, дальше расхождению веры нет.
+            scale, view_x, view_y = fit_geometry(
+                frame, float(actual[0]), float(actual[1]))
+            outcome = _shoot_batch([path], build_tile_batch_body(
+                [(path, view_x, view_y, scale)], type_code))
+            actual = _png_size(path) or actual
+            note = (f"\nПолотно — {actual[0]}x{actual[1]} (клиент окна "
+                    "разошёлся с предсказанным): кадр пересчитан, снимок "
+                    "сделан заново.")
+    size = os.path.getsize(path)
+    return (f"{_shot_head(outcome)}Снимок схемы ({key}): {path} ({size} "
+            f"байт).{note} "
+            "Откройте файл как изображение — это фактический вид схемы.")
+
+
+def _tiles_shot(root: str, key: str, type_code: int, zoom: float,
+                client_w: float, client_h: float) -> str:
+    """Плитки: сетка по рамке модели, пачками по `TILES_PER_RUN` за прогон.
+
+    Плитки снимаются пачками: один прогон контура занимает десятки секунд
+    (живой замер 08.10.2026: ~20 с на проект в 168 блоков), и съёмка по
+    одной упирается в таймаут COM-вызова — zoom из шести прогонов занял
+    ≈120 с, ровно лимит. Тело с несколькими парами
+    «`createmodel` + `savescreenshot`» создаёт все файлы пачки за один
+    прогон (замер там же: два разных файла, `md5` разные).
+    """
+    frame = _frame_or_error()
+    width = frame[2] - frame[0]
+    height = frame[3] - frame[1]
+    centers = tile_centers(frame, client_w, client_h, zoom)
+    if len(centers) > MAX_TILES:
+        raise ToolError(
+            f"плиток {len(centers)} — больше предела {MAX_TILES}: при "
+            f"zoom={zoom:g} плитка охватывает {client_w / zoom:.0f}x"
+            f"{client_h / zoom:.0f} единиц модели, а схема — {width:.0f}x"
+            f"{height:.0f}. Уменьшите zoom (плитка охватит больше, но и "
+            "мельче станет), либо снимайте по `hires` одним полотном.")
+    span_x = _tile_span(client_w, zoom)
+    span_y = _tile_span(client_h, zoom)
+    plan: "List[Tuple[int, str, float, float]]" = []
+    for index, (cx, cy) in enumerate(centers, start=1):
+        plan.append((index, os.path.join(root, fresh_name(
+            f"screenshot-{index}of{len(centers)}.{key}")), cx, cy))
+
+    outcome: Optional[ContourOutcome] = None
+    for start in range(0, len(plan), TILES_PER_RUN):
+        batch = plan[start:start + TILES_PER_RUN]
+        body = build_tile_batch_body(
+            [(path, client_w / 2.0 - cx * zoom, client_h / 2.0 - cy * zoom,
+              zoom)
+             for _index, path, cx, cy in batch], type_code)
+        outcome = _shoot_batch([path for _index, path, _cx, _cy in batch],
+                               body)
+
+    canvas_note = ""
+    if key == "png":
+        sizes = [_png_size(path) for _index, path, _cx, _cy in plan]
+        real = [size for size in sizes if size is not None]
+        if any(abs(size[0] - client_w) > 1.0
+               or abs(size[1] - client_h) > 1.0 for size in real):
+            canvas_note = (f"\nВНИМАНИЕ: полотно плиток — {real[0][0]}x"
+                           f"{real[0][1]} вместо предсказанного {client_w:.0f}x"
+                           f"{client_h:.0f} (клиент окна клампнулся) — края "
+                           "плиток могли сместиться, проверьте снимки.")
+
+    parts = [
+        f"  {index}/{len(plan)}: x {cx - span_x / 2:.0f}.."
+        f"{cx + span_x / 2:.0f}, y {cy - span_y / 2:.0f}.."
+        f"{cy + span_y / 2:.0f} ед. модели — {path} "
+        f"({os.path.getsize(path)} байт)"
+        for index, path, cx, cy in plan
+    ]
+    tail = ("\nКадр страницы оставлен на последней плитке — вписанный вид "
+            "вернёт `fit_view`." if len(plan) > 1 else "")
+    return (f"{_shot_head(outcome) if outcome else ''}Снимок схемы ({key}) "
+            f"плитками: {len(plan)} шт., масштаб {zoom:g} (плитка — "
+            f"{span_x:.0f}x{span_y:.0f} ед. модели).\n"
+            + "\n".join(parts) + canvas_note + tail)
 
 
 @mcp.tool()
 @runtime.com_threaded
-def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
+def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True,
+                    hires: bool = False,
+                    zoom: Optional[float] = None) -> str:
     """Сохранить снимок текущего вида схемы в файл (PNG/BMP/SVG) — и посмотреть глазами.
 
     Это проверка того, чего не видно в текстовой выгрузке
@@ -120,10 +534,40 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
     видит человек, без правки кадра. Если габариты прочитать не удалось, снимок
     всё равно делается — в ответе будет примечание, а не отказ.
 
+    **Высокое качество (`hires`, `zoom`).** Размер снимка — это размер окна
+    (клиентская область, −32/−200; замер 08.10.2026), поэтому оба режима
+    поднимают окно до 4000×1100 (`normalizeform` обязателен: на развёрнутом
+    окне `setformbounds` молча без эффекта) и после съёмки возвращают прежние
+    границы.
+
+    * `hires=True` — один файл на максимальном полотне (клиент до 3968×900):
+      для схемы, которой тесно в обычном окне (1026×580 или 1888×703 —
+      какие окна застали замеры).
+    * `zoom=1.0` — снимок крупным планом плитками: сетка по рамке модели в
+      заданном масштабе (1 — 1:1, как вид в GUI), каждая плитка своим файлом
+      `screenshot-<N>of<M>.<формат>` с перекрытием на стыках; плитки
+      снимаются пачками (до 6 за прогон), всего до 12 — вызов укладывается в
+      четыре прогона контура, а прогон длится десятки секунд (таймаут
+      COM-вызова — 120 с; живой случай 08.10.2026: zoom по одной плитке за
+      прогон занял ≈120 с и оборвался по таймауту, хотя снимки создались).
+      Живой замер: схема 1672×2368 — три плитки 1696×900, все подписи
+      читаются. Кадр `fit` в этом режиме не участвует, а после съёмки кадр
+      страницы остаётся на последней плитке (вписанный вид вернёт
+      `fit_view`).
+
+    SVG — вектор: полотно его не ограничивает, поэтому `hires`/`zoom` к нему
+    неприменимы (отказ с подсказкой). Крупный растр из SVG рендерится вне
+    сервера: браузером или `inkscape --export-area-drawing
+    --export-width=4000` (живой рендер 4000×5472, подписи читаются).
+
     Args:
         format: «png» (по умолчанию), «bmp» или «svg».
         fit: True (по умолчанию) — подогнать кадр по рамке модели перед
             съёмкой; False — снять текущий вид как есть.
+        hires: True — поднять окно под максимальное полотно и вернуть его
+            после снимка (для одного файла). С `zoom` не сочетается.
+        zoom: масштаб плиток (1 — 1:1) — снимок крупным планом в нескольких
+            файлах; `None` (по умолчанию) — обычный одиночный снимок.
     """
     global _last_canvas
 
@@ -135,6 +579,26 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
             f"{', '.join(FORMATS)} (коды типов функции savescreenshot: "
             f"{', '.join(f'{name}={code}' for name, code in FORMATS.items())})."
         )
+
+    if hires and zoom is not None:
+        raise ToolError(
+            "выберите один режим: `hires` (одно большое полотно) или `zoom` "
+            "(плитки крупным планом) — они по-разному строят кадр.")
+    if zoom is not None and not (ZOOM_MIN <= zoom <= ZOOM_MAX):
+        raise ToolError(
+            f"zoom={zoom:g} вне пределов {ZOOM_MIN:g}..{ZOOM_MAX:g}: меньше — "
+            "плитка мельче одиночного снимка (смотрите `hires`), больше — "
+            "растру это деталей не добавит.")
+    if (hires or zoom is not None) and key == "svg":
+        raise ToolError(
+            "SVG — вектор: полотно окна его не ограничивает, `hires`/`zoom` "
+            "ему не нужны. Крупный растр из вектора рендерится вне сервера "
+            "(браузер, `inkscape --export-width=...`).")
+
+    if hires or zoom is not None:
+        # Обычный снимок _last_canvas не трогает: окно возвращается прежним,
+        # и память о полотне обычных снимков остаётся верной.
+        return _large_shot(sandbox.output_root(), key, type_code, fit, zoom)
 
     canvas = _last_canvas
     canvas_note = ""
@@ -158,18 +622,8 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
     def _shoot() -> "Tuple[ContourOutcome, str]":
         """Сделать снимок и вернуть (исход контура, путь файла)."""
         path = os.path.join(root, fresh_name(f"screenshot.{key}"))
-        outcome, _restored = run_contour(
-            build_screenshot_body(path, type_code), failed="снимок не сделан")
-        refuse_contour_failure(outcome, failed="съёмка схемы")
-        # Файла может не быть, даже если тело «отработало»: на неподходящем
-        # типе savescreenshot молча ничего не создаёт (замер 03.10.2026, тип 0).
-        if not os.path.isfile(path) or os.path.getsize(path) == 0:
-            raise ToolError(
-                f"скрипт отработал, но файла снимка нет: {path}. "
-                f"savescreenshot формата «{key}» ничего не записал — "
-                "проверьте поддержку формата в этой сборке."
-            )
-        return (outcome, path)
+        return (_shoot_batch([path], build_screenshot_body(path, type_code)),
+                path)
 
     outcome, shot_path = _shoot()
 
@@ -206,11 +660,6 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True) -> str:
         _last_canvas = actual
 
     size = os.path.getsize(shot_path)
-    head = ""
-    if outcome.kind == OUTCOME_MODEL_NOT_RUNNING:
-        head = (describe_outcome(outcome, what="Снимок")
-                + " Снимок при этом есть: savescreenshot пишется из секции "
-                  "`initialization`, а не из шагов расчёта.\n")
-    return (f"{head}Снимок схемы ({key}): {shot_path} ({size} байт)."
-            f"{fit_note}{canvas_note} "
+    return (f"{_shot_head(outcome)}Снимок схемы ({key}): {shot_path} "
+            f"({size} байт).{fit_note}{canvas_note} "
             "Откройте файл как изображение — это фактический вид схемы.")
