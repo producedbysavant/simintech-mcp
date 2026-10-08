@@ -68,6 +68,10 @@ def test_com_threaded_times_out_instead_of_hanging(monkeypatch):
     import time as _time
 
     monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
+    # Зависший future заносится в память runtime (`_stuck_call`, гейт мгновенного
+    # отказа): тест убирает за собой — иначе следующие тесты, идущие, пока
+    # `slow` ещё спит, получали бы «COM-поток занят».
+    monkeypatch.setattr(runtime, "_stuck_call", None)
 
     @runtime.com_threaded
     def slow():
@@ -262,3 +266,77 @@ def test_log_stdout_value_goes_to_stderr(monkeypatch, tmp_path, capsys):
     assert "проверка" in captured.err
     assert captured.out == ""
     assert not (tmp_path / "stdout").exists()
+
+
+# ─── Зависший COM-вызов: мгновенный отказ и спасательный disconnect ──
+
+
+def test_stuck_com_call_refuses_fast_and_recovers(monkeypatch):
+    """Зависший вызов: следующий отказ — мгновенный, после завершения — снова можно.
+
+    Репорт fdd002 08.10.2026: `add_block` залип на 120 с (mmain мёртв), и
+    каждый следующий вызов стоял в очереди и падал по своему таймауту.
+    Поток один, поэтому зависший future запоминается и вызовы отказывают
+    сразу; когда future завершился — гейт снимается.
+    """
+    import time as _time
+
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
+    monkeypatch.setattr(runtime, "_stuck_call", None)
+
+    @runtime.com_threaded
+    def slow():
+        _time.sleep(0.6)
+        return "готово"
+
+    @runtime.com_threaded
+    def fast():
+        return "ок"
+
+    with pytest.raises(ToolError, match="не ответил"):
+        slow()
+    started = _time.monotonic()
+    with pytest.raises(ToolError, match="COM-поток занят"):
+        fast()
+    assert _time.monotonic() - started < 0.4, "отказ не мгновенный — очередь"
+
+    _time.sleep(0.7)          # slow() досчитался: future завершён
+    assert fast() == "ок"     # гейт снят
+
+
+def test_rescue_tool_waits_for_stuck_call(monkeypatch):
+    """Спасательный инструмент не отсекается: встаёт в очередь и выполняется.
+
+    Единственный такой — `disconnect`: иначе зависшую сессию нечем сбросить.
+    """
+    import time as _time
+
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.01)
+    monkeypatch.setattr(runtime, "_stuck_call", None)
+
+    @runtime.com_threaded
+    def slow():
+        _time.sleep(0.3)
+        return "готово"
+
+    @runtime.com_threaded(rescue=True)
+    def rescue():
+        return "ок"
+
+    with pytest.raises(ToolError, match="не ответил"):
+        slow()
+    # Обычный вызов в этом состоянии отказал бы мгновенно; спасательный —
+    # дождётся медленного (свой таймаут возвращаем на рабочий).
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 5.0)
+    started = _time.monotonic()
+    assert rescue() == "ок"
+    assert _time.monotonic() - started < 1.0
+
+
+def test_disconnect_is_marked_rescue():
+    """`disconnect` помечен спасательным (`RESCUE_MARK`) — контракт потока."""
+    from simintech_mcp.tools.project import disconnect
+
+    assert getattr(disconnect, runtime.RESCUE_MARK, False), (
+        "disconnect без пометки rescue отсекался бы мгновенным отказом, "
+        "и зависшая сессия осталась бы без сброса")
