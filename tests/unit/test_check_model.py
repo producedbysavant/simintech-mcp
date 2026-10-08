@@ -287,7 +287,12 @@ async def test_check_reports_wide_label(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_check_script_queries_ports_and_wire_ends(monkeypatch, tmp_path):
-    """Тело контура: пустота портов — `getportwireid`, концы — `getwire*coord`."""
+    """Тело контура: пустота портов — `getportwireid`, концы — `getwire*coord`.
+
+    Пустота и привязка читаются ОДНИМ вызовом `getportwireid` на порт (в
+    `chk_w`): значение нужно и для `EMPTY`, и для `LINK` — двойной вызов был
+    бы лишним COM-обращением.
+    """
     blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
     wires = [_FakeWire(3)]
     _install(monkeypatch, tmp_path, blocks, wires=wires)
@@ -295,10 +300,109 @@ async def test_check_script_queries_ports_and_wire_ends(monkeypatch, tmp_path):
     _text(await mcp.call_tool("check_model_layout", {}))
 
     body = _BridgeWritesReport.body
-    assert "getportwireid(getblockportid(k_0, 0)) = 0" in body
-    assert "getportwireid(getblockportid(k_0, 1)) = 0" in body
+    assert "chk_w = getportwireid(getblockportid(k_0, 0));" in body
+    assert "chk_w = getportwireid(getblockportid(k_0, 1));" in body
+    assert '"EMPTY|k_0|' in body, "пустой порт не называется"
+    assert '"LINK|k_0|' in body, "привязка линии к порту не выводится"
     assert "getwirestartpointcoord(3)" in body
     assert "getwireendpointcoord(3)" in body
+    assert "getparentwireid(3)" in body, "родитель линии не читается"
+
+
+@pytest.mark.anyio
+async def test_check_warns_line_touching_fewer_than_two_ports(
+        monkeypatch, tmp_path):
+    """Линия без ветвления, видимая одному порту, — предупреждение.
+
+    Так выглядит «две линии в один вход»: во входе `getportwireid` показывает
+    лишь одну линию, вторая видна только со стороны своего выхода (живой
+    замер 08.10.2026). Сигнал не утверждает направление концов — в этой
+    сборке `getportinfo` в контуре не компилируется.
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="DONE\nP|7|0\nLINK|k_0|1|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "касающиеся меньше двух портов" in text
+    assert "id=7" in text
+    assert "k_0[1]" in text
+
+
+@pytest.mark.anyio
+async def test_check_passes_line_touching_two_ports(monkeypatch, tmp_path):
+    """Обычная линия касается двух портов — вердикт чистый."""
+    blocks = [
+        _CheckBlock("k_0", center=(0, 0), ports=2),
+        _CheckBlock("kx_0", center=(200, 0), ports=2),
+    ]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="DONE\nP|7|0\nLINK|k_0|1|7\nLINK|kx_0|0|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "у каждой линии без ветвления видны оба конца" in text
+    assert "касающиеся меньше двух" not in text
+
+
+@pytest.mark.anyio
+async def test_check_does_not_blame_branch_with_single_link(
+        monkeypatch, tmp_path):
+    """Ветвь (родитель ≠ 0) законно касается одного порта — не предупреждение."""
+    blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="DONE\nP|7|5\nLINK|k_0|1|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "касающиеся меньше двух" not in text
+    assert "у каждой линии без ветвления видны оба конца" in text
+
+
+@pytest.mark.anyio
+async def test_check_connection_unchecked_on_incomplete_report(
+        monkeypatch, tmp_path):
+    """Оборванный отчёт — «не проверено», а не молчание (связка «и чисто»).
+
+    Находка ревью 08.10.2026: без этой ветки отсутствие строки
+    «Подключение линий» не отличалось от чистого вердикта.
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="P|7|0\nLINK|k_0|1|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Подключение линий: не проверено — отчёт контура неполон" in text
+    assert "касающиеся меньше двух" not in text
+
+
+@pytest.mark.anyio
+async def test_check_connection_unchecked_on_skipped_blocks(
+        monkeypatch, tmp_path):
+    """Пропущенный блок — «не проверено», а не ложное «касается меньше двух».
+
+    Линия у пропущенного блока честно видна одному порту (его порты не
+    перечислены) — предупреждение по ней было бы ложной тревогой (находка
+    ревью 08.10.2026).
+    """
+    blocks = [
+        _CheckBlock("k_0); bad(); (", center=(0, 0)),
+        _CheckBlock("k_1", center=(100, 0)),
+    ]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="DONE\nP|7|0\nLINK|k_1|0|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Подключение линий: не проверено — часть блоков пропущена" in text
+    assert "касающиеся меньше двух" not in text
 
 
 @pytest.mark.anyio
