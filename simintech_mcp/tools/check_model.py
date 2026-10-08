@@ -455,7 +455,9 @@ def check_model_layout() -> str:
             more = (f" (и ещё {len(empty_ports) - MAX_REPORTED})"
                     if len(empty_ports) > MAX_REPORTED else "")
             lines.append(f"ВНИМАНИЕ: пустые порты: {shown}{more}. Пустой "
-                         f"вход останавливает расчёт всей модели.")
+                         f"вход блока расчёта останавливает расчёт всей "
+                         f"модели (у порт-блоков — не блокер, замер "
+                         f"08.10.2026).")
         elif done:
             lines.append("Пустые порты: нет.")
         else:
