@@ -22,6 +22,7 @@ from _support import (
     _FakeBlock,
     _FakeProjectWithCreate,
     _PlacedBlock,
+    _StateStub,
     _error,
     _install_fake_project,
     _text,
@@ -385,6 +386,39 @@ async def test_add_block_reports_auto_name(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_add_block_refuses_when_project_is_running(monkeypatch):
+    """Расчёт идёт (состояние 3) — отказ ДО COM, с советом `stop`.
+
+    В ненулевом состоянии (`GetProjectStateFlag`) среда отвергает
+    `CreateBlock` модальным окном, которое внешний клиент снять не может —
+    вызов повис бы до закрытия окна человеком (замер simintech-code,
+    2026-09-22).
+    """
+    monkeypatch.setattr(session, "_project", _FakeProjectWithCreate(state=3))
+
+    text = await _error("add_block", {"class_name": "Константа"})
+
+    assert "не в остановленном состоянии" in text
+    assert "stop" in text, "отказ не называет выход"
+
+
+@pytest.mark.anyio
+async def test_add_block_refuses_when_state_unreadable(monkeypatch):
+    """Нечитаемое состояние — тоже отказ: «не знаю» неотличимо от «идёт»."""
+
+    class _BrokenState(_FakeProjectWithCreate):
+        def simulation(self):
+            raise RuntimeError("GetProjectStateFlag недоступен")
+
+    monkeypatch.setattr(session, "_project", _BrokenState())
+
+    text = await _error("add_block", {"class_name": "Константа"})
+
+    assert "состояние проекта прочитать не удалось" in text
+    assert "stop" in text
+
+
+@pytest.mark.anyio
 async def test_add_block_reports_ignored_props(monkeypatch):
     """Части props без '=' не исчезают молча."""
     _install_fake_project(monkeypatch, {})
@@ -513,6 +547,10 @@ class _CreateProject:
 
     def get_main_page(self):
         return self
+
+    def simulation(self):
+        """Состояние расчёта: остановлен — add_block читает его до правки."""
+        return _StateStub(0)
 
     def create_block(self, class_name, x, y):
         block = self._block_cls(class_name)

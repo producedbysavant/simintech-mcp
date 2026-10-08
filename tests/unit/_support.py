@@ -429,6 +429,8 @@ class _FakeProject:
         self.repaints = 0
         # id читают ответы правок («Изменения внесены в: … (id=7)», #18).
         self.id = 7
+        # Состояние расчёта: остановлен (проверка add_block перед правкой).
+        self._simulation = _StateStub(0)
 
     def get_main_page(self):
         return self._page
@@ -437,6 +439,9 @@ class _FakeProject:
         """Перерисовка редактора: layout_place зовёт её перед трассировкой."""
         self.repaints += 1
         return self
+
+    def simulation(self):
+        return self._simulation
 
 
 def _no_page_export():
@@ -450,13 +455,31 @@ def _install_fake_project(monkeypatch, blocks):
     monkeypatch.setattr(model_text, "page_export_text", _no_page_export)
 
 
+class _StateStub:
+    """`Simulation` подделки: состояние проекта (`GetProjectStateFlag`).
+
+    0 — остановлен (значения среды: 1 — инициализирован, 3 — идёт расчёт,
+    7 — пауза); тесты подставляют `state` явно.
+    """
+
+    def __init__(self, state: int = 0):
+        self._state = state
+
+    def get_state(self) -> int:
+        return self._state
+
+
 class _FakeProjectWithCreate:
-    def __init__(self):
+    def __init__(self, state: int = 0):
         self.page = _FakePage({})
         self.id = 7  # ответы правок называют проект (issue #18)
+        self._simulation = _StateStub(state)
 
     def get_main_page(self):
         return self.page
+
+    def simulation(self):
+        return self._simulation
 
 
 class _ClosableProject:
