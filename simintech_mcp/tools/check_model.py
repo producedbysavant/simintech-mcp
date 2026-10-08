@@ -203,6 +203,7 @@ def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
     lines = [
         "initialization",
         "  var chk_f: integer;",
+        "  var chk_w: integer;",
         f'  chk_f = createfile("{literal}", -1);',
     ]
     for wire_id in wire_ids:
@@ -210,12 +211,23 @@ def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
             f'  writelnutf8(chk_f, "W|{wire_id}|" '
             f"+ getwirestartpointcoord({wire_id}) "
             f'+ "|" + getwireendpointcoord({wire_id}));')
+    # Родитель линии — для вердикта о подключении: у обычной линии (без
+    # ветвления) родителя нет, и портов она касается двумя; ветвь живёт на
+    # родителе и касается одного (живые замеры 08.10.2026).
+    for wire_id in wire_ids:
+        lines.append(
+            f'  writelnutf8(chk_f, "P|{wire_id}|" '
+            f"+ inttostr(getparentwireid({wire_id})));")
     for name, port_count in port_blocks:
         for index in range(port_count):
             lines.append(
-                f"  if getportwireid(getblockportid({name}, {index})) = 0 "
-                f'then begin writelnutf8(chk_f, "EMPTY|{name}|{index}"); '
-                f"end;")
+                f"  chk_w = getportwireid(getblockportid({name}, {index}));")
+            lines.append(
+                f'  if chk_w = 0 then writelnutf8(chk_f, "EMPTY|{name}|'
+                f'{index}");')
+            lines.append(
+                f'  if chk_w <> 0 then writelnutf8(chk_f, "LINK|{name}|'
+                f'{index}|" + inttostr(chk_w));')
     # `DONE` — признак полного отчёта: по нему вердикты «все прямые» и
     # «пустых портов нет» не выдаются по оборванному телу (находка ревью
     # 02.10.2026).
@@ -252,6 +264,16 @@ def check_model_layout() -> str:
     ширину шрифта COM не отдаёт); центры — на разметке 8 px (1 квадратик =
     8×8, стандарт 02.10.2026); пустые порты — `getportwireid`; связи
     «прямая / с изломом» — по координатам концов линий.
+
+    **Подключение линий.** Линия без ветвления (родитель = 0,
+    `getparentwireid`) обязана касаться двух портов — выхода источника и
+    входа приёмника; касается меньше — предупреждение: во вход, вероятно,
+    уже приходит другая линия (среда допускает две линии в один вход, а
+    `getportwireid` показывает лишь одну — живой замер 08.10.2026: линия
+    второго источника видна только со стороны своего выхода). Ветви
+    (родитель ≠ 0) законно касаются одного порта и не сигналят; направление
+    концов не различается — `getportinfo` в контуре этой сборки не
+    компилируется (замер 08.10.2026), и текст вердикта этого не утверждает.
 
     **Проверка идёт контуром страницы и сдвигает модельное время** — как
     `step`: порты и концы линий через COM не читаются, их отдают функции
@@ -379,6 +401,12 @@ def check_model_layout() -> str:
     unparsed: List[str] = []
     unparsed_total = 0
     done = False
+    #: Линия → родитель (`getparentwireid`): у обычной линии 0, у ветви — id
+    #: родительской. Нужен вердикту «линия касается меньше двух портов».
+    parents: Dict[int, int] = {}
+    #: Линия → сколько портов её видят (`getportwireid`) и где первый из них.
+    link_counts: Dict[int, int] = {}
+    link_where: Dict[int, str] = {}
     data, _truncated, error = sandbox.load_result_file(
         str(report_path), sandbox.MAX_OUTPUT_BYTES,
         sandbox.MISSING_RESULT_FILE)
@@ -391,6 +419,18 @@ def check_model_layout() -> str:
             parts = line.split("|")
             if parts[0] == "EMPTY" and len(parts) == 3:
                 empty_ports.append(f"{parts[1]}[{parts[2]}]")
+            elif parts[0] == "P" and len(parts) == 3:
+                try:
+                    parents[int(parts[1])] = int(parts[2])
+                except ValueError:
+                    continue
+            elif parts[0] == "LINK" and len(parts) == 4:
+                try:
+                    wid = int(parts[3])
+                except ValueError:
+                    continue
+                link_counts[wid] = link_counts.get(wid, 0) + 1
+                link_where.setdefault(wid, f"{parts[1]}[{parts[2]}]")
             elif parts[0] == "W" and len(parts) == 4:
                 start = _parse_point(parts[2])
                 end = _parse_point(parts[3])
@@ -481,6 +521,37 @@ def check_model_layout() -> str:
             lines.append(f"Связи: {len(wire_ids)}, прямых {straight}{suffix}.")
         else:
             lines.append("Связи: линий на странице нет.")
+        if wire_ids and done and parents:
+            # Линия без родителя (не ветвь) обязана касаться двух портов:
+            # выхода источника и входа приёмника. Меньше двух — во вход,
+            # вероятно, уже приходит другая линия: среда это допускает, а
+            # `getportwireid` показывает лишь одну (живой замер 08.10.2026 —
+            # «две линии в один вход», линия второго источника видна только
+            # со стороны своего выхода). Направление концов здесь не
+            # различается: `getportinfo` в контуре этой сборки не компилируется
+            # (замер 08.10.2026), и текст вердикта этого и не утверждает.
+            lonely = [
+                (wid, f"id={wid} (видна у "
+                      f"{link_where.get(wid, 'ни одного порта здешнего')}, "
+                      f"портов: {link_counts.get(wid, 0)})")
+                for wid, parent in sorted(parents.items())
+                if parent == 0 and link_counts.get(wid, 0) < 2]
+            if lonely:
+                shown = ", ".join(desc for _wid, desc in lonely[:MAX_REPORTED])
+                more = (f" (и ещё {len(lonely) - MAX_REPORTED})"
+                        if len(lonely) > MAX_REPORTED else "")
+                caveat = (" Часть блоков пропущена (см. ниже) — сигнал может "
+                          "быть неполон." if port_skipped else "")
+                lines.append(
+                    f"ВНИМАНИЕ: линии без ветвления, касающиеся меньше двух "
+                    f"портов: {shown}{more}. У обычной линии два конца; "
+                    f"вероятная причина — во вход уже приходит другая линия "
+                    f"(среда допускает две линии в один вход) либо связь "
+                    f"повреждена. Проверьте выгрузкой (`export_model_text`, "
+                    f"поле `dst`)." + caveat)
+            else:
+                lines.append("Подключение линий: у каждой линии без "
+                             "ветвления видны оба конца.")
         if unparsed:
             more = (f" (и ещё {unparsed_total - MAX_REPORTED})"
                     if unparsed_total > MAX_REPORTED else "")
