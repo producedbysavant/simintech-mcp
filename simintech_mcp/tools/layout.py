@@ -176,13 +176,16 @@ def _rect_of(points_text: str, size: "tuple[float, float]") -> \
     return (cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
 
 
-def _model_frame(page: Page) -> "tuple[float, float, float, float] | None":
+def model_frame(page: Page) -> "tuple[float, float, float, float] | None":
     """Рамка модели: объединение габаритов блоков страницы.
 
     Считается по тем же данным, что и метрика наложений: центр из `Points`
     (первая точка — центр блока), размер — `get_size`. Подписи
     (`NON_BLOCK_CLASSES`) пропускаются: их карточка 60x40 накрывает блок и
     растянула бы рамку. `None` — ни одного блока с читаемыми габаритами.
+
+    Имя без подчёркивания — точка входа и для соседнего модуля
+    (`save_screenshot` считает по ней кадр режимов `hires`/`zoom`).
     """
     left = top = None
     right = bottom = None
@@ -983,7 +986,7 @@ def apply_fit_view(canvas_w: float = CANVAS_W,
     """
     project = session.ensure_project()
     page = project.get_main_page()
-    frame = _model_frame(page)
+    frame = model_frame(page)
     if frame is None:
         raise ToolError(
             "На странице нет блоков с читаемыми габаритами — подгонять кадр "
