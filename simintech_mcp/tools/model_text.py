@@ -25,6 +25,7 @@ COM API не отдаёт ни концов линий, ни иерархии к
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -35,6 +36,7 @@ from simintech_api.model_operations import (
 )
 from simintech_api.script_probe import (
     OUTCOME_MODEL_NOT_RUNNING,
+    OUTCOME_NOT_COMPILED,
     ContourOutcome,
 )
 
@@ -271,6 +273,34 @@ def _trace_note(before: Optional[int], after: Optional[int]) -> str:
             f"`layout_place` без аргументов расставит блоки и проложит линии.")
 
 
+def _duplicate_record_names(model_text: str) -> List[Tuple[str, int]]:
+    """Имена записей текста, встречающиеся больше одного раза: (имя, число).
+
+    Записи модели — поля record-литерала (`Имя: ( … )`). Среда **не
+    компилирует повтор имени записи**: текст с двумя `Wire:` отвергается
+    целиком (живой замер 08.10.2026 — исход not-compiled, ни один объект не
+    создан), и ошибка видна только в окне редактора SimInTech. При этом дубли
+    порождает и сама среда: `export_model_text` печатает ветви под одним
+    автоименем (`MBTYWire` ×N), так что круг «выгрузка → импорт» спотыкается
+    об это штатно.
+
+    Повтор имени в **разных** субмоделях этим сканом тоже считается — потому
+    находка идёт «первой причиной к проверке» при not-compiled, а не
+    приговором: текст — не наш формат, и полный разбор его грамматики
+    сознательно не делается (см. докстринг инструмента). Замер 08.10.2026:
+    две субмодели, в каждой запись `pin1`, — импорт **прошёл**; повтор в
+    одной записи (два `Wire` на верхнем уровне) — not-compiled.
+    """
+    counts: Dict[str, int] = {}
+    for line in model_text.splitlines():
+        match = re.match(r"\s*([A-Za-z_][\w]*)\s*:\s*\(", line)
+        if match:
+            name = match.group(1)
+            counts[name] = counts.get(name, 0) + 1
+    return sorted(((name, count) for name, count in counts.items() if count > 1),
+                  key=lambda item: (-item[1], item[0]))
+
+
 @mcp.tool()
 @runtime.com_threaded(mutates_project=True)
 def import_model_text(model_text: str) -> str:
@@ -357,12 +387,35 @@ def import_model_text(model_text: str) -> str:
             "текст модели пуст: собирать нечего. Пустой текст — не «ничего не "
             "сделает»: он означает, что на стороне клиента содержимое потеряно, "
             "и молчание здесь скрыло бы это.")
+    dups = _duplicate_record_names(model_text)
     wires_before = _wire_count()
     before = object_names()
     outcome, restored = run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
-    refuse_contour_failure(outcome, failed="сборка модели")
+    try:
+        refuse_contour_failure(
+            outcome, failed="сборка модели",
+            aborted_hint=("Часть объектов могла создаться до обрыва — "
+                          "сверьте `list_blocks`/`list_wires`; прежний "
+                          "скрипт страницы возвращён."))
+    except ToolError as exc:
+        # Диагноз not-compiled — самый дорогой: текст ошибки виден только в
+        # окне редактора SimInTech. Повтор имени записи — единственная
+        # причина, которую можно назвать по тексту, и частая на круге
+        # «выгрузка → импорт» (среда печатает ветви одним автоименем).
+        if outcome.kind == OUTCOME_NOT_COMPILED and dups:
+            names = ", ".join(f"`{name}` ({count}×)" for name, count in dups[:3])
+            more = f" и ещё {len(dups) - 3}" if len(dups) > 3 else ""
+            raise ToolError(
+                f"{exc} Возможная причина названа: в тексте повторяются "
+                f"имена записей — {names}{more}. Повтор имени записи среда "
+                f"не компилирует (первая причина к проверке при "
+                f"not-compiled); уникализируйте имена, поправив и ссылки "
+                f"`src=\"<имя>:0\"` — за образец возьмите выгрузку свежего "
+                f"проекта."
+            ) from exc
+        raise
     after = object_names()
     wires_after = _wire_count()
     return (
