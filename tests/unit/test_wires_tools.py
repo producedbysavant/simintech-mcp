@@ -205,7 +205,7 @@ def _branch_project():
 async def test_connect_branch_creates_and_reports_node(monkeypatch, tmp_path):
     """Успех: ветвь создана, узел K+1 и родитель названы, реестр пополнен."""
     project, _src, _dst = _branch_project()
-    bridge = _branch_bridge(["created=777 parent=555 node=1"])
+    bridge = _branch_bridge(["created=777 parent=555 node=1 nodecount=1"])
     _install_contour(monkeypatch, tmp_path, project, bridge)
     saved = list(session.WIRES)
     try:
@@ -215,6 +215,8 @@ async def test_connect_branch_creates_and_reports_node(monkeypatch, tmp_path):
         assert "Ветвь создана: k_0[0] → kx_1[0]" in text
         assert "wire=777" in text and "узел 1" in text
         assert "родитель 555" in text
+        # Один родитель и одна ветвь — две линии в узле: правило не задето.
+        assert "ВНИМАНИЕ" not in text
         assert project.get_main_page().activations >= 1, (
             "контурный прогон без активной страницы")
         assert any(w[0].id == 777 for w in session.WIRES), \
@@ -227,7 +229,7 @@ async def test_connect_branch_creates_and_reports_node(monkeypatch, tmp_path):
 async def test_connect_branch_body_passes_point_index(monkeypatch, tmp_path):
     """Точка и порты доезжают до тела: createwire получает K как есть."""
     project, _src, _dst = _branch_project()
-    bridge = _branch_bridge(["created=777 parent=555 node=3"])
+    bridge = _branch_bridge(["created=777 parent=555 node=3 nodecount=1"])
     _install_contour(monkeypatch, tmp_path, project, bridge)
     saved = list(session.WIRES)
     try:
@@ -250,10 +252,72 @@ async def test_connect_branch_body_passes_point_index(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_connect_branch_body_counts_node_branches(monkeypatch, tmp_path):
+    """Тело перебирает линии и считает ветви того же узла — `nodecount=`.
+
+    Пустые сегменты (конец «0+0i») из счёта исключаются: без фильтра узел
+    из трёх ветвей дал бы пять линий вместо четырёх (живой замер 08.10.2026).
+    """
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=1 nodecount=1"])
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1"}))
+
+        assert "getobjcount(contid)" in bridge.body
+        assert "getparentwirenodeindex(objid) = node" in bridge.body
+        assert 'getwireendpointcoord(objid) <> "0+0i"' in bridge.body
+        assert "nodecount=" in bridge.body
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_flags_crowded_node(monkeypatch, tmp_path):
+    """Три ветви в узле — четыре линии: правило «≤3», цепочка вместо грозди."""
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=1 nodecount=3"])
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1"}))
+
+        assert "линий в узле: 4" in text
+        assert "цепочкой" in text
+        assert "audit_routing" in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
+async def test_connect_branch_plus_of_three_lines_is_quiet(monkeypatch,
+                                                           tmp_path):
+    """Две ветви в узле — три линии, «плюс» из 4 лучей: примечания нет.
+
+    Уточнение владельца 08.10.2026: сквозная линия у узла одна, поэтому три
+    линии — это норма, а не переполнение.
+    """
+    project, _src, _dst = _branch_project()
+    bridge = _branch_bridge(["created=777 parent=555 node=1 nodecount=2"])
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+    saved = list(session.WIRES)
+    try:
+        text = _tool_text(await mcp.call_tool(
+            "connect_branch", {"src": "k_0", "dst": "kx_1"}))
+
+        assert "ВНИМАНИЕ" not in text
+    finally:
+        session.WIRES[:] = saved
+
+
+@pytest.mark.anyio
 async def test_connect_branch_notes_node_mismatch(monkeypatch, tmp_path):
     """K=0, узел не 1 — точка недостижима: строгое примечание."""
     project, _src, _dst = _branch_project()
-    bridge = _branch_bridge(["created=777 parent=555 node=4"])
+    bridge = _branch_bridge(["created=777 parent=555 node=4 nodecount=1"])
     _install_contour(monkeypatch, tmp_path, project, bridge)
     saved = list(session.WIRES)
     try:
@@ -276,7 +340,7 @@ async def test_connect_branch_mismatch_on_k_gt0_hedges(monkeypatch, tmp_path):
     корректную ветвь.
     """
     project, _src, _dst = _branch_project()
-    bridge = _branch_bridge(["created=777 parent=555 node=1"])
+    bridge = _branch_bridge(["created=777 parent=555 node=1 nodecount=1"])
     _install_contour(monkeypatch, tmp_path, project, bridge)
     saved = list(session.WIRES)
     try:
@@ -393,7 +457,7 @@ async def test_connect_branch_rejects_bad_port_before_contour(monkeypatch,
                                                               tmp_path):
     """Несуществующий порт — отказ через COM ДО контура (диагноз, не фолбэк)."""
     project, _src, _dst = _branch_project()
-    bridge = _branch_bridge(["created=1 parent=1 node=1"])
+    bridge = _branch_bridge(["created=1 parent=1 node=1 nodecount=1"])
     _install_contour(monkeypatch, tmp_path, project, bridge)
 
     text = await _error("connect_branch",
