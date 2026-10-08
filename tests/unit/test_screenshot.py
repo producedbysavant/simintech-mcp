@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -44,10 +45,18 @@ class _FakeProject:
 
 
 def _shot_path_from_body(body: str) -> str:
-    """Путь снимка — первый строковый литерал тела."""
-    start = body.index('"') + 1
-    end = body.index('"', start)
-    return body[start:end]
+    """Путь снимка — первый литерал `savescreenshot("…", …)`."""
+    return _shot_paths_from_body(body)[0]
+
+
+def _shot_paths_from_body(body: str) -> "list[str]":
+    """Все пути снимков тела — по одному на `savescreenshot(...)`.
+
+    Пачка плиток несёт несколько снимков в одном теле (`build_tile_batch_body`),
+    и фейк обязан писать файл на каждый — иначе тест не заметил бы
+    потерянную плитку.
+    """
+    return re.findall(r'savescreenshot\("([^"]+)"', body)
 
 
 class _BridgeShoots:
@@ -66,7 +75,8 @@ class _BridgeShoots:
         type(self).body = body
         ran = (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING)
         if type(self).outcome.kind in ran and "savescreenshot(" in body:
-            Path(_shot_path_from_body(body)).write_bytes(type(self).payload)
+            for path in _shot_paths_from_body(body):
+                Path(path).write_bytes(type(self).payload)
         return PageRunResult(outcome=type(self).outcome,
                              restored_script=type(self).restored)
 
@@ -141,7 +151,7 @@ async def test_save_screenshot_refuses_when_file_missing(monkeypatch, tmp_path):
 
     text = await _error("save_screenshot", {})
 
-    assert "файла снимка нет" in text
+    assert "файлов снимка нет" in text
 
 
 @pytest.mark.anyio
@@ -250,8 +260,8 @@ class _BridgeWindow:
         if "getformbounds" in body and type(self).bounds_replies:
             lines = type(self).bounds_replies.pop(0)
         if "savescreenshot(" in body:
-            Path(_shot_path_from_body(body)).write_bytes(
-                _png_payload(*type(self).shot_size))
+            for path in _shot_paths_from_body(body):
+                Path(path).write_bytes(_png_payload(*type(self).shot_size))
         return PageRunResult(
             outcome=ContourOutcome(kind=type(self).outcome.kind, lines=lines),
             restored_script=type(self).restored)
@@ -291,14 +301,12 @@ async def test_hires_raises_window_and_restores_it(monkeypatch, tmp_path):
     """`hires` поднимает окно, снимает на его полотне и возвращает границы.
 
     Порядок обязателен: подъём — один прогон (в нём же читаются границы
-    «до»), фактические границы — следующий (подъём асинхронен), снимок —
-    после них, возврат — в конце.
+    «до»), снимок — следующий (подъём асинхронен, клиент предсказывается по
+    замеренной поправке), возврат — в конце. Всего 3–4 прогона: таймаут
+    COM-вызова 120 с, прогон — десятки секунд.
     """
     _install_windowed(monkeypatch, tmp_path, _tall_blocks(0.0, 100.0))
-    _BridgeWindow.bounds_replies = [
-        ["before=1920,137,1920,903", "raised"],
-        ["bounds=0,0,4000,1100"],
-    ]
+    _BridgeWindow.bounds_replies = [["before=1920,137,1920,903", "raised"]]
 
     text = _text(await mcp.call_tool("save_screenshot", {"hires": True}))
 
@@ -311,7 +319,7 @@ async def test_hires_raises_window_and_restores_it(monkeypatch, tmp_path):
     assert "Окно возвращено: 1920x903" in text
 
     shots = _shot_bodies()
-    assert len(shots) == 1, "hires — один файл"
+    assert len(shots) == 1, "hires — один файл и один прогон съёмки"
     assert "createmodel" in shots[0], "кадр и снимок — одним прогоном"
     shot = _shot_path_from_body(shots[0])
     assert Path(shot).is_file()
@@ -345,10 +353,7 @@ async def test_hires_recomputes_frame_on_actual_canvas(monkeypatch, tmp_path):
     снимок вышел 2048×700 — кадр обязан догнать факт, а не молчать.
     """
     _install_windowed(monkeypatch, tmp_path, _tall_blocks(0.0, 100.0))
-    _BridgeWindow.bounds_replies = [
-        ["before=1920,137,1920,903", "raised"],
-        ["bounds=0,0,4000,1100"],
-    ]
+    _BridgeWindow.bounds_replies = [["before=1920,137,1920,903", "raised"]]
     _BridgeWindow.shot_size = (2048, 700)
 
     text = _text(await mcp.call_tool("save_screenshot", {"hires": True}))
@@ -361,31 +366,47 @@ async def test_hires_recomputes_frame_on_actual_canvas(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 async def test_zoom_shoots_tile_grid(monkeypatch, tmp_path):
-    """`zoom` снимает плитками: файлов по числу плиток, кадр — своим телом.
+    """`zoom` снимает плитками: файлов по числу плиток, все — за один прогон.
 
     Схема высотой ~2040 при клиенте 900 и масштабе 1 требует трёх плиток
-    (шаг с перекрытием); каждая — свой прогон с кадром и снимком.
+    (шаг с перекрытием); пачка «кадр + снимок» на каждую едет одним телом —
+    иначе прогонов было бы шесть и вызов упирался бы в таймаут COM.
     """
     _install_windowed(monkeypatch, tmp_path, _tall_blocks(0.0, 2000.0))
-    _BridgeWindow.bounds_replies = [
-        ["before=1920,137,1920,903", "raised"],
-        ["bounds=0,0,4000,1100"],
-    ]
+    _BridgeWindow.bounds_replies = [["before=1920,137,1920,903", "raised"]]
 
     text = _text(await mcp.call_tool("save_screenshot", {"zoom": 1.0}))
 
     shots = _shot_bodies()
-    assert len(shots) == 3, f"плиток не три: {len(shots)}"
-    for body in shots:
-        assert "createmodel" in body, "кадр плитки обязан ехать с её снимком"
+    assert len(shots) == 1, "три плитки обязаны уехать одной пачкой"
+    body = shots[0]
+    assert body.count("createmodel(") == 3, "кадров не три"
+    assert body.count("savescreenshot(") == 3
+    assert "model1" in body and "model3" in body, \
+        "имена записей обязаны быть уникальными (повтор — not-compiled)"
     assert "плитками: 3 шт." in text
     assert "масштаб 1" in text
-    for body in shots:
-        assert Path(_shot_path_from_body(body)).is_file()
+    for chunk in body.split("savescreenshot(")[1:]:
+        path = chunk.split('"')[1]
+        assert Path(path).is_file(), f"плитка не создана: {path}"
     joined = "\n".join(_BridgeWindow.bodies)
     assert "setformbounds(1920, 137, 1920, 903)" in joined, \
         "окно не возвращено после плиток"
-    assert _BridgeWindow.bounds_replies == [], "не все границы прочитаны"
+
+
+@pytest.mark.anyio
+async def test_zoom_splits_batches(monkeypatch, tmp_path):
+    """Плиток больше пачки — снимаются двумя телами, а не семью прогонами."""
+    _install_windowed(monkeypatch, tmp_path, _tall_blocks(0.0, 5400.0))
+    _BridgeWindow.bounds_replies = [["before=1920,137,1920,903", "raised"]]
+
+    text = _text(await mcp.call_tool("save_screenshot", {"zoom": 1.0}))
+
+    shots = _shot_bodies()
+    assert len(shots) == 2, f"пачек не две: {len(shots)}"
+    assert shots[0].count("savescreenshot(") == 6, "первая пачка не полная"
+    assert shots[1].count("savescreenshot(") == 1, "во второй — остаток"
+    assert "плитками: 7 шт." in text
 
 
 @pytest.mark.anyio
@@ -396,10 +417,7 @@ async def test_zoom_refuses_too_many_tiles(monkeypatch, tmp_path):
     его раздутым (`finally`).
     """
     _install_windowed(monkeypatch, tmp_path, _tall_blocks(0.0, 40000.0))
-    _BridgeWindow.bounds_replies = [
-        ["before=1920,137,1920,903", "raised"],
-        ["bounds=0,0,4000,1100"],
-    ]
+    _BridgeWindow.bounds_replies = [["before=1920,137,1920,903", "raised"]]
 
     text = await _error("save_screenshot", {"zoom": 1.0})
 

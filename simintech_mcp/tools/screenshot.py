@@ -90,10 +90,13 @@ WINDOW_CHROME_H = 200
 _BOUNDS_VARS = "var L: integer, T: integer, W: integer, H: integer;\n"
 
 #: Плитки режима `zoom`: перекрытие соседних (единицы модели) — стык без
-#: разрыва на границе; предел числа — каждая плитка это прогон контура
-#: (~20 с), и десятки прогонов недопустимы.
+#: разрыва на границе; плиток за один прогон контура — пачка
+#: (`build_tile_batch_body`); предел общего числа — прогон длится десятки
+#: секунд, а таймаут COM-вызова 120 с, поэтому весь zoom — до четырёх
+#: прогонов: подъём окна, две пачки, возврат окна.
 TILE_MARGIN = 32.0
-MAX_TILES = 16
+TILES_PER_RUN = 6
+MAX_TILES = 12
 
 #: Границы параметра `zoom`: ниже — плитка мельче полезного (подписи слились
 #: бы, проще взять `hires`), выше — пиксель дороже единицы модели вчетверо;
@@ -149,34 +152,32 @@ def build_screenshot_body(path: str, type_code: int) -> str:
     return f'savescreenshot("{_path_literal(path)}", {type_code});'
 
 
-def build_framed_shot_body(path: str, type_code: int,
-                           view_x: float, view_y: float,
-                           scale: float) -> str:
-    """Тело контура: кадр страницы и снимок — **одним прогоном**.
+def build_tile_batch_body(tiles: "Sequence[Tuple[str, float, float, float]]",
+                          type_code: int) -> str:
+    """Тело контура: пачка плиток — кадр и снимок каждой, **один прогон**.
 
-    Замер 08.10.2026: PNG после такого тела байт-в-байт совпал со снимком,
-    снятым после отдельной записи кадра (`md5` тот же) — кадр успевает
-    примениться до `savescreenshot` внутри прогона, и плитка стоит один
-    прогон контура, а не два. Семантика свойств — как у `fit_geometry`:
-    экран = модель × масштаб + смещение.
+    Замеры 08.10.2026: PNG после тела «кадр + снимок» байт-в-байт совпал со
+    снимком после отдельной записи кадра (`md5` тот же) — кадр применяется
+    до `savescreenshot` внутри прогона; а тело с двумя парами
+    «`createmodel` + `savescreenshot`» создало **два разных файла** за один
+    прогон. Отсюда пачка: каждый прогон контура занимает десятки секунд, и
+    съёмка плиток по одной упиралась бы в таймаут COM-вызова (живой случай
+    08.10.2026: zoom из шести прогонов ≈ 120 с — ровно на границе).
+
+    Имена записей уникальны (`model1`, `model2`, …): повтор имени записи в
+    тексте отвергается компилятором (замер 08.10.2026). Семантика свойств —
+    как у `fit_geometry`: экран = модель × масштаб + смещение.
     """
-    return (
-        "const model : ("
-        f"x_center = {view_x:g}, y_center = {view_y:g}, "
-        f"x_scale = {scale:g}, y_scale = {scale:g});\n"
-        "createmodel(getcurrentprojectid, model);\n"
-        f'savescreenshot("{_path_literal(path)}", {type_code});'
-    )
-
-
-def _bounds_body() -> str:
-    """Тело контура: прочитать границы окна — строка `bounds=L,T,W,H`."""
-    return (
-        _BOUNDS_VARS
-        + "getformbounds(L, T, W, H);\n"
-        + 'writelnutf8(fid, "bounds=" + inttostr(L) + "," + inttostr(T)'
-          ' + "," + inttostr(W) + "," + inttostr(H));'
-    )
+    lines: List[str] = []
+    for index, (path, view_x, view_y, scale) in enumerate(tiles, start=1):
+        lines.append(
+            f"const model{index} : ("
+            f"x_center = {view_x:g}, y_center = {view_y:g}, "
+            f"x_scale = {scale:g}, y_scale = {scale:g});\n"
+            f"createmodel(getcurrentprojectid, model{index});\n"
+            f'savescreenshot("{_path_literal(path)}", {type_code});'
+        )
+    return "\n".join(lines)
 
 
 def _raise_window_body() -> str:
@@ -277,15 +278,17 @@ def _frame_or_error() -> "Tuple[float, float, float, float]":
     return frame
 
 
-def _shoot_into(path: str, body: str) -> ContourOutcome:
-    """Сделать снимок телом контура; файл обязан появиться."""
+def _shoot_batch(paths: "Sequence[str]", body: str) -> ContourOutcome:
+    """Сделать снимки телом контура; каждый файл обязан появиться."""
     outcome, _restored = run_contour(body, failed="снимок не сделан")
     refuse_contour_failure(outcome, failed="съёмка схемы")
     # Файла может не быть, даже если тело «отработало»: на неподходящем
     # типе savescreenshot молча ничего не создаёт (замер 03.10.2026, тип 0).
-    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+    missing = [path for path in paths
+               if not os.path.isfile(path) or os.path.getsize(path) == 0]
+    if missing:
         raise ToolError(
-            f"скрипт отработал, но файла снимка нет: {path}. "
+            f"скрипт отработал, но файлов снимка нет: {', '.join(missing)}. "
             "savescreenshot ничего не записал — проверьте поддержку "
             "формата в этой сборке."
         )
@@ -320,14 +323,6 @@ def _raise_window() -> "Tuple[bool, Tuple[int, int, int, int]]":
     return raised, before
 
 
-def _read_window_bounds() -> "Optional[Tuple[int, int, int, int]]":
-    """Фактические границы окна — после подъёма (он асинхронен)."""
-    outcome, _restored = run_contour(
-        _bounds_body(), failed="прочитать границы окна не удалось")
-    refuse_contour_failure(outcome, failed="чтение границ окна")
-    return _bounds_from_lines(outcome.lines, "bounds=")
-
-
 def _restore_window(bounds: "Tuple[int, int, int, int]") -> "Optional[str]":
     """Вернуть окну прежние границы; `None` — удалось, иначе текст отказа.
 
@@ -355,26 +350,33 @@ def _large_shot(root: str, key: str, type_code: int, fit: bool,
                 zoom: Optional[float]) -> str:
     """Режимы `hires`/`zoom`: поднять окно, снять, вернуть окно прежним.
 
-    Подъём виден со следующего прогона (асинхронность, замер 08.10.2026),
-    поэтому фактические границы читаются отдельным прогоном: кадр и плитки
-    обязаны считаться по фактической клиентской области, а не по заказанной
-    (окно может клампнуться на другой машине).
+    Каждый прогон контура занимает десятки секунд (живой замер 08.10.2026:
+    ~20 с на проект в 168 блоков), а таймаут COM-вызова — 120 с, поэтому
+    число прогонов посчитано: подъём (1), съёмка (1–2 пачки, см.
+    `TILES_PER_RUN`), возврат окна (1) — всего 3–4. Чтения фактических
+    границ после подъёма здесь нет намеренно: оно стоило бы ещё прогон, а
+    его роль берёт проверка полотна по готовому PNG (`_hires_shot`) и
+    предсказание клиента по замеренной поправке −32/−200.
     """
     raised, before = _raise_window()
     if raised:
-        after = _read_window_bounds() or before
+        # Подъём заказан до 4000x1100 (замеренный потолок высоты окна),
+        # поэтому клиент предсказывается точно; кламп на другой машине
+        # поймает проверка полотна по PNG — она дешевле прогона чтения.
+        client_w = float(HIRES_WINDOW_W - WINDOW_BORDER_W)
+        client_h = float(HIRES_WINDOW_H - WINDOW_CHROME_H)
     else:
-        after = before
-    client_w, client_h = _client_of(after)
+        client_w, client_h = _client_of(before)
 
     notes: List[str] = []
     if raised:
         notes.append(
-            f"Окно под снимок: {before[2]}x{before[3]} → {after[2]}x"
-            f"{after[3]}; клиент (полотно) — {client_w:.0f}x{client_h:.0f}.")
+            f"Окно под снимок: {before[2]}x{before[3]} → {HIRES_WINDOW_W}x"
+            f"{HIRES_WINDOW_H} (заказано); клиент (полотно) — "
+            f"{client_w:.0f}x{client_h:.0f}.")
     else:
         notes.append(
-            f"Окно не меньше целевого: {after[2]}x{after[3]}; клиент "
+            f"Окно не меньше целевого: {before[2]}x{before[3]}; клиент "
             f"(полотно) — {client_w:.0f}x{client_h:.0f}.")
 
     try:
@@ -401,14 +403,14 @@ def _hires_shot(root: str, key: str, type_code: int, fit: bool,
     path = os.path.join(root, fresh_name(f"screenshot.{key}"))
     note = ""
     if not fit:
-        outcome = _shoot_into(path, build_screenshot_body(path, type_code))
+        outcome = _shoot_batch([path], build_screenshot_body(path, type_code))
     else:
         from .layout import fit_geometry
 
         frame = _frame_or_error()
         scale, view_x, view_y = fit_geometry(frame, client_w, client_h)
-        outcome = _shoot_into(path, build_framed_shot_body(
-            path, type_code, view_x, view_y, scale))
+        outcome = _shoot_batch([path], build_tile_batch_body(
+            [(path, view_x, view_y, scale)], type_code))
         actual = _png_size(path) if key == "png" else None
         if actual is not None and (abs(actual[0] - client_w) > 1.0
                                    or abs(actual[1] - client_h) > 1.0):
@@ -417,8 +419,8 @@ def _hires_shot(root: str, key: str, type_code: int, fit: bool,
             # прогоне). Один повтор, дальше расхождению веры нет.
             scale, view_x, view_y = fit_geometry(
                 frame, float(actual[0]), float(actual[1]))
-            outcome = _shoot_into(path, build_framed_shot_body(
-                path, type_code, view_x, view_y, scale))
+            outcome = _shoot_batch([path], build_tile_batch_body(
+                [(path, view_x, view_y, scale)], type_code))
             actual = _png_size(path) or actual
             note = (f"\nПолотно — {actual[0]}x{actual[1]} (клиент окна "
                     "разошёлся с предсказанным): кадр пересчитан, снимок "
@@ -431,11 +433,14 @@ def _hires_shot(root: str, key: str, type_code: int, fit: bool,
 
 def _tiles_shot(root: str, key: str, type_code: int, zoom: float,
                 client_w: float, client_h: float) -> str:
-    """Плитки: сетка по рамке модели, каждая плитка — свой прогон и файл.
+    """Плитки: сетка по рамке модели, пачками по `TILES_PER_RUN` за прогон.
 
-    Плитка снимается одним прогоном (`build_framed_shot_body` — кадр и
-    снимок в одном теле, замер 08.10.2026: md5 совпал со снимком после
-    отдельной записи кадра).
+    Плитки снимаются пачками: один прогон контура занимает десятки секунд
+    (живой замер 08.10.2026: ~20 с на проект в 168 блоков), и съёмка по
+    одной упирается в таймаут COM-вызова — zoom из шести прогонов занял
+    ≈120 с, ровно лимит. Тело с несколькими парами
+    «`createmodel` + `savescreenshot`» создаёт все файлы пачки за один
+    прогон (замер там же: два разных файла, `md5` разные).
     """
     frame = _frame_or_error()
     width = frame[2] - frame[0]
@@ -450,26 +455,45 @@ def _tiles_shot(root: str, key: str, type_code: int, zoom: float,
             "мельче станет), либо снимайте по `hires` одним полотном.")
     span_x = _tile_span(client_w, zoom)
     span_y = _tile_span(client_h, zoom)
-    parts: List[str] = []
-    outcome: Optional[ContourOutcome] = None
+    plan: "List[Tuple[int, str, float, float]]" = []
     for index, (cx, cy) in enumerate(centers, start=1):
-        path = os.path.join(root, fresh_name(
-            f"screenshot-{index}of{len(centers)}.{key}"))
-        view_x = client_w / 2.0 - cx * zoom
-        view_y = client_h / 2.0 - cy * zoom
-        outcome = _shoot_into(path, build_framed_shot_body(
-            path, type_code, view_x, view_y, zoom))
-        parts.append(
-            f"  {index}/{len(centers)}: x {cx - span_x / 2:.0f}.."
-            f"{cx + span_x / 2:.0f}, y {cy - span_y / 2:.0f}.."
-            f"{cy + span_y / 2:.0f} ед. модели — {path} "
-            f"({os.path.getsize(path)} байт)")
+        plan.append((index, os.path.join(root, fresh_name(
+            f"screenshot-{index}of{len(centers)}.{key}")), cx, cy))
+
+    outcome: Optional[ContourOutcome] = None
+    for start in range(0, len(plan), TILES_PER_RUN):
+        batch = plan[start:start + TILES_PER_RUN]
+        body = build_tile_batch_body(
+            [(path, client_w / 2.0 - cx * zoom, client_h / 2.0 - cy * zoom,
+              zoom)
+             for _index, path, cx, cy in batch], type_code)
+        outcome = _shoot_batch([path for _index, path, _cx, _cy in batch],
+                               body)
+
+    canvas_note = ""
+    if key == "png":
+        sizes = [_png_size(path) for _index, path, _cx, _cy in plan]
+        real = [size for size in sizes if size is not None]
+        if any(abs(size[0] - client_w) > 1.0
+               or abs(size[1] - client_h) > 1.0 for size in real):
+            canvas_note = (f"\nВНИМАНИЕ: полотно плиток — {real[0][0]}x"
+                           f"{real[0][1]} вместо предсказанного {client_w:.0f}x"
+                           f"{client_h:.0f} (клиент окна клампнулся) — края "
+                           "плиток могли сместиться, проверьте снимки.")
+
+    parts = [
+        f"  {index}/{len(plan)}: x {cx - span_x / 2:.0f}.."
+        f"{cx + span_x / 2:.0f}, y {cy - span_y / 2:.0f}.."
+        f"{cy + span_y / 2:.0f} ед. модели — {path} "
+        f"({os.path.getsize(path)} байт)"
+        for index, path, cx, cy in plan
+    ]
     tail = ("\nКадр страницы оставлен на последней плитке — вписанный вид "
-            "вернёт `fit_view`." if len(centers) > 1 else "")
+            "вернёт `fit_view`." if len(plan) > 1 else "")
     return (f"{_shot_head(outcome) if outcome else ''}Снимок схемы ({key}) "
-            f"плитками: {len(centers)} шт., масштаб {zoom:g} (плитка — "
+            f"плитками: {len(plan)} шт., масштаб {zoom:g} (плитка — "
             f"{span_x:.0f}x{span_y:.0f} ед. модели).\n"
-            + "\n".join(parts) + tail)
+            + "\n".join(parts) + canvas_note + tail)
 
 
 @mcp.tool()
@@ -521,11 +545,15 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True,
       какие окна застали замеры).
     * `zoom=1.0` — снимок крупным планом плитками: сетка по рамке модели в
       заданном масштабе (1 — 1:1, как вид в GUI), каждая плитка своим файлом
-      `screenshot-<N>of<M>.<формат>` с перекрытием на стыках; предел — 16
-      плиток (каждая — прогон контура). Живой замер: схема 1672×2368 — три
-      плитки 1696×900, все подписи читаются. Кадр `fit` в этом режиме не
-      участвует, а после съёмки кадр страницы остаётся на последней плитке
-      (вписанный вид вернёт `fit_view`).
+      `screenshot-<N>of<M>.<формат>` с перекрытием на стыках; плитки
+      снимаются пачками (до 6 за прогон), всего до 12 — вызов укладывается в
+      четыре прогона контура, а прогон длится десятки секунд (таймаут
+      COM-вызова — 120 с; живой случай 08.10.2026: zoom по одной плитке за
+      прогон занял ≈120 с и оборвался по таймауту, хотя снимки создались).
+      Живой замер: схема 1672×2368 — три плитки 1696×900, все подписи
+      читаются. Кадр `fit` в этом режиме не участвует, а после съёмки кадр
+      страницы остаётся на последней плитке (вписанный вид вернёт
+      `fit_view`).
 
     SVG — вектор: полотно его не ограничивает, поэтому `hires`/`zoom` к нему
     неприменимы (отказ с подсказкой). Крупный растр из SVG рендерится вне
@@ -594,7 +622,7 @@ def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True,
     def _shoot() -> "Tuple[ContourOutcome, str]":
         """Сделать снимок и вернуть (исход контура, путь файла)."""
         path = os.path.join(root, fresh_name(f"screenshot.{key}"))
-        return (_shoot_into(path, build_screenshot_body(path, type_code)),
+        return (_shoot_batch([path], build_screenshot_body(path, type_code)),
                 path)
 
     outcome, shot_path = _shoot()
