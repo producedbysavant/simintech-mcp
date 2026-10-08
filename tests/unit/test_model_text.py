@@ -280,6 +280,85 @@ async def test_import_model_text_refuses_empty_text(monkeypatch, tmp_path):
     assert "пуст" in message.lower()
 
 
+def test_duplicate_record_names_counts_repeats():
+    """Скан дублей: считаются повторённые имена записей, без ложных срабатываний."""
+    from simintech_mcp.tools.model_text import _duplicate_record_names
+
+    text = ('k0: (type = "Константа"),\n'
+            'Wire: (type = "wire"),\n'
+            'sub: (type = "Субмодель", subsystem:\n'
+            ' (\n'
+            '   pin1: (type = "Порт входа"),\n'
+            '   Wire: (type = "wire")\n'
+            ' )),\n'
+            'kx1: (type = "Усилитель")')
+
+    assert _duplicate_record_names(text) == [("Wire", 2)]
+    assert _duplicate_record_names("k0: (type = \"Константа\")") == []
+
+
+@pytest.mark.anyio
+async def test_import_model_text_names_duplicates_on_not_compiled(
+        monkeypatch, tmp_path):
+    """Дубли имён записей — названная причина not-compiled (текст ошибки скрыт).
+
+    Повтор имени записи среда не компилирует (живой замер 08.10.2026: текст с
+    двумя `Wire:` — not-compiled, ни один объект не создан), а ошибка видна
+    только в окне редактора SimInTech; скан текста — единственный доступный
+    диагноз. Частый источник дублей — сама выгрузка (ветви под одним
+    автоименем).
+    """
+
+    class _Broken(_BridgeRunsContour):
+        outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED, lines=[])
+
+    _install(monkeypatch, tmp_path, _Broken)
+
+    message = await _error("import_model_text", {"model_text": (
+        'k0: (type = "Константа"),\n'
+        'Wire: (type = "wire"),\n'
+        'Wire: (type = "wire")')})
+
+    assert "Wire" in message and "2×" in message
+    assert "повторяются имена записей" in message
+    assert "не собралось" in message, "каноническая формулировка потеряна"
+
+
+@pytest.mark.anyio
+async def test_import_model_text_keeps_generic_refusal_without_duplicates(
+        monkeypatch, tmp_path):
+    """Без дублей отказ остаётся каноническим — без надуманной причины."""
+
+    class _Broken(_BridgeRunsContour):
+        outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED, lines=[])
+
+    _install(monkeypatch, tmp_path, _Broken)
+
+    message = await _error("import_model_text", {"model_text": (
+        'k0: (type = "Константа")')})
+
+    assert "не собралось" in message
+    assert "повторяются имена" not in message
+
+
+@pytest.mark.anyio
+async def test_import_model_text_aborted_hint_names_partial_creation(
+        monkeypatch, tmp_path):
+    """Обрыв на исполнении: «часть объектов могла создаться» — не «не изменён»."""
+    from simintech_api.script_probe import OUTCOME_ABORTED
+
+    class _Broken(_BridgeRunsContour):
+        outcome = ContourOutcome(kind=OUTCOME_ABORTED, lines=["x();"])
+
+    _install(monkeypatch, tmp_path, _Broken)
+
+    message = await _error("import_model_text", {"model_text": (
+        'k0: (type = "Константа")')})
+
+    assert "Часть объектов могла создаться" in message
+    assert "list_blocks" in message
+
+
 @pytest.mark.anyio
 async def test_import_model_text_builds_body_and_reports_changes(
         monkeypatch, tmp_path):
