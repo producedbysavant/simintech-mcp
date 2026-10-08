@@ -23,10 +23,10 @@ import os
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from types import FunctionType
-from typing import Any, Callable, Dict, Tuple, cast
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple, cast
 
 from fastmcp.exceptions import ToolError
 
@@ -64,6 +64,100 @@ COM_THREAD_MARK = "_simintech_com_threaded"
 #: забытый флаг вернул бы слепые ответы — ровно дыра issue #18 (импорт ушёл
 #: не в тот проект, а ответ не назвал, куда именно).
 MUTATES_PROJECT_MARK = "_simintech_mutates_project"
+
+#: Метка спасательного инструмента (`com_threaded(rescue=True)`): в состоянии
+#: «COM-поток занят зависшим вызовом» ему **не** отвечают мгновенным отказом —
+#: он встаёт в очередь и выполнится, когда поток освободится. Единственный
+#: такой инструмент — `disconnect`: им и сбрасывается зависшая сессия.
+RESCUE_MARK = "_simintech_rescue"
+
+
+class _StuckCall(NamedTuple):
+    """Зависший COM-вызов: таймаут сработал, а future не завершился.
+
+    Поток один (`_COM_EXECUTOR`, max_workers=1): пока он занят, каждый
+    следующий вызов стоял бы в очереди и падал бы по своему 120-с таймауту —
+    «залипание» каскадом (репорт fdd002 08.10.2026: `add_block` залип на
+    120 с, mmain мёртв). Помним такой вызов и отказываем следующим
+    **немедленно**, не занимая очередь.
+    """
+
+    tool: str
+    at: float
+    future: "Future[Any]"
+
+
+#: Текущий зависший вызов (последний, чей таймаут сработал). Снимается, когда
+#: его future всё-таки завершился: следующий вызов увидит `done()` и пойдёт
+#: как обычно.
+_stuck_call: "Optional[_StuckCall]" = None
+_STUCK_LOCK = threading.Lock()
+
+
+def _mmain_state() -> str:
+    """Живость процесса mmain сессии — **вне COM** (зависший поток не трогаем).
+
+    `get_mmain_pids` библиотеки — wmic/tasklist/PowerShell, без COM, поэтому
+    работает и при занятом потоке. Незнание не выдаётся за «мёртв»: если PID
+    сессии или список процессов недоступны, возвращается пустая строка.
+    """
+    try:
+        from . import session as _session
+        client = getattr(_session, "_client", None)
+        pid = None if client is None else getattr(client, "session_pid", None)
+    except Exception:                                         # noqa: BLE001
+        pid = None
+    try:
+        from simintech_api.utils.processes import get_mmain_pids
+        live = get_mmain_pids()
+    except Exception:                                         # noqa: BLE001
+        return ""
+    if pid is None or int(pid) <= 0:
+        if live:
+            return f"Живые процессы mmain.exe: {sorted(live)}."
+        return "Ни одного процесса mmain.exe не найдено."
+    if int(pid) in live:
+        return (f"Процесс сессии mmain.exe (PID {pid}) жив, но COM не "
+                f"отвечает.")
+    return (f"Процесс сессии mmain.exe (PID {pid}) уже завершён — "
+            f"перезапускать его не нужно: `disconnect` сбросит мёртвое "
+            f"соединение, следующий вызов поднимет новый процесс.")
+
+
+def _stuck_gate(tool: str, *, rescue: bool) -> "Optional[str]":
+    """Мгновенный отказ, если COM-поток занят зависшим вызовом; иначе `None`.
+
+    Спасательный (`rescue=True`) мгновенного отказа не получает — он должен
+    дойти до очереди: иначе сессию нечем сбросить.
+    """
+    global _stuck_call
+    with _STUCK_LOCK:
+        stuck = _stuck_call
+        if stuck is None:
+            return None
+        if stuck.future.done():
+            _stuck_call = None
+            return None
+    if rescue:
+        return None
+    waited = time.monotonic() - stuck.at
+    state = _mmain_state()
+    tail = f" {state}" if state else ""
+    return (f"COM-поток занят: вызов `{stuck.tool}` не ответил за "
+            f"{COM_CALL_TIMEOUT:.0f} с (висит уже {waited:.0f} с) — mmain не "
+            f"отвечает.{tail} Перезапустите mmain.exe, вызовите `disconnect` "
+            f"и повторите: до этого `{tool}` и другие вызовы отказывают "
+            f"сразу, 120-с очередь не копится (`disconnect` исключён — он "
+            f"выполнится, когда поток освободится).")
+
+
+def _remember_stuck(tool: str, future: "Future[Any]") -> None:
+    """Запомнить зависший вызов (future уже завершился — не запоминать)."""
+    global _stuck_call
+    if future.done():
+        return
+    with _STUCK_LOCK:
+        _stuck_call = _StuckCall(tool=tool, at=time.monotonic(), future=future)
 
 
 def _call_guarded(fn: Callable[..., Any], args: Tuple[Any, ...],
@@ -214,7 +308,8 @@ def _instrumented(fn: Callable[..., Any],
 
 
 def com_threaded(fn: Callable[..., Any] | None = None, *,
-                 mutates_project: bool = False) -> Callable[..., Any]:
+                 mutates_project: bool = False,
+                 rescue: bool = False) -> Callable[..., Any]:
     """Выполнить инструмент в выделенном COM-потоке.
 
     Делает три вещи, каждая из которых обязательна:
@@ -229,6 +324,16 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
     сессии, и новый мутирующий инструмент иначе молча выпал бы из контракта
     (issue #18 — импорт ушёл не в тот проект, а ответ не назвал, куда).
 
+    **Зависший вызов не копит очередь** (репорт fdd002 08.10.2026: `add_block`
+    залип на 120 с, mmain мёртв). Поток один, и без памяти о зависшем вызове
+    каждый следующий клиентский вызов стоял бы в очереди и падал бы по
+    своему 120-с таймауту — каскадом. Поэтому зависший future запоминается
+    (`_remember_stuck`): последующие вызовы получают **мгновенный** отказ с
+    диагнозом живости процесса mmain (`_mmain_state`, вне COM), пока future
+    не завершится. Спасательный инструмент (`rescue=True`, это `disconnect`)
+    мгновенного отказа не получает: он встаёт в очередь и выполняется, когда
+    поток освободится, — иначе зависшую сессию нечем сбросить.
+
     Ограничение таймаута: сам COM-вызов в потоке **не прерывается**, поэтому
     после срабатывания таймаута работа может ещё продолжаться — измерено на
     SimInTech64 (2026-09-17): `step(count=1000)` при `COM_CALL_TIMEOUT=1.0`
@@ -241,26 +346,36 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
     единственный выделенный поток, и один перезапуск `mmain.exe` без
     переподключения ничего не даёт: флаг `connected` не отражает живучесть COM,
     и повтор подхватил бы тот же мёртвый прокси, пока не вызван `disconnect`.
-    Поэтому рецепт в тексте отказа называет оба шага.
+    Поэтому рецепт в тексте отказа называет оба шага, а диагноз добавляет,
+    жив ли процесс сессии (завершён — перезапускать нечего).
     """
     if fn is None:
-        # Декоратор вызван с флагом (`@com_threaded(mutates_project=True)`):
+        # Декоратор вызван с флагами (`@com_threaded(mutates_project=True)`):
         # вернуть обёртку, которая дождётся самой функции.
         return functools.partial(com_threaded,
-                                 mutates_project=mutates_project)
+                                 mutates_project=mutates_project,
+                                 rescue=rescue)
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
+        refusal = _stuck_gate(fn.__name__, rescue=rescue)
+        if refusal is not None:
+            raise ToolError(refusal)
         future = _COM_EXECUTOR.submit(_call_guarded, fn, args, kwargs)
         try:
             result = future.result(timeout=COM_CALL_TIMEOUT)
         except FutureTimeout as exc:
+            _remember_stuck(fn.__name__, future)
+            state = _mmain_state()
+            tail = f" {state}" if state else ""
             raise ToolError(
                 f"COM-вызов не ответил за {COM_CALL_TIMEOUT:.0f} с: SimInTech "
-                f"занят или завис. Перезапустите mmain.exe, затем вызовите "
-                f"`disconnect` (он сбросит мёртвое соединение и текущий "
-                f"проект) и повторите: без `disconnect` повтор подхватил бы "
-                f"тот же нерабочий COM-прокси, и отказывали бы все "
-                f"COM-инструменты, а не только этот."
+                f"занят или завис.{tail} Перезапустите mmain.exe, затем "
+                f"вызовите `disconnect` (он сбросит мёртвое соединение и "
+                f"текущий проект) и повторите: без `disconnect` повтор "
+                f"подхватил бы тот же нерабочий COM-прокси, и отказывали бы "
+                f"все COM-инструменты, а не только этот. Если вызов не "
+                f"вернулся вовсе, следующие будут отказывать сразу — очередь "
+                f"120-с таймаутов не копится (`disconnect` исключён)."
             ) from exc
         if mutates_project:
             result = _append_mutation_note(result)
@@ -270,6 +385,8 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
     setattr(wrapper, COM_THREAD_MARK, True)
     if mutates_project:
         setattr(wrapper, MUTATES_PROJECT_MARK, True)
+    if rescue:
+        setattr(wrapper, RESCUE_MARK, True)
     return wrapper
 
 
