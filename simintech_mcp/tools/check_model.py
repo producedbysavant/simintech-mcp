@@ -45,6 +45,7 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
+from ..rules import MAX_NODE_LINES
 from ..geometry import (
     CHAR_WIDTH_ESTIMATE, STUB, WIRE_PITCH, channel_width, collinear_overlap,
     cut_sizes, overlaps, predicted_polyline, proper_crossing, rect_of,
@@ -218,6 +219,15 @@ def _check_script(report_path: Path, port_blocks: List[Tuple[str, int]],
         lines.append(
             f'  writelnutf8(chk_f, "P|{wire_id}|" '
             f"+ inttostr(getparentwireid({wire_id})));")
+    # Узел ветви — для проверки «в узел не больше 3 линий» (правило
+    # владельца; живые замеры 08.10.2026: три `connect_branch` от одного
+    # выхода сели в один узел родителя — четыре линии в точке). Родитель
+    # берётся из P-строки: второй вызов `getparentwireid` на ту же линию не
+    # нужен (находка ревью 08.10.2026 — #136 и #138 дублировали его).
+    for wire_id in wire_ids:
+        lines.append(
+            f'  writelnutf8(chk_f, "N|{wire_id}|" '
+            f"+ inttostr(getparentwirenodeindex({wire_id})));")
     for name, port_count in port_blocks:
         for index in range(port_count):
             lines.append(
@@ -668,6 +678,36 @@ def _port_order_violations(
     return violations
 
 
+def node_overflow(
+        nodes: "Dict[Tuple[int, int], List[int]]"
+) -> "List[Tuple[int, int, List[int]]]":
+    """Узлы, где сходится больше `MAX_NODE_LINES` линий: (родитель, узел, ветви).
+
+    В узле сходятся родительская линия и её ветви; `nodes` держит только
+    ветви, поэтому линий в узле — `1 + len(branches)`: три ветви от одной
+    точки — это родитель и три ветви, четыре линии, больше трёх (живой замер
+    08.10.2026 — три `connect_branch` от одного выхода).
+
+    «Наклонные подводы» и «врезка ветви в середину сегмента» этим счётом не
+    ловятся: маршрут родителя среда не отдаёт, а наклонные лучи «звезды» —
+    свойство отрисовки перегруженного узла, не данных (замер 07.10.2026) —
+    и текст вердикта этого не утверждает.
+    """
+    crowded: List[Tuple[int, int, List[int]]] = []
+    for (parent, node), branches in sorted(nodes.items()):
+        if 1 + len(branches) > MAX_NODE_LINES:
+            crowded.append((parent, node, sorted(branches)))
+    return crowded
+
+
+def _node_caption(parent: int, node: int, branches: List[int]) -> str:
+    """Строка перегруженного узла для вердикта: родитель, точка, ветви."""
+    shown = ", ".join(str(w) for w in branches[:5])
+    more = f", и ещё {len(branches) - 5}" if len(branches) > 5 else ""
+    return (f"узел линии {parent}, точка {node}: линий {1 + len(branches)} "
+            f"(родитель и ветви {shown}{more})")
+
+
 def _columns(
         rects: "List[Tuple[str, tuple[float, float, float, float]]]"
 ) -> "Tuple[Dict[str, int], Dict[int, float], Dict[int, float]]":
@@ -929,6 +969,62 @@ def _parse_wire_report(
     return wires if complete else None
 
 
+def _parse_parents(text: str) -> "Dict[int, int]":
+    """Родитель каждой линии из `P`-строк отчёта (`getparentwireid`).
+
+    У обычной линии 0, у ветви — id родительской. Общий вход и для вердикта
+    о подключении, и для проверки узлов: `P`-строка одна на линию, второго
+    вызова `getparentwireid` на неё не делается (находка ревью 08.10.2026 —
+    #136 и #138 дублировали вызов).
+    """
+    parents: "Dict[int, int]" = {}
+    for line in text.splitlines():
+        parts = line.split("|")
+        if parts[0] != "P" or len(parts) != 3:
+            continue
+        try:
+            parents[int(parts[1])] = int(parts[2])
+        except ValueError:
+            continue
+    return parents
+
+
+def _parse_node_branches(
+        text: str,
+        wires: "Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]]",
+        parents: "Dict[int, int]"
+) -> "Dict[Tuple[int, int], List[int]]":
+    """Ветви по узлам: (родитель, узел) → id ветвей.
+
+    Родитель — из `P`-строк (`_parse_parents`), узел — из `N`-строк
+    (`getparentwirenodeindex`, у среды с единицы; живой замер 08.10.2026:
+    три `connect_branch` от одного выхода получили узел 1 одного родителя).
+    Пустой сегмент — пара, которую среда рождает вместе с ветвью (конец
+    `0+0i`, замер 08.10.2026) — пропускается: он не линия в узле, и без
+    этого счёт «сколько линий в узле» был бы завышен на него навсегда.
+    Линия, чей конец не разобран (`W`-строки нет), тоже пропускается:
+    отличить её пустой сегмент нечем.
+    """
+    nodes: "Dict[Tuple[int, int], List[int]]" = {}
+    for line in text.splitlines():
+        parts = line.split("|")
+        if parts[0] != "N" or len(parts) != 3:
+            continue
+        try:
+            wire_id = int(parts[1])
+            node = int(parts[2])
+        except ValueError:
+            continue
+        parent = parents.get(wire_id, 0)
+        if parent == 0 or node == 0:
+            continue
+        ends = wires.get(wire_id)
+        if ends is None or ends[1] == (0.0, 0.0):
+            continue
+        nodes.setdefault((parent, node), []).append(wire_id)
+    return nodes
+
+
 @mcp.tool()
 @runtime.com_threaded
 def audit_routing() -> str:
@@ -939,6 +1035,20 @@ def audit_routing() -> str:
     с перекрытием дольше `WIRE_PITCH` (8 px — один квадратик разметки),
     попадание линии во внутренность чужого габарита, порядок входов на
     левой стене блока.
+
+    **Узлы ветвления.** У ветви `getparentwireid` даёт родительскую линию,
+    `getparentwirenodeindex` — номер её точки данных, куда ветвь села (у
+    среды с единицы; живой замер 08.10.2026: три `connect_branch` от одного
+    выхода сели в один узел — четыре линии в точке). В узел сходятся родитель
+    и его ветви: больше трёх линий — предупреждение. Правило владельца
+    (07.10.2026): «в 1 точку не может приходить больше 3 линий»; при этом
+    три линии могут сойтись «плюсом» из четырёх лучей — сквозная линия у
+    узла одна (уточнение владельца 08.10.2026). Пустые сегменты — пары,
+    которые среда рождает вместе с ветвью (конец `0+0i`), — в счёт не идут:
+    они невидимы. «Врезка ветви в середину сегмента» и «наклонный подвод к
+    пину» по данным не различаются и не проверяются: маршрут родителя среда
+    не отдаёт, а наклонные лучи «звезды» — свойство отрисовки перегруженного
+    узла, не данных (замер 07.10.2026).
 
     Обратные связи (приёмник левее источника) не предсказываются — их
     маршрут ведёт среда, — и попадают в отдельный список «не проверено»,
@@ -1000,7 +1110,8 @@ def audit_routing() -> str:
             f"отчёт контура не прочитан: {error} — концы линий не получены, "
             f"маршруты не проверены.")
 
-    wires = _parse_wire_report(data.decode("utf-8", errors="replace"))
+    report_text = data.decode("utf-8", errors="replace")
+    wires = _parse_wire_report(report_text)
     if wires is None:
         raise ToolError(
             "отчёт контура оборван: признака `DONE` в нём нет — концы линий "
@@ -1012,6 +1123,8 @@ def audit_routing() -> str:
             "маршруты не проверены.")
 
     problems = audit_routing_segments(rects, wires)
+    node_crowd = node_overflow(
+        _parse_node_branches(report_text, wires, _parse_parents(report_text)))
     checked = len(wires) - len(problems.unchecked)
     lines = [
         "Аудит маршрутов линий (читаемость, ТЗ п.1).",
@@ -1020,10 +1133,11 @@ def audit_routing() -> str:
     ]
     dirty = bool(problems.crossings or problems.coincident
                  or problems.block_hits or problems.port_order
-                 or problems.channel_overflow)
+                 or problems.channel_overflow or node_crowd)
     if not dirty:
         lines.append("Вердикт: readable — пересечений, общего трека, "
-                     "попаданий в габариты и нарушений порядка входов нет.")
+                     "попаданий в габариты, нарушений порядка входов и "
+                     "перегруженных узлов нет.")
     else:
         lines.append("Вердикт: next — сначала layout_place, затем повторный "
                      "аудит.")
@@ -1034,13 +1148,23 @@ def audit_routing() -> str:
                  [f"{a}—{b}" for a, b in problems.crossings]),
                 ("общий трек с перекрытием",
                  [f"{a}—{b}" for a, b in problems.coincident]),
-                ("порядок входов нарушен", list(problems.port_order))):
+                ("порядок входов нарушен", list(problems.port_order)),
+                ("в узел приходит больше 3 линий",
+                 [_node_caption(parent, node, branches)
+                  for parent, node, branches in node_crowd])):
             if not items:
                 continue
             shown = ", ".join(items[:MAX_REPORTED])
             more = (f" (и ещё {len(items) - MAX_REPORTED})"
                     if len(items) > MAX_REPORTED else "")
             lines.append(f"ВНИМАНИЕ: {title}: {shown}{more}.")
+        if node_crowd:
+            lines.append(
+                "Правило: в узел не больше 3 линий — сквозная линия у узла "
+                "одна, поэтому 3 линии могут сойтись «плюсом» из 4 лучей "
+                "(уточнение владельца 08.10.2026). Повторные ветви стройте "
+                "цепочкой: родителем следующей пусть будет предыдущая ветвь "
+                "(рецепт — в докстринге `connect_branch`).")
     if problems.channel_overflow:
         shown = "; ".join(
             f"зазор {gap}: cut={cut}, связей {count}, "

@@ -16,6 +16,7 @@ from simintech_api.script_probe import OUTCOME_ABORTED
 
 from .. import runtime, session
 from ..app import mcp
+from ..rules import MAX_NODE_LINES
 from .blocks import (
     block_by_id,
     missing_block,
@@ -34,6 +35,50 @@ from .page_script import (
 #: человека, а их на модели может быть по одному на каждую ветвь (живой замер
 #: 08.10.2026); полное число приходит рядом.
 MAX_REPORTED_ORPHANS = 3
+
+#: Тип объекта «линия связи» в переборе страницы (`getobjtypeid`): замер
+#: 07.10.2026 — линии дают 101, блоки 100, субмодели 102.
+WIRE_TYPE_ID = 101
+
+#: Признак пустого сегмента ветвления (линия без приёмника) — конечная точка
+#: `0+0i`. Сравнение **строковое**: живой замер 08.10.2026 — числовое `= 0`
+#: пустышку не отличает (все линии дают ноль).
+EMPTY_WIRE_END = "0+0i"
+
+
+def _wire_scan_lines(indent: str, *, on_empty: Optional[List[str]] = None,
+                     on_live: Optional[List[str]] = None) -> List[str]:
+    """Каркас перебора линий страницы для тела контура; строки — с `indent`.
+
+    Общий для снятия (скан пустых сегментов — `_disconnect_wire_body`) и
+    ветвления (подсчёт ветвей узла — `_connect_branch_body`): тип линии и
+    признак пустого конца — замеры, и две копии строк разошлись бы при
+    уточнении (находка ревью 08.10.2026). `on_empty` исполняется для пустого
+    сегмента (снятие называет его `orphan=`), `on_live` — для живой линии
+    (ветвление считает ветви того же узла); не переданная секция не
+    генерируется — пустого `begin … end` в теле не остаётся.
+    """
+    body: List[str] = [
+        "contid = getcurrentcontainer;",
+        "objcnt = getobjcount(contid);",
+        "for(obj_idx = 1, objcnt) begin",
+        "  objid = getobj(contid, obj_idx);",
+        f"  if getobjtypeid(objid) = {WIRE_TYPE_ID} then begin",
+    ]
+    if on_empty is not None:
+        body.append(
+            f'    if getwireendpointcoord(objid) = "{EMPTY_WIRE_END}" then'
+            f" begin")
+        body += [f"      {line}" for line in on_empty]
+        body.append("    end;")
+    if on_live is not None:
+        body.append(
+            f'    if getwireendpointcoord(objid) <> "{EMPTY_WIRE_END}" then'
+            f" begin")
+        body += [f"      {line}" for line in on_live]
+        body.append("    end;")
+    body += ["  end;", "end;"]
+    return [indent + line for line in body]
 
 
 @mcp.tool()
@@ -152,15 +197,13 @@ def _disconnect_wire_body(src_id: int, out_index: int,
         "    end;\n"
         "  end;\n"
         "end;\n"
-        "contid = getcurrentcontainer;\n"
-        "objcnt = getobjcount(contid);\n"
-        "for(obj_idx = 1, objcnt) begin\n"
-        "  objid = getobj(contid, obj_idx);\n"
-        "  if getobjtypeid(objid) = 101 then begin\n"
-        '    if getwireendpointcoord(objid) = "0+0i" then writelnutf8(fid, '
-        '"orphan=" + inttostr(objid) + " " + getobjname(objid));\n'
-        "  end;\n"
-        "end;\n"
+        # Скан пустых сегментов ветвления — общий каркас `_wire_scan_lines`
+        # (одна копия с `_connect_branch_body`, находка ревью 08.10.2026).
+        + "".join(line + "\n" for line in _wire_scan_lines(
+            "", on_empty=[
+                'writelnutf8(fid, "orphan=" + inttostr(objid) + " " '
+                '+ getobjname(objid));',
+            ]))
     )
 
 
@@ -564,8 +607,25 @@ def _connect_branch_body(src_id: int, out_index: int, dst_id: int,
         "        if new <> 0 then begin",
         "          node = getparentwirenodeindex(new);",
         "          par = getparentwireid(new);",
+        # Ветви в том же узле — подсчёт для правила «не больше 3 линий в узле»
+        # (`rules.MAX_NODE_LINES`): перебор линий страницы — общим каркасом
+        # `_wire_scan_lines` (одна копия со сканом снятия, находка ревью
+        # 08.10.2026), ветви того же родителя и узла — здесь. Пустые сегменты
+        # (конец `0+0i` — невидимая пара, которую среда рождает вместе с
+        # ветвью) отсекает каркас: живой замер 08.10.2026 — без фильтра узел
+        # из трёх ветвей выглядел бы как пять линий вместо четырёх.
+        "          incnt = 0;",
+        *_wire_scan_lines(
+            "          ",
+            on_live=[
+                "if getparentwireid(objid) = par then begin",
+                "  if getparentwirenodeindex(objid) = node then"
+                " incnt = incnt + 1;",
+                "end;",
+            ]),
         '          writelnutf8(fid, "created=" + inttostr(new) + " parent=" +'
-        ' inttostr(par) + " node=" + inttostr(node));',
+        ' inttostr(par) + " node=" + inttostr(node) + " nodecount=" +'
+        " inttostr(incnt));",
         "        end;",
         "      end;",
         "    end;",
@@ -582,6 +642,7 @@ class _BranchReply(NamedTuple):
     wire_id: int = 0          # id новой ветви (created)
     parent_id: int = 0        # родительская линия по среде
     node: int = 0             # узел на родительской линии (у среды с единицы)
+    node_count: int = 0       # ветвей в том узле, включая созданную
     points: int = 0           # cnt из err=point-range
 
 
@@ -590,11 +651,12 @@ def _parse_branch_reply(lines: List[str]) -> _BranchReply:
     for raw in lines:
         line = raw.strip()
         match = re.match(
-            r"created=(\d+) parent=(\d+) node=(\d+)$", line)
+            r"created=(\d+) parent=(\d+) node=(\d+) nodecount=(\d+)$", line)
         if match:
             return _BranchReply(
                 kind="created", wire_id=int(match.group(1)),
-                parent_id=int(match.group(2)), node=int(match.group(3)))
+                parent_id=int(match.group(2)), node=int(match.group(3)),
+                node_count=int(match.group(4)))
         match = re.match(r"err=point-range cnt=(\d+)$", line)
         if match:
             return _BranchReply(kind="point-range", points=int(match.group(1)))
@@ -642,6 +704,20 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
     видна как `src = "<имя родителя>:K"` — имя родителя автоимя
     (`MBTYWire…`), не id; инструмент выгрузку не снимает: контурный прогон
     дорог (≈20 с — перезапуск расчёта), а узел приходит из того же прогона.
+
+    **Узел и правило «не больше 3 линий».** Ветвь садится в узел родителя —
+    точку его маршрута; повторный вызов с тем же `point_index=0` садится в
+    **ту же точку** (живой замер 08.10.2026: три `connect_branch` от одного
+    выхода — родитель и три ветви, четыре линии в одном узле). Правило
+    владельца (замечание 07.10.2026): в одну точку не больше 3 линий. При
+    этом три линии — не ошибка: сквозная линия у узла одна (даёт два
+    противоположных луча), и «плюс» из четырёх лучей — это как раз три
+    линии (уточнение владельца 08.10.2026). Переполнение узел называет
+    примечанием в ответе; перечень перегруженных узлов по всей странице —
+    `audit_routing`. Повторные подключения стройте цепочкой: каждая
+    следующая ветвь — от точки-излома предыдущей (родителем следующей
+    ставьте предыдущую ветвь — импортом текста, `src = "<имя ветви>:0"`;
+    живой замер 08.10.2026: среда даёт новой ветви собственную точку).
 
     **Один контурный прогон** на вызов. Страница блока активируется перед
     прогоном: скрипт ставится в текущую страницу (находка ревью PR #94);
@@ -756,6 +832,20 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
                 f"замеру K=0 отвечал бы узел {point_index + 1} — "
                 f"соответствие для K>0 не измерено. Сверьте адрес ветви "
                 f"выгрузкой (`export_model_text`: `src = \"<родитель>:K\"`).")
+    if reply.node_count + 1 > MAX_NODE_LINES:
+        # Линий в узле = родитель + ветви; нарушение правила владельца —
+        # ветвь уже создана, и откатывать её в этом прогоне нельзя (серия
+        # «createmodel + removeprimitiv» роняет расчёт — дефект вендора),
+        # поэтому честное примечание вместо молчания (живой замер 08.10.2026:
+        # три `connect_branch` от одного выхода — четыре линии в узле).
+        notes.append(
+            f"ВНИМАНИЕ: линий в узле: {reply.node_count + 1} — больше "
+            f"{MAX_NODE_LINES} (родитель и ветви). Правило: в одну точку не "
+            f"больше {MAX_NODE_LINES} линий; 3 линии могут сойтись «плюсом» "
+            f"из 4 лучей — это норма, а не эта ветвь. Повторные подключения "
+            f"стройте цепочкой: родителем следующей пусть будет предыдущая "
+            f"ветвь (импортом текста, `src = \"<имя ветви>:0\"` — см. "
+            f"докстринг). Перечень таких узлов по странице — `audit_routing`.")
     tail = "\n" + "\n".join(notes) if notes else ""
     return (f"Ветвь создана: {src_name}[{out_index}] → {dst_name}[{in_index}] "
             f"(wire={reply.wire_id}; родитель {reply.parent_id}, узел "

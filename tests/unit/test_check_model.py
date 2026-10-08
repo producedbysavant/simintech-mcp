@@ -405,6 +405,22 @@ async def test_check_connection_unchecked_on_skipped_blocks(
     assert "касающиеся меньше двух" not in text
 
 
+def test_check_script_queries_parent_and_node():
+    """Тело контура называет узел каждой линии; родитель — из P-строки.
+
+    Без `getparentwirenodeindex` аудит не отличит «звезду» (четыре линии в
+    точке) от «плюса» (три линии) — живой замер 08.10.2026: три
+    `connect_branch` от одного выхода сели в один узел родителя. Родитель
+    читается один раз (`getparentwireid` в P-строке): второй вызов на ту же
+    линию не нужен (находка ревью 08.10.2026 — #136 и #138 дублировали его).
+    """
+    body = cm._check_script(Path("report.txt"), [], [3])
+
+    assert '"N|3|"' in body
+    assert "getparentwirenodeindex(3)" in body
+    assert body.count("getparentwireid(3)") == 1
+
+
 @pytest.mark.anyio
 async def test_check_names_not_compiled_contour(monkeypatch, tmp_path):
     """Не собравшийся контур: причина названа, а не «всё хорошо»."""
@@ -748,6 +764,84 @@ def test_audit_wire_report_requires_done():
     assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\nDONE\n") == {
         1: ((0.0, 0.0), (100.0, 0.0))}
     assert cm._parse_wire_report("W|1|(0+0i)|(100+0i)\n") is None
+
+
+def test_node_overflow_flags_star_but_not_plus():
+    """Четыре линии в узле — «звезда»; три («плюс» из 4 лучей) — норма.
+
+    Уточнение владельца 08.10.2026: сквозная линия у узла одна, поэтому три
+    линии могут сойтись «плюсом» и переполнением не считаются. Линий в узле
+    — родитель плюс ветви.
+    """
+    assert cm.node_overflow({(10, 1): [21, 22]}) == []
+    assert cm.node_overflow({(10, 1): [21, 22, 23]}) == [(10, 1, [21, 22, 23])]
+
+
+def test_parse_node_branches_skips_empty_segments():
+    """Ветви группируются по (родитель из P-строки, узел из N-строки).
+
+    Пустой сегмент — пара, которую среда рождает вместе с ветвью (конец
+    «0+0i», замер 08.10.2026): без фильтра узел из трёх ветвей выглядел бы
+    перегруженным, хотя четвёртой линии в нём нет. Линия без разобранного
+    конца тоже пропускается: пустой сегмент среди неё не отличить.
+    """
+    wires = {5: ((16.0, 0.0), (284.0, 0.0)),
+             6: ((16.0, 0.0), (284.0, 200.0)),
+             7: ((16.0, 0.0), (0.0, 0.0))}
+    parents = {5: 0, 6: 5, 7: 5, 8: 5}
+    text = "N|5|0\nN|6|1\nN|7|1\nN|8|1\nDONE\n"
+
+    assert cm._parse_node_branches(text, wires, parents) == {(5, 1): [6]}
+    # Родитель — из P-строки, а не из N: без него линия не привязывается.
+    assert cm._parse_node_branches(text, wires, {}) == {}
+
+
+def test_parse_parents_reads_p_lines():
+    """`P`-строки: родитель каждой линии (0 — обычная, id — ветвь)."""
+    text = "P|5|0\nP|6|5\nbroken\nP|x|1\nDONE\n"
+
+    assert cm._parse_parents(text) == {5: 0, 6: 5}
+
+
+@pytest.mark.anyio
+async def test_audit_routing_flags_crowded_node(monkeypatch, tmp_path):
+    """Четыре линии в узле — ВНИМАНИЕ с родителем, точкой и ветвями."""
+    blocks = [_CheckBlock("k_0", center=(0, 0)),
+              _CheckBlock("kx_0", center=(200, 0))]
+    payload = ("W|5|16+0i|284+0i\n"
+               "W|6|16+0i|284+200i\n"
+               "W|7|16+0i|284+400i\n"
+               "W|8|16+0i|284+600i\n"
+               "P|5|0\nP|6|5\nP|7|5\nP|8|5\n"
+               "N|5|0\nN|6|1\nN|7|1\nN|8|1\n"
+               "DONE\n")
+    wires = [_FakeWire(wire_id) for wire_id in (5, 6, 7, 8)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires, payload=payload)
+
+    text = _text(await mcp.call_tool("audit_routing", {}))
+
+    assert "ВНИМАНИЕ: в узел приходит больше 3 линий" in text
+    assert "узел линии 5, точка 1: линий 4 (родитель и ветви 6, 7, 8)" in text
+    assert "цепочкой" in text
+
+
+@pytest.mark.anyio
+async def test_audit_routing_quiet_on_plus_node(monkeypatch, tmp_path):
+    """Три линии в узле («плюс») — переполнения нет: правило не задето."""
+    blocks = [_CheckBlock("k_0", center=(0, 0)),
+              _CheckBlock("kx_0", center=(200, 0))]
+    payload = ("W|5|16+0i|284+0i\n"
+               "W|6|16+0i|284+200i\n"
+               "W|7|16+0i|284+400i\n"
+               "P|5|0\nP|6|5\nP|7|5\n"
+               "N|5|0\nN|6|1\nN|7|1\n"
+               "DONE\n")
+    wires = [_FakeWire(wire_id) for wire_id in (5, 6, 7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires, payload=payload)
+
+    text = _text(await mcp.call_tool("audit_routing", {}))
+
+    assert "больше 3 линий" not in text
 
 
 def test_audit_routing_deduplicates_shared_pairs():
