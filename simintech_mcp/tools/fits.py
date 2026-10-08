@@ -20,13 +20,13 @@ from ..app import mcp
 from ..geometry import CHAR_WIDTH_ESTIMATE
 from .blocks import resolve_block
 from .check_model import read_port_names
-from .contour import (
+from .layout import first_point
+from .page_script import (
     activate_or_refuse,
     refuse_contour_failure,
     return_main_active,
-    run_contour_body,
+    run_contour,
 )
-from .layout import first_point
 from .model_text import page_export_text
 from .sizes import (
     PORT_ROW_HEIGHT,
@@ -239,8 +239,8 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     (находка ревью PR #122).
     """
     activate_or_refuse(page, action="габариты не записаны", where=where)
-    outcome = run_contour_body(_size_fixes_body(plan),
-                               failed="записать габариты не удалось")
+    outcome, _restored = run_contour(_size_fixes_body(plan),
+                                     failed="записать габариты не удалось")
     refuse_contour_failure(
         outcome, failed="габариты не записаны",
         unsure="габариты не подтверждены",

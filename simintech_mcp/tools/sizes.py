@@ -16,12 +16,8 @@ from simintech_api import Block
 from .. import runtime, session
 from ..app import mcp
 from .blocks import missing_block, resolve_block
-from .contour import (
-    activate_or_refuse,
-    refuse_contour_failure,
-    run_contour_body,
-)
 from .layout import normalize_page_wires
+from .page_script import activate_or_refuse, refuse_contour_failure, run_contour
 
 
 #: Предел размера блока в пикселях. Это не предел числа COM-вызовов, а
@@ -260,7 +256,7 @@ def set_block_size(block: str, width: float, height: float) -> str:
     activate_or_refuse(page, action="размер не записан")
     # Запись — контуром, в «Значение» (см. `_set_size_body`): COM-путь
     # `SetGraphBlockProp` кладёт габарит в «Формулу».
-    outcome = run_contour_body(
+    outcome, _restored = run_contour(
         _set_size_body(target.id, float(width), float(height)),
         failed="записать размер блока не удалось")
     refuse_contour_failure(

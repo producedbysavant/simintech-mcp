@@ -1,4 +1,4 @@
-"""Языковой слой: скрипт страницы и тела операций — через контур моста.
+"""Языковой слой и контурное ядро: скрипт страницы и тела операций.
 
 Инструменты поверх `ScriptBridge.run_page_script`: тело идёт в секцию
 `initialization` (только там разрешено создавать объекты), исход различается на
@@ -6,6 +6,15 @@
 изменениях собирается **здесь**: библиотека отдаёт `restored_script` и исход, а
 «сколько объектов стало» — это COM-чтение снаружи контура (спецификация §3.7,
 `simintech-code/docs/superpowers/specs/2026-09-29-language-contour.md`).
+
+**Контурное ядро — тоже здесь** (issue #123): `run_contour` — единственная
+точка рецепта «мост → `discard_result` → `ToolError` на `ScriptBridgeError`»,
+`refuse_contour_failure` — единственный маппер несделанных исходов,
+`activate_or_refuse`/`return_main_active` — активация страницы правки. Прежде
+это жило четырьмя копиями (здесь, в `contour.py`, в `model_text.run_contour` и
+инлайном в `screenshot`); копии расходились формулировками на одном состоянии
+среды, поэтому прежний разделяющий модуль `contour.py` слит сюда, а его
+потребители (связи, скрипт блока, размер, фиты) берут ядро отсюда.
 
 Отличие от `model_text.export_model_text`: там тело идёт под `if firststep then`
 (так работала проба), здесь — в `initialization`, как требует создание объектов.
@@ -16,7 +25,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
-from typing import Tuple
+from typing import Any, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
@@ -181,13 +190,26 @@ def discard_result(path: Path) -> None:
         pass
 
 
-def _run(body: str) -> Tuple[ContourOutcome, str]:
+def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     """Выполнить тело контуром: `(исход, прежний скрипт)`, либо отказ `ToolError`.
+
+    **Единственная точка рецепта** «мост → `discard_result` → `ToolError` на
+    `ScriptBridgeError`» (issue #123). Им живут и инструменты языкового слоя
+    (скрипт страницы, субмодель), и блочные (связи, скрипт блока, размер,
+    оба фита — через `contour.py` до его слияния сюда), и выгрузка/сборка
+    модели со снимком. Копии этого рецепта расходились формулировками: правка
+    текста отказа или порядка очистки, попав в одну, не доходила до остальных,
+    и инструменты отвечали по-разному на одно состояние среды.
 
     Отказ моста (`ScriptBridgeError`) означает, что состояние проекта
     неопределённо: тело могло не установиться, а могло и отработать. Поэтому он
     не превращается в исход, а выходит наружу — с объяснением, что проверить.
     Файл результата убирается на любом пути (см. `discard_result`).
+
+    `check_model.py` зовёт мост мимо этого рецепта **намеренно**: его прогон
+    кладёт отчёт в файл, который читается после прогона и не удаляется, а
+    исход не приговор, а строка отчёта — это отчётный протокол, а не
+    тело-правка.
     """
     path = result_path()
     try:
@@ -195,10 +217,10 @@ def _run(body: str) -> Tuple[ContourOutcome, str]:
     except ScriptBridgeError as exc:
         discard_result(path)
         raise ToolError(
-            f"выполнить скрипт страницы не удалось: {exc}. Тело идёт в секцию "
-            "`initialization`, поэтому расчёт должен сдвинуть модельное время: "
-            "проверьте, что модель считает — неподключённый вход останавливает "
-            "расчёт всей модели молча."
+            f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
+            "расчёт должен сдвинуть модельное время: проверьте, что модель "
+            "считает — неподключённый вход останавливает расчёт всей модели "
+            "молча."
         ) from exc
     discard_result(path)
     return run.outcome, run.restored_script
@@ -222,23 +244,46 @@ def describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
     return f"{what}: исход «{outcome.kind}»."
 
 
-def refuse_on_bad_outcome(outcome: ContourOutcome, *, action: str) -> None:
-    """Отказать, если тело не отработало: `not-compiled` и `aborted` — не успех.
+def refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
+                           unsure: Optional[str] = None,
+                           aborted_hint: str = "",
+                           section_note: str = "") -> None:
+    """Отказ по несделанному исходу контура — **единственный маппер** (issue #123).
 
-    Общий хелпер контурных инструментов (`export_model_text`,
-    `import_model_text`, `save_screenshot`): «не сделано» не имеет права
-    вернуться успехом, а последняя строка тела — единственный доступный
-    диагноз: ошибки компиляции среда через COM не отдаёт.
+    «Не сделано» не имеет права вернуться успехом, а последняя строка тела —
+    единственный доступный диагноз: ошибки компиляции среда через COM не
+    отдаёт. Прежде мапперов было два (`refuse_on_bad_outcome` у языкового слоя
+    и `refuse_contour_failure` у блочных инструментов), и они расходились
+    формулировками на одном и том же состоянии среды.
+
+    Подлежащие различаются и передаются вызывающим: `failed` («размер не
+    записан») — для «не собралось» и «не запускалось»; `unsure` — для обрыва,
+    когда «не сделано» утверждать нельзя (тело могло отработать до обрыва);
+    не задан — выводится из `failed` («… не выполнена»). `aborted_hint` — что
+    проверить после обрыва, `section_note` — уточнение после «тело не
+    запускалось» (у `remove_block` оно своё).
+
+    Прелюдии (чистка реестра по перечислению страницы) инструменты делают
+    **до** вызова: у `aborted` она своя у каждого. Успешные исходы
+    (`ok`/`model-not-running`) маппер пропускает — их описывает
+    `describe_outcome`.
     """
-    if outcome.kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
-        return
-    detail = (f", последняя строка тела: {outcome.lines[-1]!r}"
-              if outcome.lines else "")
-    raise ToolError(
-        f"{action} не выполнена: исход «{outcome.kind}»{detail}. Текст ошибки "
-        "компиляции — в окне сообщений редактора SimInTech: через COM он не "
-        "читается."
-    )
+    if outcome.kind == OUTCOME_NOT_COMPILED:
+        raise ToolError(
+            f"{failed}: тело не собралось (текст ошибки — в окне сообщений "
+            f"редактора SimInTech; через COM он не читается). Проект не "
+            f"изменён.")
+    who = unsure if unsure is not None else f"{failed} не выполнена"
+    if outcome.kind == OUTCOME_ABORTED:
+        detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
+                  if outcome.lines else "")
+        hint = f" {aborted_hint}" if aborted_hint else ""
+        raise ToolError(
+            f"{who}: тело оборвалось на исполнении.{detail}{hint}")
+    if outcome.kind == OUTCOME_SECTION_NOT_RUN:
+        raise ToolError(
+            f"{who}: секция `initialization` не выполнилась — тело не "
+            f"запускалось{section_note}. Повторите вызов.")
 
 
 @mcp.tool()
@@ -272,7 +317,8 @@ def set_page_script(script: str) -> str:
             "очистить скрипт, сделайте это осознанно и передайте скрипт с одним "
             "комментарием.")
     before = object_names()
-    outcome, restored = _run(script)
+    outcome, restored = run_contour(
+        script, failed="выполнить скрипт страницы не удалось")
     if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
         reason = (
             "скрипт не собрался (среда об ошибке молчит; текст ошибки — в окне "
@@ -345,7 +391,8 @@ def run_page_script(script: str) -> str:
             дописывает инструмент — объявлять их в теле не нужно.
     """
     before = object_names()
-    outcome, restored = _run(script)
+    outcome, restored = run_contour(
+        script, failed="выполнить скрипт страницы не удалось")
     after = object_names()
     lines = "\n".join(outcome.lines)
     return (
@@ -451,8 +498,9 @@ def inject_submodel_script(script: str) -> str:
     # больше не нужна: имя уникально, и этот пустой файл всегда наш.
     Path(collect_path).write_text("", encoding="utf-8")
     before = object_names()
-    outcome, restored = _run(
-        build_inject_submodel_script_body(_collect_body(script, collect_path)))
+    outcome, restored = run_contour(
+        build_inject_submodel_script_body(_collect_body(script, collect_path)),
+        failed="создать субмодель со скриптом не удалось")
     after = object_names()
     if outcome.kind in (OUTCOME_NOT_COMPILED, OUTCOME_ABORTED):
         raise ToolError(
@@ -481,3 +529,47 @@ def inject_submodel_script(script: str) -> str:
         f"{change_report(before, after, restored)}\n"
         f"---- собранные данные ({collect_path}) ----\n{collected}{note}"
     )
+
+
+def activate_or_refuse(page: Any, *, action: str,
+                       where: Optional[str] = None) -> None:
+    """Сделать страницу правки текущей или отказать — до контура.
+
+    Скрипт ставится в текущую страницу (`SetPageScript` → `GetCurentPage`),
+    и адресация по id ищется на ней: без активации запись ушла бы мимо блока
+    или в блок-двойник с тем же id (находка ревью PR #94). Не удалось
+    активировать — **отказ**, а не запись вслепую: промах выглядел бы как
+    «среда не приняла запись» и уводил бы диагноз в сторону среды.
+
+    Блок повторялся у трёх инструментов (ветвь, размер, габариты фитов) с
+    дословным обоснованием и разными текстами — тексты сведены сюда
+    (находка ревью PR #122): `action` называет действие («ветвь не
+    создана»), `where` — страницу, когда её имя известно (у фитов).
+    Переехала из `contour.py` вместе с контурным ядром (issue #123): это
+    страничная механика, и её место — рядом с ядром.
+    """
+    try:
+        page.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        named = f" «{where}»" if where else ""
+        raise ToolError(
+            f"{action}: страницу{named} не удалось сделать активной "
+            f"({type(exc).__name__}: {exc}) — запись по id могла бы уйти в "
+            f"блок другой страницы. Проект не изменён.") from exc
+
+
+def return_main_active(main: Any, lines: List[str]) -> None:
+    """Вернуть главную страницу активной, назвав провал возврата.
+
+    Обход фитов активирует каждую страницу, а следующая контурная операция
+    (выгрузка, снимок) снимает ИМЕННО активную (живой случай 06.10.2026).
+    Молчаливый `pass` здесь оставлял бы субмодель текущей и инструмент
+    отчитывался бы успехом (находка ревью PR #122): не получилось вернуть —
+    это примечание, а не отказ (правка-то сделана), но и не тишина.
+    """
+    try:
+        main.activate()
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"главную не удалось вернуть активной "
+                     f"({type(exc).__name__}: {exc}) — следующая контурная "
+                     f"операция снимет ТЕКУЩУЮ страницу, а не главную.")

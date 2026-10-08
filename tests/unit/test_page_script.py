@@ -502,3 +502,91 @@ async def test_inject_submodel_script_refuses_empty_body(monkeypatch, tmp_path):
     message = await _error("inject_submodel_script", {"script": "  \n"})
 
     assert "пуст" in message.lower()
+
+
+# ─── Контурное ядро: единственный маппер несделанных исходов (issue #123) ────
+
+
+def test_refuse_contour_failure_not_compiled_says_where_to_look():
+    """«Не собралось» — отказ с указанием, где искать текст ошибки.
+
+    Единый маппер (прежде их было два — у языкового слоя и у блочных
+    инструментов): формулировка одна на все инструменты, и это она.
+    """
+    from fastmcp.exceptions import ToolError
+    from simintech_api.script_probe import OUTCOME_NOT_COMPILED
+
+    outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED, lines=[])
+    with pytest.raises(ToolError) as exc:
+        page_script.refuse_contour_failure(outcome, failed="размер не записан")
+
+    message = str(exc.value)
+    assert "размер не записан: тело не собралось" in message
+    assert "окне сообщений" in message
+    assert "Проект не изменён" in message
+
+
+def test_refuse_contour_failure_aborted_uses_failed_by_default():
+    """Обрыв без своего `unsure` называет подлежащее «… не выполнена».
+
+    Так зовут инструменты языкового слоя (выгрузка, сборка, снимок): их
+    обрыв значит «не сделано». У блочных подлежащее своё («не подтверждён») —
+    тело могло отработать до обрыва, и это разные утверждения.
+    """
+    from fastmcp.exceptions import ToolError
+    from simintech_api.script_probe import OUTCOME_ABORTED
+
+    outcome = ContourOutcome(kind=OUTCOME_ABORTED, lines=["x();"])
+    with pytest.raises(ToolError) as exc:
+        page_script.refuse_contour_failure(outcome, failed="съёмка схемы")
+
+    message = str(exc.value)
+    assert "съёмка схемы не выполнена" in message
+    assert "тело оборвалось на исполнении" in message
+    assert "'x();'" in message, "последняя строка тела — единственный диагноз"
+
+
+def test_refuse_contour_failure_aborted_prefers_explicit_unsure():
+    """Явный `unsure` перебивает вывод из `failed`, а `aborted_hint` идёт следом."""
+    from fastmcp.exceptions import ToolError
+    from simintech_api.script_probe import OUTCOME_ABORTED
+
+    outcome = ContourOutcome(kind=OUTCOME_ABORTED, lines=[])
+    with pytest.raises(ToolError) as exc:
+        page_script.refuse_contour_failure(
+            outcome, failed="размер не записан", unsure="размер не подтверждён",
+            aborted_hint="Проверьте габарит в GUI.")
+
+    message = str(exc.value)
+    assert "размер не подтверждён" in message
+    assert "Проверьте габарит в GUI." in message
+    assert "не записан" not in message, "two subjects leaked into one refusal"
+
+
+def test_refuse_contour_failure_section_not_run_asks_to_repeat():
+    """«Секция не выполнилась» — отказ с советом повторить и своим уточнением."""
+    from fastmcp.exceptions import ToolError
+    from simintech_api.script_probe import OUTCOME_SECTION_NOT_RUN
+
+    outcome = ContourOutcome(kind=OUTCOME_SECTION_NOT_RUN, lines=[])
+    with pytest.raises(ToolError) as exc:
+        page_script.refuse_contour_failure(
+            outcome, failed="блок не удалён", unsure="удаление не подтверждено",
+            section_note=" (линий на странице не было)")
+
+    message = str(exc.value)
+    assert "секция `initialization` не выполнилась" in message
+    assert "(линий на странице не было)" in message
+    assert "Повторите вызов" in message
+
+
+def test_refuse_contour_failure_passes_successful_outcomes():
+    """Успешные исходы маппер пропускает: их описывает `describe_outcome`."""
+    from simintech_api.script_probe import (
+        OUTCOME_MODEL_NOT_RUNNING,
+        OUTCOME_OK,
+    )
+
+    for kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
+        page_script.refuse_contour_failure(
+            ContourOutcome(kind=kind, lines=[]), failed="не важно")

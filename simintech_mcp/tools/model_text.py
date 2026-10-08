@@ -29,8 +29,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
-from simintech_api.core.script_bridge import ScriptBridge
-from simintech_api.exceptions import ScriptBridgeError
 from simintech_api.model_operations import (
     build_export_model_text_body,
     build_import_model_text_body,
@@ -43,65 +41,24 @@ from simintech_api.script_probe import (
 from .. import runtime, sandbox, session
 from ..app import mcp
 from .page_script import (
-    RESULT_FILE,
     change_report,
     describe_outcome,
-    discard_result,
     fresh_name,
     object_names,
-    refuse_on_bad_outcome,
+    refuse_contour_failure,
+    run_contour,
 )
 
-#: Базы имён файлов внутри каталога результатов. Клиенту они не нужны: путь
-#: возвращается в ответе, а каталог — тот же, что у остальных инструментов.
-#: Полные имена уникальны на вызов (`page_script.fresh_name`): прошлый
-#: запертый обрывом файл не мешает, а прошлые артефакты не затираются.
+#: База имени файла выгрузки внутри каталога результатов. Клиенту она не
+#: нужна: путь возвращается в ответе, а каталог — тот же, что у остальных
+#: инструментов. Полное имя уникально на вызов (`page_script.fresh_name`):
+#: прошлый запертый обрывом файл не мешает, а прошлые артефакты не затираются.
 MODEL_TEXT_FILE = "model-text.txt"
-PROBE_RESULT_FILE = RESULT_FILE
 
-
-def bridge() -> ScriptBridge:
-    """Мост для текущего проекта."""
-    project = session.ensure_project()
-    return ScriptBridge(session.ensure_client(), project.id)
-
-
-def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
-    """Выполнить тело контура и вернуть `(исход, прежний скрипт)`.
-
-    Отказ моста (`ScriptBridgeError`) означает неопределённое состояние проекта,
-    поэтому он выходит наружу отдельным `ToolError` с рецептом проверки; исходы
-    же разбирает вызывающий — у выгрузки и сборки разный набор допустимых.
-    Контурный файл результата убирается на любом пути: строки тела уже
-    прочитаны мостом (`page_script.discard_result`).
-
-    Имя без подчёркивания — межмодульное: кроме выгрузки и сборки модели им
-    пользуется `fit_view` (запись свойств кадра страницы) — как
-    `refuse_on_bad_outcome` и `result_path` у инструментов контура.
-    """
-    path = result_path()
-    try:
-        run = bridge().run_page_script(body, path)
-    except ScriptBridgeError as exc:
-        discard_result(path)
-        raise ToolError(
-            f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
-            "расчёт должен сдвинуть модельное время: проверьте, что модель "
-            "считает — неподключённый вход останавливает расчёт всей модели "
-            "молча."
-        ) from exc
-    discard_result(path)
-    return run.outcome, run.restored_script
-
-
-def result_path() -> Path:
-    """Путь файла результата внутри каталога результатов (песочница).
-
-    Имя уникально на вызов (`fresh_name`): прежде оно совпадало с именем
-    результата `run_page_script`, и запертый тем вызовом файл валил и выгрузку.
-    """
-    return Path(os.path.join(sandbox.output_root(),
-                             fresh_name(PROBE_RESULT_FILE)))
+#: Тела обеих операций исполняет контурное ядро `page_script.run_contour`:
+#: рецепт «мост → `discard_result` → `ToolError` на `ScriptBridgeError`» у
+#: выгрузки, сборки и снимка — общий (issue #123). Здешние копии
+#: (`bridge`, `run_contour`, `result_path`) удалены при слиянии ядра.
 
 
 def page_export_text() -> "Tuple[str, bool, ContourOutcome, Path]":
@@ -116,7 +73,7 @@ def page_export_text() -> "Tuple[str, bool, ContourOutcome, Path]":
     outcome, _restored = run_contour(
         build_export_model_text_body(text_path),
         failed="выгрузка текста модели не удалась")
-    refuse_on_bad_outcome(outcome, action="выгрузка текста модели")
+    refuse_contour_failure(outcome, failed="выгрузка текста модели")
 
     data, truncated, error = sandbox.load_result_file(
         text_path, sandbox.MAX_OUTPUT_BYTES, sandbox.MISSING_RESULT_FILE
@@ -405,7 +362,7 @@ def import_model_text(model_text: str) -> str:
     outcome, restored = run_contour(
         build_import_model_text_body(model_text),
         failed="собрать модель из текста не удалось")
-    refuse_on_bad_outcome(outcome, action="сборка модели")
+    refuse_contour_failure(outcome, failed="сборка модели")
     after = object_names()
     wires_after = _wire_count()
     return (

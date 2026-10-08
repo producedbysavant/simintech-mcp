@@ -1,8 +1,8 @@
 """Текст модели: выгрузка и сборка — путь внутри каталога результатов и отказы.
 
-Мост подделывается целиком (`ScriptBridge` в модуле инструмента): настоящий
-требует Windows и живого `mmain.exe`, а проверяем мы не COM, а контракт
-инструмента — куда он пишет, что возвращает и как отказывает.
+Мост подделывается целиком (`ScriptBridge` в контурном ядре `page_script`):
+настоящий требует Windows и живого `mmain.exe`, а проверяем мы не COM, а
+контракт инструмента — куда он пишет, что возвращает и как отказывает.
 
 Подделка моделирует **переход**: артефакт пишется по пути **из тела** (иначе
 тест не заметил бы, что путь потеряли), а исход задаётся тестом — так
@@ -23,10 +23,11 @@ from simintech_api.script_probe import (
     ContourOutcome,
 )
 
-import simintech_mcp.tools.model_text as mt
 from simintech_mcp import session
 from simintech_mcp.server import mcp
-from simintech_mcp.tools.model_text import MODEL_TEXT_FILE, PROBE_RESULT_FILE
+from simintech_mcp.tools import page_script
+from simintech_mcp.tools.model_text import MODEL_TEXT_FILE
+from simintech_mcp.tools.page_script import RESULT_FILE
 
 from _support import _error, _text
 
@@ -124,7 +125,7 @@ def _install(monkeypatch, tmp_path: Path, bridge, wires=None) -> None:
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
     monkeypatch.setattr(session, "_project", _FakeProject(wires=wires))
-    monkeypatch.setattr(mt, "ScriptBridge", bridge)
+    monkeypatch.setattr(page_script, "ScriptBridge", bridge)
 
 
 @pytest.mark.anyio
@@ -203,8 +204,8 @@ async def test_export_model_text_uses_fresh_names_per_call(monkeypatch, tmp_path
 
     assert first != second, "имя выгрузки переиспользовано между вызовами"
     assert first_probe != second_probe, "имя результата контура переиспользовано"
-    assert first_probe.name != PROBE_RESULT_FILE
-    assert second_probe.name != PROBE_RESULT_FILE
+    assert first_probe.name != RESULT_FILE
+    assert second_probe.name != RESULT_FILE
     assert Path(first).exists(), "прошлая выгрузка затёрта новым прогоном"
 
 
@@ -251,7 +252,7 @@ async def test_export_model_text_refuses_when_file_is_missing(monkeypatch, tmp_p
     assert "файла нет" in message
 
     # И файл результата контура — своё имя, не пересекающееся с выгрузкой.
-    assert PROBE_RESULT_FILE != MODEL_TEXT_FILE
+    assert RESULT_FILE != MODEL_TEXT_FILE
 
 
 @pytest.mark.anyio
@@ -265,7 +266,7 @@ async def test_export_model_text_refuses_when_script_did_not_compile(
 
     message = await _error("export_model_text", {})
 
-    assert "not-compiled" in message
+    assert "не собралось" in message
     assert "окне сообщений" in message, "отказ не говорит, где искать причину"
 
 

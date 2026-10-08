@@ -22,13 +22,13 @@ from .blocks import (
     resolve_block,
     resolved_name,
 )
-from .contour import (
-    activate_or_refuse,
-    refuse_contour_failure,
-    run_contour_body,
-)
 from .layout import normalize_page_wires
-from .page_script import describe_outcome
+from .page_script import (
+    activate_or_refuse,
+    describe_outcome,
+    refuse_contour_failure,
+    run_contour,
+)
 
 
 @mcp.tool()
@@ -354,7 +354,7 @@ def disconnect_wire(src: str, dst: str,
             f"схеме.") from exc
 
     before_ids = _page_wire_ids(page)
-    outcome = run_contour_body(
+    outcome, _restored = run_contour(
         _disconnect_wire_body(b1.id, out_index, b2.id, in_index),
         failed="снять линию не удалось")
     if outcome.kind == OUTCOME_ABORTED:
@@ -607,7 +607,7 @@ def connect_branch(src: str, dst: str, out_index: int = 0,
             f"Состав портов — `get_block_params` или выгрузка; проект не "
             f"изменён.") from exc
     activate_or_refuse(page, action="ветвь не создана")
-    outcome = run_contour_body(
+    outcome, _restored = run_contour(
         _connect_branch_body(b1.id, out_index, b2.id, in_index, point_index),
         failed="создать ветвление не удалось")
     refuse_contour_failure(
@@ -850,7 +850,7 @@ def remove_block(block: str, with_wires: bool = False) -> str:
     name = resolved_name(target, block)
 
     before_ids = _page_wire_ids(page)
-    outcome = run_contour_body(
+    outcome, _restored = run_contour(
         _remove_block_body(target.id, with_wires),
         failed="удалить блок не удалось")
     if outcome.kind == OUTCOME_ABORTED:
