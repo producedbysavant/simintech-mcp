@@ -364,6 +364,48 @@ async def test_check_does_not_blame_branch_with_single_link(
 
 
 @pytest.mark.anyio
+async def test_check_connection_unchecked_on_incomplete_report(
+        monkeypatch, tmp_path):
+    """Оборванный отчёт — «не проверено», а не молчание (связка «и чисто»).
+
+    Находка ревью 08.10.2026: без этой ветки отсутствие строки
+    «Подключение линий» не отличалось от чистого вердикта.
+    """
+    blocks = [_CheckBlock("k_0", center=(0, 0), ports=2)]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="P|7|0\nLINK|k_0|1|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Подключение линий: не проверено — отчёт контура неполон" in text
+    assert "касающиеся меньше двух" not in text
+
+
+@pytest.mark.anyio
+async def test_check_connection_unchecked_on_skipped_blocks(
+        monkeypatch, tmp_path):
+    """Пропущенный блок — «не проверено», а не ложное «касается меньше двух».
+
+    Линия у пропущенного блока честно видна одному порту (его порты не
+    перечислены) — предупреждение по ней было бы ложной тревогой (находка
+    ревью 08.10.2026).
+    """
+    blocks = [
+        _CheckBlock("k_0); bad(); (", center=(0, 0)),
+        _CheckBlock("k_1", center=(100, 0)),
+    ]
+    wires = [_FakeWire(7)]
+    _install(monkeypatch, tmp_path, blocks, wires=wires,
+             payload="DONE\nP|7|0\nLINK|k_1|0|7\n")
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Подключение линий: не проверено — часть блоков пропущена" in text
+    assert "касающиеся меньше двух" not in text
+
+
+@pytest.mark.anyio
 async def test_check_names_not_compiled_contour(monkeypatch, tmp_path):
     """Не собравшийся контур: причина названа, а не «всё хорошо»."""
     class _Broken(_BridgeWritesReport):
