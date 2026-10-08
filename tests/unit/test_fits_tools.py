@@ -301,6 +301,48 @@ async def test_fit_submodel_height_counts_in_ports_only(monkeypatch, tmp_path):
     assert "высота 112 → 96 (6 вход(ов) × 16)" in text
 
 
+class _MultiplexerBlock(_PortedSubmodelBlock):
+    """Мультиплексор: входов ровно `nport`, выход один (замер 08.10.2026)."""
+
+    def __init__(self, name="mx_0", block_id=7, ports=8, size=(32.0, 32.0)):
+        super().__init__(name=name, block_id=block_id, ports=ports, size=size)
+        self.class_name = "Мультиплексор"
+
+
+@pytest.mark.anyio
+async def test_fit_port_blocks_fits_multiplexer_height(monkeypatch, tmp_path):
+    """Мультиплексор: высота = входы × 16 — шаг пинов 16 вместо 4 (nport=8).
+
+    Импорт ставит 32×32 при любом `nport`, и входы ложатся с шагом
+    `32 / nport` (замер 08.10.2026). Ширина не меняется, но приводится к
+    «Значению» — как у субмодели.
+    """
+    block = _MultiplexerBlock(ports=8, size=(32.0, 32.0))
+    project = _FakeProject({"mx_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.value_writes == [("Height", "128"), ("Width", "32")]
+    assert block.graph_writes == []
+    assert "высота 32 → 128 (8 вход(ов) × 16)" in text
+
+
+@pytest.mark.anyio
+async def test_fit_multiplexer_already_fitted_is_quiet(monkeypatch, tmp_path):
+    """Подогнанный мультиплексор (128 при 8 входах) не трогается."""
+    block = _MultiplexerBlock(ports=8, size=(32.0, 128.0))
+    project = _FakeProject({"mx_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.value_writes == []
+    assert bridge.calls == 0
+
+
 class _PinPort:
     """Порт-пин: координаты считаются от центра и ширины блока (пин справа)."""
 
