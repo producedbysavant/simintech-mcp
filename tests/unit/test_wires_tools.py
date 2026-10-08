@@ -482,6 +482,64 @@ def test_disconnect_wire_body_checks_the_source_before_removing():
             " — стандарт ЭВС360 требует имена от трёх знаков")
 
 
+def test_disconnect_wire_body_scans_orphan_segments():
+    """Тело сканирует пустые сегменты ветвления — только чтение, после снятия.
+
+    Пустышку (пара к ветви, её рождает `connect_branch`) отличает нулевая
+    конечная точка: числовое `= 0` её НЕ различает (все линии дают 0), а
+    строковое сравнение — различает (живые замеры 08.10.2026). Скан только
+    читает: удаление серией `removeprimitiv` в одном прогоне «слепит»
+    топологию портов.
+    """
+    from simintech_mcp.tools.wires import _disconnect_wire_body
+
+    body = _disconnect_wire_body(11, 0, 22, 1)
+
+    assert 'getwireendpointcoord(objid) = "0+0i"' in body, (
+        "признак пустого сегмента пропал — остаток ветвления не назовётся")
+    assert '"orphan="' in body
+    assert "getobjtypeid(objid) = 101" in body, (
+        "скан не ограничен линиями (тип wire)")
+    assert body.index("removeprimitiv") < body.index("orphan="), (
+        "скан стоит до снятия — остаток назвался бы не тот")
+
+
+def test_parse_orphan_lines_reads_id_and_name():
+    """Разбор строк `orphan=`: id обязателен, имя может прийти пустым."""
+    from simintech_mcp.tools.wires import _parse_orphan_lines
+
+    lines = ["removed=5 pw=0", "orphan=91 w2", "orphan = 7", "orphan=93 "]
+
+    assert _parse_orphan_lines(lines) == [("91", "w2"), ("93", "")]
+
+
+@pytest.mark.anyio
+async def test_disconnect_wire_names_orphan_segments(monkeypatch, tmp_path):
+    """Снятие ветви называет её пустую пару и рецепт уборки."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 3)
+    wire = _FakeWire(77)
+    src.wires.append((wire, dst, 0, 0))
+    saved = list(session.WIRES)
+
+    class _Drops(_BridgeReplies):
+        lines = ["removed=77 pw=0", "orphan=91 w2"]
+        on_run = staticmethod(lambda: src.wires.clear())
+
+    try:
+        _install_disconnect(monkeypatch, tmp_path, _Drops,
+                            {"k_0": src, "Integrator_0": dst})
+        session.WIRES.append((wire, "k_0", 0, "Integrator_0", 0))
+
+        text = _text(await mcp.call_tool(
+            "disconnect_wire", {"src": "k_0", "dst": "Integrator_0"}))
+
+        assert "w2 (id=91)" in text, "пустой сегмент не назван"
+        assert "removeprimitiv" in text, "нет рецепта уборки"
+    finally:
+        session.WIRES[:] = saved
+
+
 def test_parse_drop_reply_reads_body_lines():
     """Разбор ответа тела: снятие, несколько причин отказа, мусор — как unknown."""
     from simintech_mcp.tools.wires import _parse_drop_reply
