@@ -440,47 +440,59 @@ async def test_set_calc_time_delegates_to_project(monkeypatch):
     assert "7.0 с" in text
 
 
+def _temp_of(target) -> str:
+    """Временный путь записи, каким его строит инструмент (`<имя>.tmp.<ext>`)."""
+    stem, ext = os.path.splitext(str(target))
+    return f"{stem}.tmp{ext}"
+
+
 @pytest.mark.anyio
 async def test_save_project_defaults_to_xml(monkeypatch, tmp_path):
     """По умолчанию сохраняется XML, и перед записью показывается форма.
 
     Без показа формы в файл уходит признак «окно скрыто», и GUI открывает
-    проект, не показывая окно модели.
+    проект, не показывая окно модели. Запись идёт во временный файл рядом и
+    заменяет целевой атомарно (`os.replace`): обрыв в момент записи боевой
+    файл не трогает (репорт 08.10.2026 — 0-байтный проект после сбоя).
     """
-    target = str(tmp_path / "m.xprt")
+    target = tmp_path / "m.xprt"
     project = _install_savable(monkeypatch)
 
-    text = _text(await mcp.call_tool("save_project", {"path": target}))
+    text = _text(await mcp.call_tool("save_project", {"path": str(target)}))
 
-    assert project.calls == [("show_form", None), ("xml", target)]
+    assert project.calls == [("show_form", None), ("xml", _temp_of(target))], \
+        "среда обязана писать временный файл, а не целевой"
     assert "XML" in text
     assert "Форма проекта показана" in text
+    assert target.read_bytes() == b"<stub/>", "целевой файл не получил запись"
+    assert not os.path.exists(_temp_of(target)), "временный хвост остался"
 
 
 @pytest.mark.anyio
 async def test_save_project_binary_flag_writes_prt(monkeypatch, tmp_path):
     """binary=True пишет нативный .prt — его открывает GUI SimInTech."""
-    target = str(tmp_path / "m.prt")
+    target = tmp_path / "m.prt"
     project = _install_savable(monkeypatch)
 
     text = _text(await mcp.call_tool(
-        "save_project", {"path": target, "binary": True}))
+        "save_project", {"path": str(target), "binary": True}))
 
-    assert project.calls == [("show_form", None), ("binary", target)]
+    assert project.calls == [("show_form", None), ("binary", _temp_of(target))]
     assert ".prt" in text
+    assert target.read_bytes() == b"<stub/>"
 
 
 @pytest.mark.anyio
 async def test_save_project_can_skip_showing_form(monkeypatch, tmp_path):
     """show_form=False — безоконное сохранение: форму не показываем."""
-    target = str(tmp_path / "m.prt")
+    target = tmp_path / "m.prt"
     project = _install_savable(monkeypatch)
 
     text = _text(await mcp.call_tool(
-        "save_project", {"path": target, "binary": True,
+        "save_project", {"path": str(target), "binary": True,
                          "show_form": False}))
 
-    assert project.calls == [("binary", target)]
+    assert project.calls == [("binary", _temp_of(target))]
     assert "Форму не показывали" in text
 
 
@@ -495,32 +507,102 @@ async def test_save_project_failure_is_error(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_save_project_failure_keeps_target_intact(monkeypatch, tmp_path):
+    """Сбой записи не трогает боевой файл — ради этого запись идёт через tmp.
+
+    Репорт 08.10.2026: сбой в момент записи оставлял целевой .prt нулевым
+    (среда открывала файл и не наполняла). Теперь среда пишет временный
+    файл, и целевой при сбое остаётся прежним.
+    """
+    target = tmp_path / "m.xprt"
+    target.write_bytes(b"<old/>")
+    _install_savable(monkeypatch, raises=True)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "диск переполнен" in text
+    assert target.read_bytes() == b"<old/>", "боевой файл тронут при сбое"
+    assert not os.path.exists(_temp_of(target)), "временный хвост остался"
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_zero_byte_write(monkeypatch, tmp_path):
+    """Файл нулевой длины — отказ, а не «сохранено» (оборванная запись).
+
+    Прежняя проверка считала успехом любое расхождение размера — в том числе
+    обрезание до нуля; репорт 08.10.2026 показал, что так выглядит оборванная
+    запись, и отвечать на неё «сохранено» нельзя.
+    """
+    class _ZeroByte(_SavableProject):
+        def save_xml(self, path: str) -> None:
+            self.calls.append(("xml", path))
+            Path(path).write_bytes(b"")
+
+    target = tmp_path / "m.xprt"
+    monkeypatch.setattr(session, "_project", _ZeroByte())
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "нулевой длины" in text
+    assert not target.exists(), "нулевой файл заменой проходить не должен"
+    assert not os.path.exists(_temp_of(target))
+
+
+@pytest.mark.anyio
+async def test_save_project_keeps_temp_when_replace_fails(monkeypatch,
+                                                          tmp_path):
+    """Замена не прошла (целевой занят?) — записанное не теряется.
+
+    Отказ называет временный файл, где лежит результат: целевой не тронут,
+    а записанное можно спасти руками.
+    """
+    target = tmp_path / "m.xprt"
+    target.write_bytes(b"<old/>")
+    _install_savable(monkeypatch)
+
+    def _boom(src, dst):
+        raise OSError(13, "файл занят другой программой")
+
+    monkeypatch.setattr(project_tools.os, "replace", _boom)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "заменить" in text
+    tmp = _temp_of(target)
+    assert os.path.exists(tmp), "записанный временный файл потерян"
+    assert Path(tmp).read_bytes() == b"<stub/>"
+    assert target.read_bytes() == b"<old/>", "целевой файл тронут"
+
+
+@pytest.mark.anyio
 async def test_save_project_refuses_silent_missing_file(monkeypatch, tmp_path):
     """«Успех без файла» — отказ с диагнозом залипшей сессии (code#21).
 
     Живой симптом: `SaveProjectXML` сообщает об успехе, файла нет; следом
     `CloseProject` падает с Access violation. Отчитаться «сохранено» здесь —
-    соврать клиенту, поэтому запись проверяется по диску.
+    соврать клиенту, поэтому запись проверяется по диску. Запись идёт во
+    временный файл, поэтому отказ ещё и свидетельствует: целевой не тронут.
     """
-    target = str(tmp_path / "m.xprt")
+    target = tmp_path / "m.xprt"
     _install_savable(monkeypatch, writes=False)
 
-    text = await _error("save_project", {"path": target})
+    text = await _error("save_project", {"path": str(target)})
 
     assert "не записан" in text
     assert "не появился" in text
     assert "#21" in text
     assert "disconnect" in text
+    assert "не тронут" in text, "отказ обязан сказать, что целевой цел"
+    assert not target.exists()
 
 
 @pytest.mark.anyio
 async def test_save_project_refuses_untouched_existing_file(
         monkeypatch, tmp_path):
-    """Прежний файл за результат записи не принимается.
+    """Прежний боевой файл за результат записи не принимается.
 
-    При залипании сохранение поверх существующего файла оставляет старый —
-    и проверка «файл есть» была бы ложным успехом; поэтому сверяется и время
-    правки.
+    При залипании не создаётся и временный файл — отказ; целевой при этом
+    остаётся прежним.
     """
     target = tmp_path / "m.xprt"
     target.write_bytes(b"<old/>")
@@ -528,8 +610,9 @@ async def test_save_project_refuses_untouched_existing_file(
 
     text = await _error("save_project", {"path": str(target)})
 
-    assert "не обнов" in text  # «не обновился»
+    assert "не появился" in text
     assert "#21" in text
+    assert target.read_bytes() == b"<old/>"
 
 
 @pytest.mark.anyio
@@ -611,15 +694,17 @@ async def test_save_project_accepts_coarse_timestamp_fs(monkeypatch, tmp_path):
     метку времени; размер тоже совпадает (содержимое той же длины), и
     прежняя проверка по метке ложно отказывала бы в успехе (замечание
     ревью mcp#26). Содержимое при этом другое — вердикт «записано» по нему
-    верен.
+    верен. Сценарий с хвостом временного файла (от прошлого сбоя) — тот, где
+    сверка доходит до содержимого.
     """
     target = tmp_path / "m.xprt"
-    target.write_bytes(b"<old/>")
+    Path(_temp_of(target)).write_bytes(b"<old/>")
     monkeypatch.setattr(session, "_project", _CoarseTimestampProject())
 
     text = _text(await mcp.call_tool("save_project", {"path": str(target)}))
 
     assert "сохранён" in text
+    assert target.read_bytes() == b"<new!>"
 
 
 @pytest.mark.anyio
@@ -632,13 +717,14 @@ async def test_save_project_refuses_identical_rewrite_on_coarse_fs(
     сессии нечем — и «сохранено» здесь было бы догадкой.
     """
     target = tmp_path / "m.xprt"
-    target.write_bytes(b"<same>")
+    Path(_temp_of(target)).write_bytes(b"<same>")
     monkeypatch.setattr(session, "_project", _IdenticalRewriteProject())
 
     text = await _error("save_project", {"path": str(target)})
 
     assert "не обнов" in text
     assert "#21" in text
+    assert not target.exists(), "отказ не имеет права заменять целевой"
 
 
 def test_status_refuses_when_com_unavailable(monkeypatch):
