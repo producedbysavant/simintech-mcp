@@ -297,6 +297,46 @@ def test_duplicate_record_names_counts_repeats():
     assert _duplicate_record_names("k0: (type = \"Константа\")") == []
 
 
+def test_text_wire_roles_scan_references_not_neighbourhood():
+    """Роли проводов — по ссылкам на блоки текста, а не по соседству записей.
+
+    Развилка выбирает предупреждение ответа на импорт (живое воспроизведение
+    fdd002, 10.10.2026), и дефект бьёт по проводам к блокам ЭТОГО ЖЕ текста:
+    дозагрузка блока к расставленной модели не должна пугать чужой
+    геометрией (находка ревью PR #150). Ветвь (`src = "wire:0"`) разрешается
+    по родителю — как в выгрузке.
+    """
+    from simintech_mcp.tools.model_text import _text_wire_roles
+
+    def wire(name: str, src: str, dst: str) -> str:
+        """Запись провода в форме выгрузки: адреса — отдельными строками."""
+        return (f'  {name}: (\n'
+                f'    type = "wire",\n'
+                f'    src = "{src}",\n'
+                f'    dst = "{dst}"\n'
+                f'  ),')
+
+    assert _text_wire_roles('k0: (type = "Константа")') == (False, False)
+    assert _text_wire_roles(wire("w0", "old_a:out:0", "old_b:in:0")
+                            ) == (True, False)
+    assert _text_wire_roles(
+        'k0: (type = "Ступенька",\n points = [(0, 0)]),\n'
+        + wire("w0", "k0:out:0", "b0:in:0")) == (True, True)
+    # Ветвь от провода текста: источник разрешается до `k0` — он в тексте;
+    # та же ветвь без `k0` в тексте — чужой ссылкой не считается.
+    branch = (wire("w1", "k0:out:0", "b0:in:0") + "\n"
+              + wire("w2", "w1:0", "b1:in:1"))
+    assert _text_wire_roles('k0: (type = "Ступенька"),\n' + branch
+                            ) == (True, True)
+    assert _text_wire_roles(branch) == (True, False)
+    # Граница скана названа честно: адреса читаются в форме выгрузки (каждый —
+    # своей строкой). Однострочная запись не разбирается — скан молчит, и
+    # ответ уходит в нейтральную ветку, а не выдаёт догадку за разбор.
+    assert _text_wire_roles(
+        'w0: (type = "wire", src = "old_a:out:0", dst = "old_b:in:0")'
+    ) == (False, False)
+
+
 @pytest.mark.anyio
 async def test_import_model_text_names_duplicates_on_not_compiled(
         monkeypatch, tmp_path):
@@ -402,21 +442,86 @@ class _BridgeAddsWires(_BridgeRunsContour):
 
 
 @pytest.mark.anyio
-async def test_import_model_text_warns_lines_not_traced(monkeypatch, tmp_path):
-    """Импорт добавил линии — ответ напоминает: не трассированы, нужен `layout_place`.
+async def test_import_model_text_warns_baked_geometry_of_same_text_wires(
+        monkeypatch, tmp_path):
+    """Провода на блоки этого же текста — ответ называет дефект прямо.
 
-    В кейсе #24 сразу после импорта провода шли диагоналями через всю схему,
-    и модель выглядела нечитаемой; подсказка в ответе снимает лишний круг
-    «почему косо» (issue #24, п.3).
+    Маршруты проводов, поданных вместе со своими блоками, среда запекает до
+    пересчёта габаритов и не пересчитывает ничем (живое воспроизведение
+    fdd002, 10.10.2026); прежний ответ звал «`layout_place` проложит линии» —
+    и клиент шёл чинить нормализацией то, что ею не чинится.
     """
     _install(monkeypatch, tmp_path, _BridgeAddsWires)
+    text = ('k0: (type = "Константа"),\n'
+            'w0: (\n'
+            '  type = "wire",\n'
+            '  src = "k0:out:0",\n'
+            '  dst = "k0:in:0"\n'
+            ')')
 
-    result = _text(await mcp.call_tool(
-        "import_model_text", {"model_text": 'block0: (type = "Ступенька")'}))
+    result = _text(await mcp.call_tool("import_model_text", {"model_text": text}))
 
     assert "Линии связи: +2" in result
-    assert "не пересчитана" in result
-    assert "layout_place" in result
+    assert "запекает мусорными" in result
+    assert "пересоздание" in result
+    assert "`connect`" in result, "проверенный путь ремонта не назван"
+    assert "Блоки расставит" in result, "рекомендация расстановки потеряна"
+    assert "ОДНИМ текстом" in result, \
+        "исключение для моделей с памятью не названо"
+    assert "проложит" not in result, \
+        "ответ снова обещает прокладку запечённой геометрии"
+
+
+@pytest.mark.anyio
+async def test_import_model_text_patch_import_is_not_frightened(
+        monkeypatch, tmp_path):
+    """Провода на существующие блоки (дозагрузка) — без диагноза дефекта.
+
+    В тексте есть и объект, и провода, но концы проводов — на блоках ВНЕ
+    текста: дефект запекания бьёт по проводам к блокам этого же текста, и
+    такой текст не должен получать диагноз «маршруты запечены мусорными»
+    (находка ревью PR #150).
+    """
+    _install(monkeypatch, tmp_path, _BridgeAddsWires)
+    text = ('k_new: (type = "Константа"),\n'
+            'w0: (\n'
+            '  type = "wire",\n'
+            '  src = "old_a:out:0",\n'
+            '  dst = "old_b:in:0"\n'
+            ')')
+
+    result = _text(await mcp.call_tool("import_model_text", {"model_text": text}))
+
+    assert "Линии связи: +2" in result
+    assert "ссылок на блоки этого же текста в них не видно" in result, \
+        "развилка «ссылок нет» не названа"
+    assert "запекает мусорными" not in result, \
+        "дозагрузка обвинена дефектом геометрии"
+
+
+@pytest.mark.anyio
+async def test_import_model_text_wires_only_text_names_order(monkeypatch, tmp_path):
+    """Текст только с проводами — предупреждение о запекании без диагноза.
+
+    Провода к уже существующим блокам — законный отдельный импорт; ответ не
+    обвиняет его дефектом смешанного текста, но говорит, что маршрут среда
+    считает сама при создании, и что пустой маршрут дорисовывает
+    `layout_place`, а запечённый — нет.
+    """
+    _install(monkeypatch, tmp_path, _BridgeAddsWires)
+    text = ('w0: (\n'
+            '  type = "wire",\n'
+            '  src = "k0:out:0",\n'
+            '  dst = "k0:in:0"\n'
+            ')')
+
+    result = _text(await mcp.call_tool("import_model_text", {"model_text": text}))
+
+    assert "Линии связи: +2" in result
+    assert "точки текста игнорируются" in result
+    assert "layout_place(normalize_only=True)" in result
+    assert "запекает мусорными" not in result, \
+        "одиночный текст с проводами обвинён дефектом смешанного импорта"
 
 
 @pytest.mark.anyio
@@ -435,6 +540,7 @@ async def test_import_model_text_does_not_blame_existing_wires(
 
     assert "новых импорт не добавил" in result
     assert "не пересчитана" not in result
+    assert "запекает мусорными" not in result
 
 
 @pytest.mark.anyio
