@@ -229,6 +229,8 @@ async def test_export_model_text_names_non_running_model(monkeypatch, tmp_path):
     assert _BridgeRunsContour.payload in result
     assert "модель не считает" in result
     assert "initialization" in result, "причина полноты текста не названа"
+    assert "отдельно открытая субмодель" in result, \
+        "субмодельный случай не назван — состояние читается дефектом модели"
 
 
 @pytest.mark.anyio
