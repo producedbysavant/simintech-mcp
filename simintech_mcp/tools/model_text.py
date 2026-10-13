@@ -39,6 +39,7 @@ from simintech_api.model_operations import (
 from simintech_api.script_probe import (
     OUTCOME_MODEL_NOT_RUNNING,
     OUTCOME_NOT_COMPILED,
+    OUTCOME_OK,
     ContourOutcome,
 )
 
@@ -52,6 +53,7 @@ from .page_script import (
     refuse_contour_failure,
     run_contour,
 )
+from .wires import EMPTY_WIRE_END
 
 #: База имени файла выгрузки внутри каталога результатов. Клиенту она не
 #: нужна: путь возвращается в ответе, а каталог — тот же, что у остальных
@@ -65,21 +67,17 @@ MODEL_TEXT_FILE = "model-text.txt"
 #: (`bridge`, `run_contour`, `result_path`) удалены при слиянии ядра.
 
 
-def page_export_text(extra_body: str = "") -> "Tuple[str, bool, ContourOutcome, Path]":
+def page_export_text() -> "Tuple[str, bool, ContourOutcome, Path]":
     """Текст выгрузки страницы: (текст, обрезано, исход, путь файла).
 
     Без обёртки инструмента и COM-потока: тем же путём идёт `layout_place`,
     когда реестр `connect` пуст (проект открыт из файла) — раскладке нужен граф
     страницы, а COM концов линий не отдаёт, их отдаёт только выгрузка.
-
-    `extra_body` — хвост тела после `savemodeltofile`: им `export_model_text`
-    собирает подпись о ветвях (`_wire_probe_body`); раскладка передаёт пустое
-    — ей хватает текста.
     """
     root = sandbox.output_root()
     text_path = os.path.join(root, fresh_name(MODEL_TEXT_FILE))
     outcome, _restored = run_contour(
-        build_export_model_text_body(text_path) + extra_body,
+        build_export_model_text_body(text_path),
         failed="выгрузка текста модели не удалась")
     refuse_contour_failure(outcome, failed="выгрузка текста модели")
 
@@ -230,26 +228,26 @@ def export_model_text() -> str:
     имени — номера не парные, замер 13.10.2026) и «Ветви» — ветвь названа
     адресом приёмника, родитель — концами линии (автоимена проводов в
     выгрузке неразличимы, замер 08.10.2026). Подписи вспомогательные: их
-    недоступность не отменяет выгрузку, но называется строкой.
+    недоступность не отменяет выгрузку, но называется строкой; собираются они
+    **отдельным прогоном контура** после выгрузки — в общем теле сбой подписи
+    увёл бы исход в `aborted`, и выгрузка была бы отменена (находка ревью
+    PR #154). На странице без проводов прогон подписи не запускается: ветвей
+    без линий не бывает — лишнего контура нет.
     """
     page = session.ensure_project().get_current_page()
     blocks: "List[Block]" = []
-    wire_ids: "List[int]" = []
     signatures_error = ""
     try:
         blocks = page.get_blocks()
-        wire_ids = [wire.id for wire in page.get_wires()]
     except Exception:                                         # noqa: BLE001
         signatures_error = ("Подписи ячеек памяти и ветвей не собрались: "
-                            "перечислить блоки и линии страницы не удалось.\n")
-    text, truncated, outcome, text_path = page_export_text(
-        extra_body=_wire_probe_body(wire_ids) if wire_ids else "")
+                            "перечислить блоки страницы не удалось.\n")
+    text, truncated, outcome, text_path = page_export_text()
     notes = ""
     if not signatures_error:
         try:
-            notes = (_memory_cells_note(blocks)
-                     + _branch_note(_parse_wire_probe(outcome.lines),
-                                    _port_addressing(blocks)))
+            notes = _identity_notes(blocks,
+                                    _parse_wire_probe(_wire_probe_lines()))
         except Exception:                                     # noqa: BLE001
             notes = ("Подписи ячеек памяти и ветвей не собрались "
                      "(внутренняя ошибка чтения) — текст выгрузки полный.\n")
@@ -283,9 +281,12 @@ MEMORY_CELL_CLASSES = ("В память", "Из памяти")
 #: бы как «ветвей нет».
 WIRE_PROBE_DONE = "WDONE"
 
-#: Точка в печати языка: «92+64i» (скобки и пробелы допускаются; целые —
-#: свойство печати, замер 02.10.2026).
-_POINT_CELL_RE = re.compile(r"\(?\s*(-?\d+)\s*([+-])\s*(\d+)i\s*\)?")
+#: Точка в печати языка: «92+64i» (скобки и пробелы допускаются). Дробная
+#: часть допускается намеренно: живого формата печати у нас нет (в
+#: `check_model` он тоже читается с дробными), а целочисленный шаблон на
+#: «92.5+64i» ловил бы «5+64i» и давал чужую клетку (находка ревью PR #154).
+_POINT_CELL_RE = re.compile(
+    r"\(?\s*(-?\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)i\s*\)?")
 
 
 def _wire_probe_body(wire_ids: "List[int]") -> str:
@@ -297,7 +298,9 @@ def _wire_probe_body(wire_ids: "List[int]") -> str:
     измеренные: `getwirestartpointcoord`/`getwireendpointcoord`
     (`check_model_layout`), `getparentwireid`/`getparentwirenodeindex`
     (`audit_routing`). Завершает строки маркер `WIRE_PROBE_DONE` — по нему
-    `_parse_wire_probe` отличает полную подпись от оборванной.
+    `_parse_wire_probe` отличает полную подпись от оборванной. Маркер пишется
+    и при пустом списке линий: без него страница без проводов давала ложный
+    обрыв подписи (находка ревью PR #154).
     """
     lines = [
         f'writelnutf8(fid, "W|{wire_id}|" '
@@ -311,14 +314,51 @@ def _wire_probe_body(wire_ids: "List[int]") -> str:
     return "\n".join(lines) + "\n"
 
 
+def _wire_probe_lines() -> "Optional[List[str]]":
+    """Строки подписи о ветвях — отдельным прогоном контура.
+
+    Прогон отдельный от выгрузки намеренно (находка ревью PR #154): в общем
+    теле сбой подписи (например, отказ среды на устаревшем id) уводил исход в
+    `aborted`, и `refuse_contour_failure` отменял выгрузку — хотя её текст к
+    тому моменту уже записан. Здесь любой сбой (не тот исход или отказ моста)
+    становится `None` — «не прочитано» в ответе, — а выгрузка живёт.
+
+    Пустой список линий сбоем **не** является — это «ветвей нет»: провода
+    на странице отсутствуют, и прогон не запускается вовсе.
+    """
+    try:
+        page = session.ensure_project().get_current_page()
+        wire_ids = [wire.id for wire in page.get_wires()]
+    except Exception:                                         # noqa: BLE001
+        return None
+    if not wire_ids:
+        return []
+    try:
+        outcome, _restored = run_contour(
+            _wire_probe_body(wire_ids),
+            failed="подпись о ветвях не собралась")
+    except ToolError:
+        return None
+    if outcome.kind in (OUTCOME_OK, OUTCOME_MODEL_NOT_RUNNING):
+        return outcome.lines
+    return None
+
+
 def _parse_wire_probe(
-        lines: "List[str]") -> "Optional[Dict[int, Tuple[str, str, int, int]]]":
-    """Подпись о ветвях из строк тела: None — тело оборвалось (нет маркера).
+        lines: "Optional[List[str]]"
+) -> "Optional[Dict[int, Tuple[str, str, int, int]]]":
+    """Подпись о ветвях из строк тела: None — подписи нет или тело оборвалось.
 
     Формат строки — `W|<id>|<начало>|<конец>|<родитель>|<узел>`. `None` — не
     «ветвей нет»: без маркера пустую подпись не отличить от оборванной, и
-    выдавать второе за первое нельзя.
+    выдавать второе за первое нельзя (`_wire_probe_lines` возвращает `None`
+    и на сбой прогона). Пустой список — не оборванный прогон, а «проводов не
+    было» (прогон не запускался): это пустая подпись.
     """
+    if lines is None:
+        return None
+    if not lines:
+        return {}
     probe: "Dict[int, Tuple[str, str, int, int]]" = {}
     done = False
     for line in lines:
@@ -340,25 +380,33 @@ def _parse_wire_probe(
 
 
 def _point_cell(text: str) -> "Optional[Tuple[int, int]]":
-    """Клетка координаты точки из строки языка («92+64i», «-160-992i»)."""
+    """Клетка координаты точки из строки языка («92+64i», «-160-992i»).
+
+    Дробные округляются к целому: клетка — общий язык подписи и карты портов,
+    а порты COM отдаёт целыми.
+    """
     match = _POINT_CELL_RE.search(text)
     if not match:
         return None
-    y = int(match.group(3))
+    y = float(match.group(3))
     if match.group(2) == "-":
         y = -y
-    return (int(match.group(1)), y)
+    return (round(float(match.group(1))), round(y))
 
 
 def _ports_of(block: Block, kind: str) -> "List[Tuple[int, Port]]":
-    """Порты блока одного вида — (индекс, порт); перебор с запасом.
+    """Порты блока одного вида — (индекс, порт).
 
-    Запас тот же, что у библиотечного `get_in_port_count` (`get_port_count()` +
-    1): дальше перебор прекращает первый же отказ среды.
+    Перебор — до общего числа портов (`get_port_count`): запрос за границей
+    вида библиотечные `get_in_port`/`get_out_port` проводят через
+    `BlockAfterEdit` (пересоздание портов) — это сцена-правка в инструменте
+    чтения, и лишних итераций здесь не делаем (находка ревью PR #154). Один
+    такой запрос на блок-вид остаётся — он внутри самой библиотеки, — и
+    платится только когда ветви на странице есть (`_identity_notes`).
     """
     ports: "List[Tuple[int, Port]]" = []
     take = block.get_in_port if kind == "in" else block.get_out_port
-    for index in range(block.get_port_count() + 1):
+    for index in range(block.get_port_count()):
         try:
             ports.append((index, take(index)))
         except Exception:                                     # noqa: BLE001
@@ -366,57 +414,31 @@ def _ports_of(block: Block, kind: str) -> "List[Tuple[int, Port]]":
     return ports
 
 
-def _port_addressing(blocks: "List[Block]") -> "Dict[Tuple[int, int], str]":
-    """Адресация портов страницы: клетка координаты → «блок:in:N» / «out:N».
+def _register_ports(addressing: "Dict[Tuple[int, int], str]",
+                    block: Block, name: str) -> None:
+    """Внести порты одного блока в адресацию клеток: координата → «блок:in:N».
 
     Адреса — в синтаксисе выгрузки (индексы те же, что у `pairs_from_wires`):
     по ним подпись о ветвях называет родителя, а клиент находит запись в
     тексте. Совпавшая клетка у двух разных портов адреса не получает («?») —
     угадывать адресат нельзя.
     """
-    addressing: "Dict[Tuple[int, int], str]" = {}
-    for block in blocks:
-        try:
-            name = block.get_name()
-        except Exception:                                     # noqa: BLE001
-            continue
-        for kind in ("in", "out"):
-            for index, port in _ports_of(block, kind):
-                try:
-                    coords = port.get_coords()
-                except Exception:                             # noqa: BLE001
-                    continue
-                cell = (round(float(coords[0])), round(float(coords[1])))
-                address = f"{name}:{kind}:{index}"
-                if cell in addressing and addressing[cell] != address:
-                    addressing[cell] = "?"
-                else:
-                    addressing[cell] = address
-    return addressing
-
-
-def _memory_cells_note(blocks: "List[Block]") -> str:
-    """Строка подписи ячеек памяти: блоки «В память»/«Из памяти» и PortNames.
-
-    Имя печатается у каждого блока (а не у пары): пары сходятся по нему, и
-    лишний разбор «кто кого читает» не нужен — номера всё равно не парные.
-    """
-    cells: "List[str]" = []
-    unread: "List[str]" = []
-    for block in blocks:
-        try:
-            if block.class_name not in MEMORY_CELL_CLASSES:
+    for kind in ("in", "out"):
+        for index, port in _ports_of(block, kind):
+            try:
+                coords = port.get_coords()
+            except Exception:                                 # noqa: BLE001
                 continue
-            name = block.get_name()
-        except Exception:                                     # noqa: BLE001
-            continue
-        try:
-            raw = block.get_property("PortNames")
-        except Exception:                                     # noqa: BLE001
-            unread.append(name)
-            continue
-        value = " ".join(str(raw).split())
-        cells.append(f"{name} = {value}" if value else f"{name} = (пусто)")
+            cell = (round(float(coords[0])), round(float(coords[1])))
+            address = f"{name}:{kind}:{index}"
+            if cell in addressing and addressing[cell] != address:
+                addressing[cell] = "?"
+            else:
+                addressing[cell] = address
+
+
+def _cells_line(cells: "List[str]", unread: "List[str]") -> str:
+    """Строка подписи ячеек памяти из собранных значений (пусто — нет ячеек)."""
     if not cells and not unread:
         return ""
     line = "Ячейки памяти (PortNames): " + "; ".join(cells)
@@ -426,22 +448,24 @@ def _memory_cells_note(blocks: "List[Block]") -> str:
     return line + "\n"
 
 
-def _branch_note(probe: "Optional[Dict[int, Tuple[str, str, int, int]]]",
-                 addressing: "Dict[Tuple[int, int], str]") -> str:
-    """Строка подписи о ветвях: ветвь — адресом приёмника, родитель — концами.
+def _branch_lines(probe: "Optional[Dict[int, Tuple[str, str, int, int]]]",
+                  addressing: "Dict[Tuple[int, int], str]") -> str:
+    """Строки подписи о ветвях: ветвь — адресом приёмника, родитель — концами.
 
     Ветвь адресует родителя именем (`src = "MBTYWire:0"`), а у проводов от COM
     имя одно на всех (замер 08.10.2026; находка fdd003 13.10.2026) — по имени
     родитель не находится. Здесь родитель называется своими концами в
     синтаксисе выгрузки: клиент находит родительскую запись по ним. Конец, не
     сошедшийся с портом, печатается «?» — это и признак испорченной геометрии
-    (запечённые импортом маршруты — см. `import_model_text`).
+    (запечённые импортом маршруты — см. `import_model_text`). Пустой сегмент
+    ветвления (конец `0+0i`, `wires.EMPTY_WIRE_END`) пропускается: строка о
+    нём была бы строкой о невидимой пустышке (находка ревью PR #154).
     """
     if probe is None:
-        return ("Ветви: не прочитано — строки тела оборвались до маркера; "
-                "родителя ищите в GUI.\n")
+        return ("Ветви: не прочитано — прогон подписи не отдал строк "
+                "(обрыв контура или отказ); родителя ищите в GUI.\n")
     branches = [(wire_id, data) for wire_id, data in sorted(probe.items())
-                if data[2] != 0]
+                if data[2] != 0 and data[1] != EMPTY_WIRE_END]
     if not branches:
         return ""
 
@@ -462,6 +486,44 @@ def _branch_note(probe: "Optional[Dict[int, Tuple[str, str, int, int]]]",
              "неразличимы):"]
     lines.extend(f"  {part}" for part in parts)
     return "\n".join(lines) + "\n"
+
+
+def _identity_notes(blocks: "List[Block]",
+                    probe: "Optional[Dict[int, Tuple[str, str, int, int]]]"
+                    ) -> str:
+    """Подписи идентичности — одним обходом блоков.
+
+    Имя блока читается один раз на блок — и им же подписываются его порты в
+    адресации, — а адресация строится, только если ветви на странице есть:
+    перебор портов ходит в COM, и на странице без ветвей это была бы плата ни
+    за что (находки ревью PR #154 — двойное чтение имён и жадная адресация).
+    """
+    cells: "List[str]" = []
+    unread: "List[str]" = []
+    needs_ports = probe is not None and any(
+        data[2] != 0 and data[1] != EMPTY_WIRE_END for data in probe.values())
+    addressing: "Dict[Tuple[int, int], str]" = {}
+    for block in blocks:
+        try:
+            name = block.get_name()
+        except Exception:                                     # noqa: BLE001
+            continue
+        try:
+            is_cell = block.class_name in MEMORY_CELL_CLASSES
+        except Exception:                                     # noqa: BLE001
+            is_cell = False
+        if is_cell:
+            try:
+                raw = block.get_property("PortNames")
+            except Exception:                                 # noqa: BLE001
+                unread.append(name)
+            else:
+                value = " ".join(str(raw).split())
+                cells.append(f"{name} = {value}" if value
+                             else f"{name} = (пусто)")
+        if needs_ports:
+            _register_ports(addressing, block, name)
+    return _cells_line(cells, unread) + _branch_lines(probe, addressing)
 
 
 def _wire_count() -> Optional[int]:

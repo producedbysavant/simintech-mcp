@@ -298,39 +298,64 @@ def test_parse_wire_probe_requires_marker():
     """Парсер подписи о ветвях: без маркера — None, а не «ветвей нет»."""
     from simintech_mcp.tools.model_text import _parse_wire_probe
 
+    assert _parse_wire_probe(None) is None, "сбой прогона выдан за подпись"
     assert _parse_wire_probe(["W|9|92+64i|92+96i|0|0"]) is None
     assert _parse_wire_probe(["W|1|0+0i|24+40i|0|0", "WDONE"]) == {
         1: ("0+0i", "24+40i", 0, 0)}
     assert _parse_wire_probe(["флуд", "WDONE"]) == {}
 
 
-def test_branch_note_names_parent_by_ends():
+def test_wire_probe_empty_is_not_a_break():
+    """Страница без проводов — пустая подпись, а не ложный обрыв (ревью #154).
+
+    Прежде тело подписи подавалось только при непустом списке линий, маркер
+    не писался, и ответ страницы без проводов сообщал «оборвались до
+    маркера». Теперь прогон не запускается (проводов нет — ветвей нет), а
+    `[]` честно читается как пустая подпись; тело же маркер пишет всегда —
+    на случай, если его подадут.
+    """
+    from simintech_mcp.tools.model_text import (
+        _parse_wire_probe,
+        _wire_probe_body,
+    )
+
+    assert '"WDONE"' in _wire_probe_body([]), "маркер не пишется на пустом теле"
+    assert _parse_wire_probe([]) == {}, "пустой прогон выдан за обрыв"
+    assert _parse_wire_probe(["WDONE"]) == {}
+
+
+def test_branch_lines_name_parent_by_ends():
     """Родитель ветви называется концами, а не автоименем (issue #153)."""
-    from simintech_mcp.tools.model_text import _branch_note, _point_cell
+    from simintech_mcp.tools.model_text import _branch_lines, _point_cell
 
     assert _point_cell("92+64i") == (92, 64)
     assert _point_cell("(-160-992i)") == (-160, -992)
+    assert _point_cell("92.5+64i") == (92, 64), \
+        "дробная координата дала чужую клетку (находка ревью #154)"
     assert _point_cell("без точки") is None
 
-    probe = {9: ("80+64i", "192+64i", 0, 0), 10: ("192+64i", "24+40i", 9, 2)}
+    probe = {9: ("80+64i", "192+64i", 0, 0), 10: ("192+64i", "24+40i", 9, 2),
+             11: ("0+0i", "0+0i", 9, 1)}
     addressing = {(80, 64): "k_0:out:0", (192, 64): "ad_1:in:0",
                   (24, 40): "portconnector_0:in:0"}
-    note = _branch_note(probe, addressing)
+    note = _branch_lines(probe, addressing)
     assert "dst=portconnector_0:in:0" in note
     assert "src=k_0:out:0 → dst=ad_1:in:0" in note
     assert "(узел 1)" in note
-    assert _branch_note({9: ("80+64i", "192+64i", 0, 0)}, addressing) == "", \
+    assert note.count("— на линии") == 1, \
+        "пустой сегмент ветвления (0+0i) попал в подпись"
+    assert _branch_lines({9: ("80+64i", "192+64i", 0, 0)}, addressing) == "", \
         "линия без родителя попала в подпись о ветвях"
-    assert "не прочитано" in _branch_note(None, addressing), \
-        "обрыв тела выдан за «ветвей нет»"
-    note = _branch_note(probe, {})
+    assert "не прочитано" in _branch_lines(None, addressing), \
+        "сбой прогона выдан за «ветвей нет»"
+    note = _branch_lines(probe, {})
     assert "dst=?" in note and "src=? → dst=?" in note, \
         "конец без порта не назван честно"
 
 
-def test_memory_cells_note_reads_portnames():
-    """Подпись ячеек: имя переменной из PortNames; не-ячейки не попадают."""
-    from simintech_mcp.tools.model_text import _memory_cells_note
+def test_identity_notes_read_portnames():
+    """Подписи: имя переменной из PortNames; не-ячейки не попадают."""
+    from simintech_mcp.tools.model_text import _identity_notes
 
     class _Cell:
         def __init__(self, block_id, name, class_name, portnames):
@@ -345,18 +370,46 @@ def test_memory_cells_note_reads_portnames():
         def get_property(self, name: str) -> str:
             return self._portnames
 
-    note = _memory_cells_note([
+    note = _identity_notes([
         _Cell(1, "ToMem_4", "В память", "#RA402"),
         _Cell(2, "FromMem_1", "Из памяти", "#RA402"),
         _Cell(3, "k_0", "Константа", "1"),
         _Cell(4, "ToMem_5", "В память", "#A\r\n#B"),
-    ])
+    ], None)
     assert "ToMem_4 = #RA402" in note
     assert "FromMem_1 = #RA402" in note
     assert "k_0" not in note
     assert "ToMem_5 = #A #B" in note, \
         "переносы строк PortNames не нормализованы"
-    assert _memory_cells_note([_Cell(3, "k_0", "Константа", "1")]) == ""
+    low = _identity_notes([_Cell(3, "k_0", "Константа", "1")], None)
+    assert "Ячейки памяти" not in low, "не-ячейки дали строку подписи памяти"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_survives_probe_failure(monkeypatch, tmp_path):
+    """Сбой прогона подписи не отменяет выгрузку — только «не прочитано».
+
+    Подпись собирается отдельным прогоном контура (находка ревью PR #154):
+    в общем теле её сбой уводил исход в `aborted`, и
+    `refuse_contour_failure` отменял выгрузку — хотя текст уже записан.
+    """
+
+    class _BridgeProbeFails(_BridgeRunsContour):
+        def run_page_script(self, body, result_path):
+            if "savemodeltofile(" not in body:
+                raise ScriptBridgeError("подпись о ветвях не собралась")
+            return super().run_page_script(body, result_path)
+
+    class _Wire:
+        def __init__(self, wire_id):
+            self.id = wire_id
+
+    _install(monkeypatch, tmp_path, _BridgeProbeFails, wires=[_Wire(9)])
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert _BridgeRunsContour.payload in result, "выгрузка отменена сбоем подписи"
+    assert "Ветви: не прочитано" in result
 
 
 @pytest.mark.anyio
