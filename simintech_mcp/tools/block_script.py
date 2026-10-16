@@ -93,7 +93,7 @@ def _block_script_snapshot(project: Any) -> str:
     return decode_xprt(raw)
 
 
-@mcp.tool()
+@mcp.tool(title="Скрипт блока", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_block_script(block: str) -> str:
     """Прочитать скрипт блока — например, «Языка программирования».
@@ -237,7 +237,7 @@ def _set_block_script_body(block_name: str, script: str, token: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Записать скрипт блока", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_block_script(block: str, script: str) -> str:
     """Записать скрипт в блок «Язык программирования» и пересобрать его пины.

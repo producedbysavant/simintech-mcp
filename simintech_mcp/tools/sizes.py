@@ -141,7 +141,7 @@ def size_pair_lines(block_id: int, prop: str, value: float) -> List[str]:
     ]
 
 
-@mcp.tool()
+@mcp.tool(title="Размер блока", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_block_size(block: str, width: float, height: float) -> str:
     """Задать размер блока в пикселях схемы.

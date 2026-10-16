@@ -82,6 +82,32 @@ _MUTATING_TOOLS = {
     "set_project_config",
 }
 
+#: Чистые чтения — аннотация `readOnlyHint: True`: ни проект, ни сессия, ни
+#: расчёт не меняются. Список — контракт поверхности: хост по этой аннотации
+#: авто-одобряет вызов, и лишняя метка открыла бы без подтверждения
+#: инструмент с побочным эффектом (худший класс ошибки — авто-одобрение
+#: мутации и необратимо, и незаметно). Контурные чтения (`export_model_text`,
+#: `check_model_layout`, `audit_routing`) сюда не входят: они перезапускают
+#: расчёт и сдвигают модельное время. `save_screenshot` — тоже не чтение:
+#: пишет файл и кадр страницы (побочные эффекты названы в его ответе), но и
+#: не разрушительный — файл уникален, перезаписи чужого нет.
+_READ_ONLY_TOOLS = {
+    "status", "get_time", "list_blocks", "list_wires", "get_block_params",
+    "get_page_script", "get_block_script", "get_project_config",
+    "list_signals", "get_signal", "read_output_file",
+    "summarize_output_file", "inspect_project_file", "project_network_role",
+    "list_pack_projects", "help_text", "search_language_functions",
+    "get_language_function",
+}
+
+#: Удаление/перезапись/сброс — `destructiveHint: True` (хост показывает
+#: подтверждение): удаление блока и линии, закрытие сессии и пакета,
+#: перезапись файла проекта, откат несохранённых правок.
+_DESTRUCTIVE_TOOLS = {
+    "remove_block", "disconnect_wire", "disconnect", "close_project",
+    "close_pack", "save_project", "reload_project",
+}
+
 
 @pytest.mark.anyio
 async def test_mutating_tools_are_marked():
@@ -97,8 +123,55 @@ async def test_mutating_tools_are_marked():
 
 
 @pytest.mark.anyio
+async def test_tool_annotations_contract():
+    """У каждого инструмента — заголовок и честный `readOnlyHint`.
+
+    Аннотации — то, по чему хост решает об авто-одобрении чтения и
+    подтверждении разрушительных вызовов. Отсутствие аннотации читается
+    хостом как «худший случай» (ничего не авто-одобряется), а вот лишний
+    `readOnlyHint: True` — ошибка необратимая: инструмент с побочным
+    эффектом вызвался бы без спроса (аудит 16.10.2026: аннотаций не было ни
+    у одного из 59). Наборы сверяются в обе стороны, как у мутирующих.
+    """
+    tools = await mcp.list_tools()
+    by_name = {t.name: t for t in tools}
+
+    no_title = [name for name, t in by_name.items() if not t.title]
+    assert not no_title, f"без заголовка: {sorted(no_title)}"
+
+    unset = [name for name, t in by_name.items()
+             if t.annotations is None or t.annotations.readOnlyHint is None]
+    assert not unset, f"readOnlyHint не задан: {sorted(unset)}"
+
+    read_only = {name for name, t in by_name.items()
+                 if t.annotations is not None
+                 and t.annotations.readOnlyHint is True}
+    assert read_only == _READ_ONLY_TOOLS, (
+        f"лишний readOnlyHint: {sorted(read_only - _READ_ONLY_TOOLS)}; "
+        f"пропал readOnlyHint: {sorted(_READ_ONLY_TOOLS - read_only)}")
+
+    destructive = {name for name, t in by_name.items()
+                   if t.annotations is not None
+                   and t.annotations.destructiveHint is True}
+    assert destructive == _DESTRUCTIVE_TOOLS, (
+        f"лишний destructiveHint: {sorted(destructive - _DESTRUCTIVE_TOOLS)}; "
+        f"пропал destructiveHint: {sorted(_DESTRUCTIVE_TOOLS - destructive)}")
+
+    # Мутирующий инструмент не бывает чистым чтением; разрушительные —
+    # не чтения по построению (пересечение наборов пусто).
+    assert not (_MUTATING_TOOLS & _READ_ONLY_TOOLS)
+    assert not (_DESTRUCTIVE_TOOLS & _READ_ONLY_TOOLS)
+
+
+@pytest.mark.anyio
 async def test_all_tools_registered():
-    """Зарегистрированы все ожидаемые инструменты."""
+    """Зарегистрированы ровно ожидаемые инструменты — набор в обе стороны.
+
+    Прежде проверка была включением (56 из 59): `save_screenshot`, `fit_view`
+    и `set_block_center` в наборе не перечислялись, и о любом инструменте вне
+    списка тест молчал бы. Число состава держит README
+    (`test_readme_tool_count_matches_registry`), имена — здесь.
+    """
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
     expected = {
@@ -121,8 +194,11 @@ async def test_all_tools_registered():
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",
         "get_block_script", "set_block_script",
+        "save_screenshot", "fit_view", "set_block_center",
     }
-    assert expected <= names, f"Не хватает: {expected - names}"
+    assert expected == names, (
+        f"не хватает: {sorted(expected - names)}; "
+        f"лишние: {sorted(names - expected)}")
 
 
 @pytest.mark.anyio

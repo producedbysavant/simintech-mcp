@@ -191,7 +191,7 @@ def parse_page_pairs(text: str) -> "List[Tuple[str, int, str, int]]":
     return pairs_from_wires(parse_page_wires(text))
 
 
-@mcp.tool()
+@mcp.tool(title="Выгрузить текст модели", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def export_model_text() -> str:
     """Выгрузить модель текущей страницы проекта в декларативный текст.
@@ -384,7 +384,7 @@ def _duplicate_record_names(model_text: str) -> List[Tuple[str, int]]:
                   key=lambda item: (-item[1], item[0]))
 
 
-@mcp.tool()
+@mcp.tool(title="Собрать модель из текста", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def import_model_text(model_text: str) -> str:
     """Собрать объекты модели из декларативного текста.

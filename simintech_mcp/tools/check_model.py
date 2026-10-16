@@ -263,7 +263,7 @@ def _parse_point(text: str) -> Optional[Tuple[float, float]]:
     return (x, y)
 
 
-@mcp.tool()
+@mcp.tool(title="Проверка оформления", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def check_model_layout() -> str:
     """Проверить оформление текущей страницы: наложения, подписи, порты, связи.
@@ -1041,7 +1041,7 @@ def _parse_node_branches(
     return nodes
 
 
-@mcp.tool()
+@mcp.tool(title="Аудит маршрутов", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def audit_routing() -> str:
     """Проверить маршруты линий текущей страницы (читаемость, ТЗ п.1).

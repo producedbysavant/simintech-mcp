@@ -61,7 +61,7 @@ MAX_BLOCK_PROPS = 64
 MAX_BLOCK_IN_PORTS = 64
 
 
-@mcp.tool()
+@mcp.tool(title="Добавить блок", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def add_block(class_name: str, name_hint: str = "",
               x: float = 0.0, y: float = 0.0,
@@ -327,7 +327,7 @@ DEFAULT_LIST_BLOCKS = 50
 MAX_LIST_BLOCKS = 1000
 
 
-@mcp.tool()
+@mcp.tool(title="Список блоков", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def list_blocks(limit: int = DEFAULT_LIST_BLOCKS) -> str:
     """Вывести список блоков текущей страницы проекта.
@@ -365,7 +365,7 @@ def list_blocks(limit: int = DEFAULT_LIST_BLOCKS) -> str:
     return "Блоки:\n" + "\n".join(lines) + more
 
 
-@mcp.tool()
+@mcp.tool(title="Параметры блока", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_block_params(block: str) -> str:
     """Прочитать параметры блока.
@@ -421,7 +421,7 @@ def get_block_params(block: str) -> str:
     return f"Блок '{block}' [{class_name}]:\n" + "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(title="Записать параметр блока", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_block_param(block: str, param: str, value: str,
                     allow_unknown: bool = False) -> str:

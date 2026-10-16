@@ -29,7 +29,7 @@ from .. import runtime, sandbox
 from ..app import mcp
 
 
-@mcp.tool()
+@mcp.tool(title="Справка", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def help_text() -> str:
     """Справка: порядок работы и где взять список инструментов.
@@ -255,7 +255,7 @@ def _render_matches(matches: List[language_api.LanguageFunction],
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(title="Поиск функции языка", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def search_language_functions(
         query: str = "",
@@ -327,7 +327,7 @@ def search_language_functions(
     return _render_matches(found, limit, "Найдено")
 
 
-@mcp.tool()
+@mcp.tool(title="Карточка функции языка", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def get_language_function(name: str) -> str:
     """Карточка функции встроенного языка: синтаксис, аргументы, назначение.

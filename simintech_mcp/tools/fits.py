@@ -542,7 +542,7 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
     return changed, rejected
 
 
-@mcp.tool()
+@mcp.tool(title="Подгонка порт-блоков", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def fit_port_blocks() -> str:
     """Подогнать габариты блоков, связанных с портами, по правилам.
@@ -785,7 +785,7 @@ def _fit_value_labels_page(page: Page, where: str,
     return moved
 
 
-@mcp.tool()
+@mcp.tool(title="Подгонка подписей значений", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def fit_value_labels() -> str:
     """Вернуть подписи значений (`constLabel`) к их блокам-родителям.

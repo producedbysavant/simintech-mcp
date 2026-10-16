@@ -56,7 +56,7 @@ CALC_WAIT_MARGIN_SECONDS = 1.0
 MAX_STEP_COUNT = 1000
 
 
-@mcp.tool()
+@mcp.tool(title="Запустить расчёт", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def run(to_time: Optional[float] = None,
         wait_timeout: float = CALC_WAIT_SECONDS,
@@ -145,7 +145,7 @@ def run(to_time: Optional[float] = None,
     return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
 
 
-@mcp.tool()
+@mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def step(count: int = 1) -> str:
     """Выполнить указанное число шагов расчёта.
@@ -188,7 +188,7 @@ def step(count: int = 1) -> str:
     return f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
 
 
-@mcp.tool()
+@mcp.tool(title="Остановить расчёт", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def stop() -> str:
     """Остановить расчёт.
@@ -201,7 +201,7 @@ def stop() -> str:
     return "Расчёт остановлен"
 
 
-@mcp.tool()
+@mcp.tool(title="Модельное время", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_time() -> float:
     """Вернуть текущее модельное время проекта."""
@@ -235,7 +235,7 @@ def _signals_section(title: str, items: list[SignalInfo]) -> str:
     return f"{title}: {len(items)}\n{lines}"
 
 
-@mcp.tool()
+@mcp.tool(title="Список сигналов", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def list_signals() -> str:
     """Вывести читаемые сигналы проекта и имена блоков отдельно.
@@ -280,7 +280,7 @@ def _array_types() -> tuple[DataType, DataType]:
     return (DataType.ARRAY, DataType.INT_ARRAY)
 
 
-@mcp.tool()
+@mcp.tool(title="Прочитать сигнал", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_signal(block: str, max_items: int = 20,
                index: Optional[int] = None) -> str:
@@ -331,7 +331,7 @@ def get_signal(block: str, max_items: int = 20,
         return f"ERROR: {exc}"
 
 
-@mcp.tool()
+@mcp.tool(title="Записать сигнал", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
     """Записать значение в сигнал (адресуется именем блока).
@@ -372,7 +372,7 @@ def set_signal(block: str, value: float, index: Optional[int] = None) -> str:
 # ─── База сигналов ────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(title="Выгрузить базу сигналов", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def export_signal_db(path: str = "signals.xml") -> str:
     """Выгрузить базу сигналов проекта в XML и показать сводку.
