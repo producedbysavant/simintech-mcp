@@ -18,6 +18,8 @@ MCP-сервер (FastMCP) для управления средой динами
 | `session.py` | состояние сессии: клиент, проект, созданные линии |
 | `sandbox.py` | песочница результатов и ограниченное чтение |
 | `tables.py` | разбор числовых таблиц — чистый, без файловой системы |
+| `geometry.py` | чистая геометрия: габариты блоков, сегменты линий, предсказание маршрута |
+| `rules.py` | правило владельца, общее для инструментов: не больше трёх линий в узле |
 | `catalog.py` | каталог блоков и проверка имён параметров до вызова COM |
 | `skills.py` | скиллы из репозитория `simintech-skill` |
 | `tools/` | инструменты по предметным областям |
@@ -81,7 +83,7 @@ pip install -e ".[test]"
 
 Зависимость `simintech-api` берётся из
 [`simintech-code`](https://github.com/producedbysavant/simintech-code) по
-**релизному тегу** выпуска (`@v0.13.0`). Неизменяемость тега держат три вещи
+**релизному тегу** выпуска (`@v0.14.0`). Неизменяемость тега держат три вещи
 (политика владельца, 2026-10-01):
 
 * ruleset `protect-release-tags` в репозитории библиотеки: удаление и
@@ -132,7 +134,7 @@ claude mcp add simintech -- simintech-mcp
 | Результаты | `read_output_file`, `summarize_output_file` |
 | Текст модели | `export_model_text`, `import_model_text` |
 | Языковой слой | `get_page_script`, `set_page_script`, `get_block_script`, `set_block_script`, `run_page_script`, `inject_submodel_script` |
-| Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role` |
+| Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role`, `read_output_file`, `summarize_output_file`, `help_text`, `search_language_functions`, `get_language_function`, `create_pack` |
 | Layout | `layout_place`, `fit_view`, `audit_routing`, `check_model_layout`, `set_block_center` |
 | Снимок схемы | `save_screenshot` (кадр подгоняется сам; `fit=False` — текущий вид) |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
@@ -151,6 +153,8 @@ claude mcp add simintech -- simintech-mcp
 `simintech://language/functions` и `.../<имя>` (реестр функций встроенного
 языка: имя, назначение, синтаксис, аргументы — поиск
 `search_language_functions`, карточка `get_language_function`),
+`simintech://model/checklist` (чек-лист «Оформление модели»: что проверяется
+машинно, а что смотрят глазами),
 `simintech://skills` и `simintech://skills/<имя>` (скиллы из `simintech-skill`).
 Промпты: `create_pid_model`, `create_rc_chain`.
 
