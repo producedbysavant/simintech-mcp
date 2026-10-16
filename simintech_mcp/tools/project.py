@@ -20,7 +20,7 @@ from ..app import mcp
 
 # ─── Подключение ──────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(title="Статус подключения к SimInTech", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def status() -> str:
     """Проверить доступность COM-сервера SimInTech (Windows).
@@ -48,7 +48,13 @@ def status() -> str:
         raise ToolError(f"SimInTech недоступен: {exc}") from exc
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Завершить сессию",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded(rescue=True)
 def disconnect() -> str:
     """Завершить сессию: закрыть пакет, проект и снять свой процесс.
@@ -159,7 +165,7 @@ def disconnect() -> str:
 
 # ─── Проекты ──────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(title="Создать проект", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def create_project(project_hint: str = "model",
                    end_time: Optional[float] = None) -> str:
@@ -197,7 +203,7 @@ def create_project(project_hint: str = "model",
             + replaced)
 
 
-@mcp.tool()
+@mcp.tool(title="Задать время расчёта", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_calc_time(seconds: float) -> str:
     """Задать конечное время расчёта проекта (`endtime` расчётного слоя).
@@ -211,7 +217,7 @@ def set_calc_time(seconds: float) -> str:
     return f"Время расчёта: {seconds} с"
 
 
-@mcp.tool()
+@mcp.tool(title="Открыть проект", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def open_project(path: str) -> str:
     """Открыть существующий проект SimInTech (.prt/.xprt).
@@ -267,7 +273,13 @@ def open_project(path: str) -> str:
     return f"Проект открыт: {session.project_label()}" + replaced
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Переоткрыть проект (откат правок)",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded
 def reload_project() -> str:
     """Переоткрыть текущий проект из файла — откат несохранённых правок.
@@ -375,7 +387,7 @@ def reload_project() -> str:
     return f"Проект переоткрыт из файла: {source}" + replaced + tail
 
 
-@mcp.tool()
+@mcp.tool(title="Роль проекта в сети", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def project_network_role() -> str:
     """Показать роль проекта в распределённом (сетевом) расчёте.
@@ -430,7 +442,7 @@ def project_network_role() -> str:
     return "\n".join(detail)
 
 
-@mcp.tool()
+@mcp.tool(title="Параметры расчётного слоя", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_project_config() -> str:
     """Показать параметры расчётного слоя проекта.
@@ -457,7 +469,12 @@ def get_project_config() -> str:
                         for name, value in sorted(settings.items())))
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Записать параметр расчётного слоя",
+    annotations={
+        "readOnlyHint": False,
+    },
+)
 @runtime.com_threaded(mutates_project=True)
 def set_project_config(param: str, value: str) -> str:
     """Записать параметр расчётного слоя проекта (`SetLayerProp`).
@@ -658,7 +675,13 @@ def _refuse_format_extension_mismatch(path: str, binary: bool) -> None:
             "не разберётся. Сохраните в .prt или передайте binary=False.")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Сохранить проект в файл",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded
 def save_project(path: str, binary: bool = False,
                  show_form: bool = True) -> str:
@@ -779,7 +802,13 @@ def save_project(path: str, binary: bool = False,
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Закрыть проект",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded
 def close_project() -> str:
     """Закрыть текущий проект.

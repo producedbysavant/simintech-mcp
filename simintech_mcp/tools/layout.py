@@ -402,7 +402,7 @@ def normalize_page_wires(page: Page) -> str:
             "пустые нормализация дописывает в данные")
 
 
-@mcp.tool()
+@mcp.tool(title="Расставить блоки и трассировать", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def layout_place(block_ids: str = "", connections: str = "",
                  normalize_only: bool = False) -> str:
@@ -1042,7 +1042,7 @@ def apply_fit_view(canvas_w: float = CANVAS_W,
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Двинуть блоки", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_block_center(block: str = "", x: Optional[float] = None,
                      y: Optional[float] = None, moves: str = "") -> str:
@@ -1174,7 +1174,7 @@ def set_block_center(block: str = "", x: Optional[float] = None,
     return "\n".join(lines) + routes
 
 
-@mcp.tool()
+@mcp.tool(title="Показать схему целиком", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def fit_view() -> str:
     """Показать схему целиком: посчитать рамку модели и выставить кадр страницы.

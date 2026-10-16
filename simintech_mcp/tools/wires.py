@@ -81,7 +81,7 @@ def _wire_scan_lines(indent: str, *, on_empty: Optional[List[str]] = None,
     return [indent + line for line in body]
 
 
-@mcp.tool()
+@mcp.tool(title="Соединить блоки", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def connect(src: str, dst: str,
             out_index: int = 0, in_index: int = 0) -> str:
@@ -337,7 +337,13 @@ def _block_caption(page: Any, block_id: int) -> str:
             else f"id={block_id} (имя блока не прочиталось)")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Снять линию связи",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded(mutates_project=True)
 def disconnect_wire(src: str, dst: str,
                     out_index: int = 0, in_index: int = 0) -> str:
@@ -666,7 +672,7 @@ def _parse_branch_reply(lines: List[str]) -> _BranchReply:
     return _BranchReply(kind="no-reply")
 
 
-@mcp.tool()
+@mcp.tool(title="Создать ветвление", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def connect_branch(src: str, dst: str, out_index: int = 0,
                    in_index: int = 0, point_index: int = 0) -> str:
@@ -979,7 +985,13 @@ def _parse_remove_reply(lines: List[str]) -> _RemoveReply:
     return _RemoveReply("unknown", wires=tuple(wires), bad_port=bad_port)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Удалить блок",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded(mutates_project=True)
 def remove_block(block: str, with_wires: bool = False) -> str:
     """Удалить блок со страницы — узкая безопасная форма `removeprimitiv`.
@@ -1126,7 +1138,7 @@ def remove_block(block: str, with_wires: bool = False) -> str:
             f"{tail}{routes}")
 
 
-@mcp.tool()
+@mcp.tool(title="Список линий", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def list_wires() -> str:
     """Перечислить линии связи текущей страницы проекта.

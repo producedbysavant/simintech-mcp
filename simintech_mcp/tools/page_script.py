@@ -123,7 +123,7 @@ def change_report(before: list[str], after: list[str],
             f"{len(after)}{tail}{more}. {restored_note}")
 
 
-@mcp.tool()
+@mcp.tool(title="Скрипт страницы", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_page_script() -> str:
     """Прочитать скрипт текущей страницы проекта.
@@ -286,7 +286,7 @@ def refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
             f"запускалось{section_note}. Повторите вызов.")
 
 
-@mcp.tool()
+@mcp.tool(title="Поставить скрипт страницы", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_page_script(script: str) -> str:
     """Поставить скрипт в текущую страницу проекта и проверить, что он собрался.
@@ -342,7 +342,7 @@ def set_page_script(script: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Выполнить скрипт в странице", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def run_page_script(script: str) -> str:
     """Выполнить произвольный скрипт в секции `initialization` текущей страницы.
@@ -446,7 +446,7 @@ def _collect_body(body: str, collect_path: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Субмодель со скриптом сбора", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def inject_submodel_script(script: str) -> str:
     """Создать субмодель со скриптом сбора данных и вернуть собранное.

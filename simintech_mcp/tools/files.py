@@ -25,7 +25,7 @@ from .. import runtime, sandbox, tables
 from ..app import mcp
 
 
-@mcp.tool()
+@mcp.tool(title="Прочитать файл результата", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def read_output_file(path: str, max_lines: int = 200) -> str:
     """Прочитать текстовый файл с результатами расчёта.
@@ -83,7 +83,7 @@ def read_output_file(path: str, max_lines: int = 200) -> str:
     return head + "\n" + "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(title="Сводка результата", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def summarize_output_file(path: str, column: int = -1) -> str:
     """Свести результат расчёта к числам: диапазон, min/max, среднее, наклон.
@@ -184,7 +184,7 @@ def _xprt_block_names(text: str) -> List[str]:
         return []
 
 
-@mcp.tool()
+@mcp.tool(title="Разобрать .xprt без COM", annotations={"readOnlyHint": True})
 @runtime.plain_tool
 def inspect_project_file(path: str) -> str:
     """Разобрать сохранённый проект (.xprt) **без COM** — годится и для Linux.

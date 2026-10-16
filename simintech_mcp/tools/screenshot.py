@@ -496,7 +496,7 @@ def _tiles_shot(root: str, key: str, type_code: int, zoom: float,
             + "\n".join(parts) + canvas_note + tail)
 
 
-@mcp.tool()
+@mcp.tool(title="Снимок схемы", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def save_screenshot(format: str = DEFAULT_FORMAT, fit: bool = True,
                     hires: bool = False,

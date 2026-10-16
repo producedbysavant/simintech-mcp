@@ -136,7 +136,7 @@ def _composition_lines(members: List[Tuple[int, Optional[str]]]) -> str:
 # ─── Жизненный цикл ───────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(title="Собрать пакет (.pak)", annotations={"readOnlyHint": False})
 @runtime.plain_tool
 def create_pack(path: str, projects: List[str],
                 inactive: Optional[List[int]] = None,
@@ -235,7 +235,7 @@ def create_pack(path: str, projects: List[str],
             + f"\nОткрыть: `open_pack(\"{path}\")`.")
 
 
-@mcp.tool()
+@mcp.tool(title="Открыть пакет", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def open_pack(path: str) -> str:
     """Открыть пакет проектов SimInTech (`.pak`).
@@ -281,7 +281,13 @@ def open_pack(path: str) -> str:
             + _composition_lines(members) + replaced)
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Закрыть пакет",
+    annotations={
+        "readOnlyHint": False,
+        "destructiveHint": True,
+    },
+)
 @runtime.com_threaded
 def close_pack() -> str:
     """Закрыть текущий пакет сессии.
@@ -318,7 +324,7 @@ def close_pack() -> str:
 # ─── Состав ───────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(title="Состав пакета", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def list_pack_projects() -> str:
     """Вывести состав пакета: индекс, id, файл и модельное время участников.
@@ -354,7 +360,7 @@ def list_pack_projects() -> str:
             + f"\nВремя пакета (минимум по участникам): {_fmt_time(total)}")
 
 
-@mcp.tool()
+@mcp.tool(title="Выбрать проект пакета", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def select_pack_project(index: int) -> str:
     """Сделать проект пакета текущим проектом сессии.
@@ -396,7 +402,7 @@ def select_pack_project(index: int) -> str:
 # ─── Расчёт ───────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(title="Запустить расчёт пакета", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def pack_run() -> str:
     """Запустить расчёт пакета (`PackStart` + `PackRun`, неблокирующий).
@@ -428,7 +434,7 @@ def pack_run() -> str:
             f"продвигать время надёжнее через `pack_step`.")
 
 
-@mcp.tool()
+@mcp.tool(title="Шаги расчёта пакета", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def pack_step(count: int = 1) -> str:
     """Выполнить указанное число шагов расчёта пакета.
@@ -478,7 +484,7 @@ def pack_step(count: int = 1) -> str:
             f"{_fmt_time(before)} → {after:g})")
 
 
-@mcp.tool()
+@mcp.tool(title="Остановить расчёт пакета", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def pack_stop() -> str:
     """Остановить расчёт пакета.
