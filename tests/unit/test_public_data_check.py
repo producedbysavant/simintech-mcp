@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path, PureWindowsPath
 
@@ -161,3 +162,26 @@ def test_empty_tree_is_not_clean(tmp_path, capsys):
     """Пустой результат ≠ чистый результат: «не проверено» — тоже отказ."""
     assert main(tmp_path) == 1
     assert "не состоялась" in capsys.readouterr().out
+
+
+# ─── Единство файла гейта в трёх репозиториях ─────────────────────
+
+#: sha256 единого файла `scripts/public_data_check.py`. Файл обязан быть
+#: побайтово одинаковым в simintech-mcp, simintech-code и simintech-skill:
+#: расхождение копий уже случалось (фикс #82 жил только в одной, allowlist —
+#: только в другой), и гейт работал по-разному на одной и той же находке.
+#: Правка — тремя PR-ами сразу, с обновлением константы во всех трёх.
+GATE_SHA256 = "7f4210a565863c580426aff8620dcc846c4f186053548fe1bc69f5e88a1ec2ae"
+
+
+def test_gate_file_is_in_sync_with_the_other_repositories():
+    """Копия гейта совпадает с отпечатком единого файла трёх репозиториев."""
+    path = (Path(__file__).resolve().parents[2] / "scripts"
+            / "public_data_check.py")
+    current = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert current == GATE_SHA256, (
+        f"файл гейта изменён (sha256 {current}); если правка настоящая — "
+        f"обновите GATE_SHA256 во всех трёх репозиториях (simintech-mcp, "
+        f"simintech-code, simintech-skill): копии обязаны быть одинаковыми"
+    )
