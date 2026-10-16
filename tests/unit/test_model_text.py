@@ -42,12 +42,14 @@ class _FakeClient:
 class _Page:
     """Страница без объектов: отчёту об изменениях нужен её список."""
 
-    def __init__(self, wires=None):
+    def __init__(self, wires=None, blocks=None):
         #: Линии страницы: подсказка о трассировке считает их число.
         self._wires = list(wires or [])
+        #: Блоки — подписям экспорта (ячейки памяти, адресация портов).
+        self._blocks = list(blocks or [])
 
     def get_blocks(self) -> list:
-        return []
+        return list(self._blocks)
 
     def get_wires(self) -> list:
         return list(self._wires)
@@ -56,12 +58,13 @@ class _Page:
 class _FakeProject:
     """Открытый проект: мосту нужен идентификатор, отчёту — страница."""
 
-    def __init__(self, project_id: int = 7, wires=None):
+    def __init__(self, project_id: int = 7, wires=None, blocks=None):
         self.id = project_id
         self._wires = list(wires or [])
+        self._blocks = list(blocks or [])
 
     def get_current_page(self):
-        return _Page(self._wires)
+        return _Page(self._wires, self._blocks)
 
 
 def _dump_path_from_body(body: str) -> str:
@@ -121,10 +124,11 @@ class _BridgeSilent(_BridgeRunsContour):
                              restored_script=type(self).restored)
 
 
-def _install(monkeypatch, tmp_path: Path, bridge, wires=None) -> None:
+def _install(monkeypatch, tmp_path: Path, bridge, wires=None, blocks=None) -> None:
     monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
     monkeypatch.setattr(session, "_client", _FakeClient())
-    monkeypatch.setattr(session, "_project", _FakeProject(wires=wires))
+    monkeypatch.setattr(session, "_project",
+                        _FakeProject(wires=wires, blocks=blocks))
     monkeypatch.setattr(page_script, "ScriptBridge", bridge)
 
 
@@ -231,6 +235,183 @@ async def test_export_model_text_names_non_running_model(monkeypatch, tmp_path):
     assert "initialization" in result, "причина полноты текста не названа"
     assert "отдельно открытая субмодель" in result, \
         "субмодельный случай не назван — состояние читается дефектом модели"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_signs_cells_and_branches(monkeypatch, tmp_path):
+    """Ответ несёт подписи ячеек памяти и ветвей — отдельными строками.
+
+    Текстом выгрузки идентичность не читается (issue #153): имя ячейки не
+    печатается вовсе, а родителя ветви не отличить от чужих проводов с тем же
+    автоименем. Подписи идут перед текстом, а не правкой текста: текст — вход
+    `import_model_text`.
+    """
+
+    class _BridgeProbe(_BridgeRunsContour):
+        outcome = ContourOutcome(kind=OUTCOME_OK, lines=[
+            "W|9|92+64i|92+96i|0|0",
+            "W|10|92+96i|24+40i|9|2",
+            "WDONE",
+        ])
+
+    class _Cell:
+        def __init__(self, block_id, name, class_name, portnames):
+            self.id = block_id
+            self.class_name = class_name
+            self._name = name
+            self._portnames = portnames
+
+        def get_name(self) -> str:
+            return self._name
+
+        def get_property(self, name: str) -> str:
+            return self._portnames
+
+        def get_port_count(self) -> int:
+            return 0
+
+        def get_in_port(self, index: int = 0):
+            raise RuntimeError("у фейка нет портов")
+
+        def get_out_port(self, index: int = 0):
+            raise RuntimeError("у фейка нет портов")
+
+    class _Wire:
+        def __init__(self, wire_id):
+            self.id = wire_id
+
+    _install(monkeypatch, tmp_path, _BridgeProbe,
+             wires=[_Wire(9), _Wire(10)],
+             blocks=[_Cell(1, "ToMem_4", "В память", "#RA402")])
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert "Ячейки памяти (PortNames): ToMem_4 = #RA402" in result
+    assert "Ветви" in result
+    assert "dst=?" in result, "нерезолвнутый конец не назван честно"
+    assert "(узел 1)" in result
+    assert result.index("Ячейки памяти") < result.index("Текст модели"), \
+        "подписи должны идти до текста"
+    assert _BridgeProbe.body.count("getwirestartpointcoord") == 2, \
+        "тело контура не получило строку подписи на каждую линию"
+
+
+def test_parse_wire_probe_requires_marker():
+    """Парсер подписи о ветвях: без маркера — None, а не «ветвей нет»."""
+    from simintech_mcp.tools.model_text import _parse_wire_probe
+
+    assert _parse_wire_probe(None) is None, "сбой прогона выдан за подпись"
+    assert _parse_wire_probe(["W|9|92+64i|92+96i|0|0"]) is None
+    assert _parse_wire_probe(["W|1|0+0i|24+40i|0|0", "WDONE"]) == {
+        1: ("0+0i", "24+40i", 0, 0)}
+    assert _parse_wire_probe(["флуд", "WDONE"]) == {}
+
+
+def test_wire_probe_empty_is_not_a_break():
+    """Страница без проводов — пустая подпись, а не ложный обрыв (ревью #154).
+
+    Прежде тело подписи подавалось только при непустом списке линий, маркер
+    не писался, и ответ страницы без проводов сообщал «оборвались до
+    маркера». Теперь прогон не запускается (проводов нет — ветвей нет), а
+    `[]` честно читается как пустая подпись; тело же маркер пишет всегда —
+    на случай, если его подадут.
+    """
+    from simintech_mcp.tools.model_text import (
+        _parse_wire_probe,
+        _wire_probe_body,
+    )
+
+    assert '"WDONE"' in _wire_probe_body([]), "маркер не пишется на пустом теле"
+    assert _parse_wire_probe([]) == {}, "пустой прогон выдан за обрыв"
+    assert _parse_wire_probe(["WDONE"]) == {}
+
+
+def test_branch_lines_name_parent_by_ends():
+    """Родитель ветви называется концами, а не автоименем (issue #153)."""
+    from simintech_mcp.tools.model_text import _branch_lines, _point_cell
+
+    assert _point_cell("92+64i") == (92, 64)
+    assert _point_cell("(-160-992i)") == (-160, -992)
+    assert _point_cell("92.5+64i") == (92, 64), \
+        "дробная координата дала чужую клетку (находка ревью #154)"
+    assert _point_cell("без точки") is None
+
+    probe = {9: ("80+64i", "192+64i", 0, 0), 10: ("192+64i", "24+40i", 9, 2),
+             11: ("0+0i", "0+0i", 9, 1)}
+    addressing = {(80, 64): "k_0:out:0", (192, 64): "ad_1:in:0",
+                  (24, 40): "portconnector_0:in:0"}
+    note = _branch_lines(probe, addressing)
+    assert "dst=portconnector_0:in:0" in note
+    assert "src=k_0:out:0 → dst=ad_1:in:0" in note
+    assert "(узел 1)" in note
+    assert note.count("— на линии") == 1, \
+        "пустой сегмент ветвления (0+0i) попал в подпись"
+    assert _branch_lines({9: ("80+64i", "192+64i", 0, 0)}, addressing) == "", \
+        "линия без родителя попала в подпись о ветвях"
+    assert "не прочитано" in _branch_lines(None, addressing), \
+        "сбой прогона выдан за «ветвей нет»"
+    note = _branch_lines(probe, {})
+    assert "dst=?" in note and "src=? → dst=?" in note, \
+        "конец без порта не назван честно"
+
+
+def test_identity_notes_read_portnames():
+    """Подписи: имя переменной из PortNames; не-ячейки не попадают."""
+    from simintech_mcp.tools.model_text import _identity_notes
+
+    class _Cell:
+        def __init__(self, block_id, name, class_name, portnames):
+            self.id = block_id
+            self.class_name = class_name
+            self._name = name
+            self._portnames = portnames
+
+        def get_name(self) -> str:
+            return self._name
+
+        def get_property(self, name: str) -> str:
+            return self._portnames
+
+    note = _identity_notes([
+        _Cell(1, "ToMem_4", "В память", "#RA402"),
+        _Cell(2, "FromMem_1", "Из памяти", "#RA402"),
+        _Cell(3, "k_0", "Константа", "1"),
+        _Cell(4, "ToMem_5", "В память", "#A\r\n#B"),
+    ], None)
+    assert "ToMem_4 = #RA402" in note
+    assert "FromMem_1 = #RA402" in note
+    assert "k_0" not in note
+    assert "ToMem_5 = #A #B" in note, \
+        "переносы строк PortNames не нормализованы"
+    low = _identity_notes([_Cell(3, "k_0", "Константа", "1")], None)
+    assert "Ячейки памяти" not in low, "не-ячейки дали строку подписи памяти"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_survives_probe_failure(monkeypatch, tmp_path):
+    """Сбой прогона подписи не отменяет выгрузку — только «не прочитано».
+
+    Подпись собирается отдельным прогоном контура (находка ревью PR #154):
+    в общем теле её сбой уводил исход в `aborted`, и
+    `refuse_contour_failure` отменял выгрузку — хотя текст уже записан.
+    """
+
+    class _BridgeProbeFails(_BridgeRunsContour):
+        def run_page_script(self, body, result_path):
+            if "savemodeltofile(" not in body:
+                raise ScriptBridgeError("подпись о ветвях не собралась")
+            return super().run_page_script(body, result_path)
+
+    class _Wire:
+        def __init__(self, wire_id):
+            self.id = wire_id
+
+    _install(monkeypatch, tmp_path, _BridgeProbeFails, wires=[_Wire(9)])
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert _BridgeRunsContour.payload in result, "выгрузка отменена сбоем подписи"
+    assert "Ветви: не прочитано" in result
 
 
 @pytest.mark.anyio
