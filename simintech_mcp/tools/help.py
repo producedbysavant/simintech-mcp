@@ -97,6 +97,8 @@ def help_text() -> str:
         "Аргументы инструментов и их ограничения описаны в их docstring.\n"
         "Ресурсы (read-only): simintech://status, simintech://project/blocks,\n"
         "  simintech://blocks/catalog — классы и имена параметров блоков;\n"
+        "  simintech://model/checklist — чек-лист оформления модели\n"
+        "  (что агент проверяет сам после сборки);\n"
         "  simintech://language/functions и .../<имя> — реестр функций\n"
         "  встроенного языка (имя, назначение, синтаксис, аргументы);\n"
         "  искать — search_language_functions, карточка — get_language_function;\n"
