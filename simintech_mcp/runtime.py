@@ -71,6 +71,35 @@ MUTATES_PROJECT_MARK = "_simintech_mutates_project"
 #: такой инструмент — `disconnect`: им и сбрасывается зависшая сессия.
 RESCUE_MARK = "_simintech_rescue"
 
+#: Метка workflow-инструмента: `True` - инструмент оркестрирует другие
+#: инструменты и сам в COM-поток не встаёт. Вложенные вызовы занимают
+#: единственный COM-поток по очереди; если бы workflow шёл через
+#: `com_threaded`, он бы ждал собственный future.
+WORKFLOW_MARK = "_simintech_workflow"
+
+
+def diagnose_error(exc: BaseException) -> str:
+    """Подсказка к типовой ошибке: действие, а не только причина."""
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if "объект не подключен" in text or "co_e_objnotconnected" in text:
+        return (" Подсказка: COM-сессия потеряна. Вызовите doctor, затем "
+                "disconnect и повторите.")
+    if "нет открытого проекта" in text:
+        return " Подсказка: сначала create_project или open_project."
+    if "не найден на странице" in text or "блок не найден" in text:
+        return (" Подсказка: имена блоков возвращает list_blocks; "
+                "ищите фактическое имя, а не name_hint.")
+    if "неизвестн" in text and "параметр" in text:
+        return (" Подсказка: имена параметров класса смотрите в "
+                "simintech://blocks/catalog или в get_block_params.")
+    if "module" in text and "not registered" in text:
+        return (" Подсказка: модуль не лицензирован; проверьте лицензию "
+                "и профиль библиотек.")
+    if "access violation" in text:
+        return (" Подсказка: среда упала. Вызовите doctor и disconnect; "
+                "при необходимости перезапустите mmain.exe.")
+    return ""
+
 
 class _StuckCall(NamedTuple):
     """Зависший COM-вызов: таймаут сработал, а future не завершился.
@@ -175,7 +204,8 @@ def _call_guarded(fn: Callable[..., Any], args: Tuple[Any, ...],
     except ToolError:
         raise
     except Exception as exc:
-        raise ToolError(f"{type(exc).__name__}: {exc}") from exc
+        raise ToolError(
+            f"{type(exc).__name__}: {exc}{diagnose_error(exc)}") from exc
     if isinstance(result, str):
         if result.startswith(ERROR_PREFIX):
             raise ToolError(result[len(ERROR_PREFIX):].strip())
@@ -402,4 +432,32 @@ def plain_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
 
     wrapper = _instrumented(fn, invoke)
     setattr(wrapper, COM_THREAD_MARK, False)
+    return wrapper
+
+
+def workflow_tool(fn: Callable[..., Any] | None = None, *,
+                  mutates_project: bool = False) -> Callable[..., Any]:
+    """Инструмент-оркестратор: COM-поток занимают вложенные вызовы.
+
+    Сам workflow не отправляется в `_COM_EXECUTOR`: иначе он ждал бы
+    собственный future и упёрся бы в `COM_CALL_TIMEOUT`. Контракт отказа и
+    журнал общие с остальными инструментами. Метка `COM_THREAD_MARK` здесь
+    означает «работает с COM через вложенные вызовы», а не «исполняется в
+    выделенном потоке».
+    """
+    if fn is None:
+        return functools.partial(workflow_tool,
+                                 mutates_project=mutates_project)
+
+    def invoke(*args: Any, **kwargs: Any) -> Any:
+        result = _call_guarded(fn, args, kwargs)
+        if mutates_project:
+            result = _append_mutation_note(result)
+        return result
+
+    wrapper = _instrumented(fn, invoke)
+    setattr(wrapper, COM_THREAD_MARK, True)
+    setattr(wrapper, WORKFLOW_MARK, True)
+    if mutates_project:
+        setattr(wrapper, MUTATES_PROJECT_MARK, True)
     return wrapper

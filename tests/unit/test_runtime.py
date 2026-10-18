@@ -340,3 +340,37 @@ def test_disconnect_is_marked_rescue():
     assert getattr(disconnect, runtime.RESCUE_MARK, False), (
         "disconnect без пометки rescue отсекался бы мгновенным отказом, "
         "и зависшая сессия осталась бы без сброса")
+
+
+def test_workflow_tool_runs_without_taking_com_executor(monkeypatch):
+    """Workflow не занимает COM-поток: иначе он ждал бы сам себя."""
+    @runtime.workflow_tool
+    def workflow():
+        return "ok"
+
+    def boom(*args, **kwargs):
+        raise AssertionError("workflow занял COM-поток")
+
+    monkeypatch.setattr(runtime._COM_EXECUTOR, "submit", boom)
+
+    assert workflow() == "ok"
+    assert getattr(workflow, runtime.WORKFLOW_MARK, False) is True
+
+
+def test_workflow_tool_converts_error_to_tool_error():
+    """Отказ workflow приходит исключением, а не текстом."""
+    @runtime.workflow_tool
+    def workflow():
+        raise ValueError("bad")
+
+    with pytest.raises(ToolError, match="ValueError"):
+        workflow()
+
+
+def test_diagnose_error_names_session_loss():
+    """Потеря COM-сессии называет действие, а не только причину."""
+    hint = runtime.diagnose_error(
+        RuntimeError("Объект не подключен к серверу"))
+
+    assert "disconnect" in hint
+    assert "doctor" in hint

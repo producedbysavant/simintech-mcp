@@ -277,3 +277,45 @@ async def test_resource_model_checklist_covers_key_rules():
     assert "fit_value_labels" in text
     assert "16 px" in text
     assert "GUI" in text  # непроверяемое машинно названо
+
+
+@pytest.mark.anyio
+async def test_tools_resource_lists_catalog():
+    """Каталог ресурса перечисляет все инструменты, включая композиты."""
+    from simintech_mcp import surface
+    from simintech_mcp.server import mcp
+
+    text = await _resource_text("simintech://tools")
+
+    assert "build_model" in text
+    assert "search_tools" in text
+    assert len(await surface.catalog_tools(mcp)) == 64
+
+
+@pytest.mark.anyio
+async def test_tool_resource_returns_full_docstring():
+    """Карточка инструмента отдаёт полный docstring и схему входа."""
+    text = await _resource_text("simintech://tools/import_model_text")
+
+    assert "createmodel" in text
+    assert "input_schema" in text
+
+
+@pytest.mark.anyio
+async def test_model_text_guide_exists():
+    """Руководство по тексту модели называет формат и кавычки."""
+    text = await _resource_text("simintech://guides/model-text")
+
+    assert "createmodel" in text
+    assert "points" in text
+    assert "chr(34)" in text
+
+
+@pytest.mark.anyio
+async def test_wire_geometry_guide_exists():
+    """Руководство по геометрии проводов содержит живой вердикт."""
+    text = await _resource_text("simintech://guides/wire-geometry")
+
+    assert "144" in text
+    assert "213" in text
+    assert "connect" in text

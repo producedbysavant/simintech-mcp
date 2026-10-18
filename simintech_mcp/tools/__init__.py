@@ -7,7 +7,7 @@
 
 from . import (block_script, blocks, check_model, files, fits, help,
                layout, model_text, pack, page_script, project, screenshot,
-               simulation, sizes, wires)
+               simulation, sizes, wires, workflows)
 
 __all__ = [
     "block_script",
@@ -25,4 +25,5 @@ __all__ = [
     "simulation",
     "sizes",
     "wires",
+    "workflows",
 ]

@@ -14,6 +14,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from . import __version__
+from .surface import build_transforms
 
 
 # ─── MCP-сервер ────────────────────────────────────────────────────
@@ -23,12 +24,14 @@ mcp = FastMCP(
     version=__version__,
     instructions=(
         "Управление SimInTech через COM API (Windows, mmain.exe /regserver). "
-        "Сборка и расчёт модели: create_project → add_block → connect → run → "
-        "read_output_file (результат пишет блок «В файл»). "
-        "Имена параметров блоков берите из ресурса simintech://blocks/catalog: "
-        "неизвестное имя — отказ, запись в вычисляемый параметр — тоже. "
-        "Полный список инструментов — в tools/list, он же источник истины. "
-        "Особенности среды — в репозитории simintech-code: CLAUDE.md и "
+        "Начните с doctor. Сборка: build_model(spec=...) с ModelSpec; "
+        "верхнеуровневые провода создаются connect, не текстом. "
+        "Обзор: inspect_model; расчёт: simulate; оформление: format_model. "
+        "Нестандартные операции ищутся search_tools; полные описания "
+        "инструментов: simintech://tools/<name>. "
+        "Имена параметров блоков: simintech://blocks/catalog. "
+        "Особенности среды: репозиторий simintech-code, CLAUDE.md и "
         "docs/reference/com_api_inventory.md."
     ),
+    transforms=build_transforms(),
 )
