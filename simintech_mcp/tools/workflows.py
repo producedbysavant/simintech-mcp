@@ -82,10 +82,14 @@ def _api_version() -> str:
         return "unknown"
 
 
-@mcp.tool(title="Диагностика",
-          annotations={"read_only_hint": True,
-                      "idempotent_hint": True,
-                      "open_world_hint": False})
+@mcp.tool(
+    title="Диагностика",
+    annotations={
+        "read_only_hint": True,
+        "idempotent_hint": True,
+        "open_world_hint": False,
+    },
+)
 @runtime.workflow_tool
 def doctor() -> str:
     """Проверить окружение SimInTech и назвать следующие шаги."""
@@ -144,11 +148,15 @@ def doctor() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(title="Собрать модель",
-          annotations={"read_only_hint": False,
-                      "destructive_hint": False,
-                      "idempotent_hint": False,
-                      "open_world_hint": False})
+@mcp.tool(
+    title="Собрать модель",
+    annotations={
+        "read_only_hint": False,
+        "destructive_hint": False,
+        "idempotent_hint": False,
+        "open_world_hint": False,
+    },
+)
 @runtime.workflow_tool(mutates_project=True)
 def build_model(spec: Optional[ModelSpec] = None,
                 model_text: str = "",
@@ -224,10 +232,14 @@ def build_model(spec: Optional[ModelSpec] = None,
     return "Модель собрана.\n\n" + "\n\n".join(notes)
 
 
-@mcp.tool(title="Обзор модели",
-          annotations={"read_only_hint": True,
-                      "idempotent_hint": True,
-                      "open_world_hint": False})
+@mcp.tool(
+    title="Обзор модели",
+    annotations={
+        "read_only_hint": True,
+        "idempotent_hint": True,
+        "open_world_hint": False,
+    },
+)
 @runtime.workflow_tool
 def inspect_model(include_params: bool = False, limit: int = 200) -> str:
     """Показать блоки, линии и, при необходимости, параметры."""
@@ -249,11 +261,15 @@ def inspect_model(include_params: bool = False, limit: int = 200) -> str:
     return "\n\n".join(parts)
 
 
-@mcp.tool(title="Расчёт и результат",
-          annotations={"read_only_hint": False,
-                      "destructive_hint": False,
-                      "idempotent_hint": False,
-                      "open_world_hint": False})
+@mcp.tool(
+    title="Расчёт и результат",
+    annotations={
+        "read_only_hint": False,
+        "destructive_hint": False,
+        "idempotent_hint": False,
+        "open_world_hint": False,
+    },
+)
 @runtime.workflow_tool(mutates_project=True)
 def simulate(to_time: Optional[float] = None,
              end_time: Optional[float] = None,
@@ -276,11 +292,15 @@ def simulate(to_time: Optional[float] = None,
     return "\n\n".join(parts)
 
 
-@mcp.tool(title="Оформление модели",
-          annotations={"read_only_hint": False,
-                      "destructive_hint": False,
-                      "idempotent_hint": False,
-                      "open_world_hint": False})
+@mcp.tool(
+    title="Оформление модели",
+    annotations={
+        "read_only_hint": False,
+        "destructive_hint": False,
+        "idempotent_hint": False,
+        "open_world_hint": False,
+    },
+)
 @runtime.workflow_tool(mutates_project=True)
 def format_model(
         mode: Literal["place", "normalize", "fit", "screenshot"] = "place",
