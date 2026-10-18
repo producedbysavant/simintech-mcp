@@ -36,6 +36,11 @@ def _text(result) -> str:
 _tool_text = _text
 
 
+async def all_tools():
+    """Полный каталог без transforms: источник истины для контракта."""
+    return list(await mcp._local_provider.list_tools())
+
+
 async def _error(tool: str, arguments: dict) -> str:
     """Вызвать инструмент, ожидая отказ; вернуть текст отказа.
 

@@ -13,7 +13,7 @@ from simintech_mcp.server import mcp
 
 import simintech_mcp
 
-from _support import _text
+from _support import _text, all_tools
 
 #: Отрицание создания блока: утверждения вида «такой класс не создаётся».
 _DENIALS = ("не создаются", "не создаётся", "не создаёт", "через COM нет")
@@ -80,6 +80,7 @@ _MUTATING_TOOLS = {
     "import_model_text", "set_page_script", "run_page_script",
     "inject_submodel_script", "set_signal", "set_calc_time",
     "set_project_config",
+    "build_model", "simulate", "format_model",
 }
 
 #: Чистые чтения — аннотация `readOnlyHint: True`: ни проект, ни сессия, ни
@@ -98,6 +99,7 @@ _READ_ONLY_TOOLS = {
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function",
+    "doctor", "inspect_model",
 }
 
 #: Удаление/перезапись/сброс — `destructiveHint: True` (хост показывает
@@ -113,7 +115,7 @@ _DESTRUCTIVE_TOOLS = {
 async def test_mutating_tools_are_marked():
     """Правки помечены флагом — метку ставит только `runtime`."""
 
-    tools = await mcp.list_tools()
+    tools = await all_tools()
     marked = {t.name for t in tools
               if getattr(t.fn, runtime.MUTATES_PROJECT_MARK, False)}
 
@@ -133,7 +135,7 @@ async def test_tool_annotations_contract():
     эффектом вызвался бы без спроса (аудит 16.10.2026: аннотаций не было ни
     у одного из 59). Наборы сверяются в обе стороны, как у мутирующих.
     """
-    tools = await mcp.list_tools()
+    tools = await all_tools()
     by_name = {t.name: t for t in tools}
 
     no_title = [name for name, t in by_name.items() if not t.title]
@@ -172,7 +174,7 @@ async def test_all_tools_registered():
     списка тест молчал бы. Число состава держит README
     (`test_readme_tool_count_matches_registry`), имена — здесь.
     """
-    tools = await mcp.list_tools()
+    tools = await all_tools()
     names = {t.name for t in tools}
     expected = {
         "status", "disconnect",
@@ -195,6 +197,8 @@ async def test_all_tools_registered():
         "inject_submodel_script",
         "get_block_script", "set_block_script",
         "save_screenshot", "fit_view", "set_block_center",
+        "doctor", "build_model", "inspect_model", "simulate",
+        "format_model",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "
@@ -211,10 +215,10 @@ async def test_readme_tool_count_matches_registry():
     """
     readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(
         encoding="utf-8")
-    found = re.search(r"Всего инструментов — (\d+)", readme)
+    found = re.search(r"Всего инструментов: (\d+)", readme)
     assert found, "в README нет строки «Всего инструментов — N»"
 
-    tools = await mcp.list_tools()
+    tools = await all_tools()
 
     assert int(found.group(1)) == len(tools), (
         f"README говорит {found.group(1)}, а инструментов {len(tools)}")
@@ -234,7 +238,7 @@ async def test_readme_lists_every_tool():
         encoding="utf-8")
     section = readme.split("## Инструменты", 1)[1].split("\n## ", 1)[0]
     listed = set(re.findall(r"`([a-z][a-z0-9_]*)`", section))
-    names = {t.name for t in await mcp.list_tools()}
+    names = {t.name for t in await all_tools()}
 
     assert not names - listed, f"README не перечисляет: {names - listed}"
 
@@ -258,7 +262,7 @@ async def test_all_tools_have_failure_contract():
     клиент, доверяющий `isError`, видит успех там, где работа не выполнена, а
     вызова нет в журнале.
     """
-    tools = await mcp.list_tools()
+    tools = await all_tools()
 
     unwrapped = [t.name for t in tools if not hasattr(t.fn, "__wrapped__")]
 
@@ -284,7 +288,7 @@ async def test_plain_tools_are_exactly_the_com_free_ones():
     упадёт с `CO_E_OBJNOTCONNECTED`: COM-объект в чужом потоке. Поэтому
     сверяем метку, которую оставил фактически применённый декоратор.
     """
-    tools = await mcp.list_tools()
+    tools = await all_tools()
 
     plain = {t.name for t in tools
              if getattr(t.fn, runtime.COM_THREAD_MARK, None) is False}
