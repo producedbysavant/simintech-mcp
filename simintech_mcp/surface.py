@@ -12,9 +12,10 @@ import re
 from typing import Sequence
 
 from fastmcp import FastMCP
-from fastmcp.server.transforms import Transform
+from fastmcp.server.transforms import GetToolNext, Transform
 from fastmcp.server.transforms.search import BM25SearchTransform
 from fastmcp.tools import Tool
+from fastmcp.utilities.versions import VersionSpec
 
 
 #: Переменная окружения: `search` (по умолчанию) или `all`.
@@ -171,7 +172,7 @@ class ToolSurfaceTransform(Transform):
     def _apply(self, tool: Tool) -> Tool:
         annotations = tool.annotations
         if annotations is not None:
-            update = {}
+            update: dict[str, bool] = {}
             if annotations.idempotent_hint is None:
                 update["idempotent_hint"] = tool.name in IDEMPOTENT_TOOLS
             if annotations.open_world_hint is None:
@@ -189,7 +190,8 @@ class ToolSurfaceTransform(Transform):
     async def list_tools(self, tools: Sequence[Tool]) -> Sequence[Tool]:
         return [self._apply(tool) for tool in tools]
 
-    async def get_tool(self, name: str, call_next, *, version=None):
+    async def get_tool(self, name: str, call_next: GetToolNext, *,
+                       version: VersionSpec | None = None) -> Tool | None:
         tool = await call_next(name, version=version)
         return self._apply(tool) if tool is not None else None
 

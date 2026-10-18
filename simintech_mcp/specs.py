@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from collections.abc import Sequence
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -22,7 +23,7 @@ class WireSpec(BaseModel):
 
     src: str = Field(description="Источник: имя:out:индекс")
     dst: str = Field(description="Приёмник: имя:in:индекс")
-    points: List[Tuple[float, float]] = Field(default_factory=list)
+    points: list[tuple[float, float]] = []
 
 
 class BlockSpec(BaseModel):
@@ -30,17 +31,17 @@ class BlockSpec(BaseModel):
 
     name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     type: str = Field(min_length=1)
-    props: Dict[str, Any] = Field(default_factory=dict)
-    points: Optional[List[Tuple[float, float]]] = None
-    portnames: Optional[Union[str, List[str]]] = None
+    props: dict[str, Any] = Field(default_factory=dict)
+    points: list[tuple[float, float]] | None = None
+    portnames: str | list[str] | None = None
     subsystem: Optional["ModelSpec"] = None
 
 
 class ModelSpec(BaseModel):
     """Модель: блоки и провода текущего уровня."""
 
-    blocks: List[BlockSpec] = Field(default_factory=list)
-    wires: List[WireSpec] = Field(default_factory=list)
+    blocks: list[BlockSpec] = []
+    wires: list[WireSpec] = []
 
     @model_validator(mode="after")
     def _validate_level(self) -> "ModelSpec":
@@ -116,7 +117,7 @@ def _validate_value(value: Any, label: str) -> None:
     if isinstance(value, str):
         _validate_text(value, label)
     elif isinstance(value, (list, tuple)):
-        for item in value:
+        for item in cast(Sequence[Any], value):
             _validate_value(item, label)
     elif isinstance(value, dict):
         raise ValueError(f"{label}: словари не поддерживаются")
@@ -138,7 +139,8 @@ def _render_value(value: Any) -> str:
         _validate_text(value, "value")
         return f'"{value}"'
     if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_render_value(item) for item in value) + "]"
+        items = cast(Sequence[Any], value)
+        return "[" + ", ".join(_render_value(item) for item in items) + "]"
     raise ValueError(f"неподдерживаемое значение: {value!r}")
 
 
@@ -150,7 +152,7 @@ def _render_portnames(value: Union[str, List[str]]) -> str:
     if isinstance(value, str):
         _validate_text(value, "portnames")
         return f'"{value}"'
-    parts = []
+    parts: list[str] = []
     for item in value:
         _validate_text(item, "portnames")
         parts.append(f'"{item}"')
