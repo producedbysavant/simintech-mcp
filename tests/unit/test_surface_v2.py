@@ -69,6 +69,18 @@ def test_discovery_mode_unknown_falls_back_to_search(monkeypatch):
     assert surface.discovery_mode() == surface.DISCOVERY_SEARCH
 
 
+def test_short_description_never_exceeds_limit():
+    text = surface.short_description("x", "a" * 1000)
+    assert len(text) <= surface.MAX_SHORT_DESCRIPTION
+
+
+@pytest.mark.anyio
+async def test_help_text_points_to_full_catalog():
+    text = _text(await mcp.call_tool("help_text", {}))
+    assert "simintech://tools" in text
+    assert "search_tools" in text
+
+
 def test_eval_has_ten_pairs():
     from pathlib import Path
 

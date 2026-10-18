@@ -174,3 +174,31 @@ def test_format_model_explains_probe_not_running(monkeypatch):
 
     assert "simulate" in text
     assert "пробному контуру" in text
+
+
+def test_build_model_refuses_unsaved_current_project(monkeypatch):
+    monkeypatch.setattr(workflows.session, "current_project", lambda: object())
+    monkeypatch.setattr(workflows.session, "unsaved_changes", lambda: True)
+
+    with pytest.raises(ToolError, match="несохранённые"):
+        workflows.build_model(
+            spec=ModelSpec(blocks=[BlockSpec(name="k", type="Константа")]),
+            new_project=True,
+        )
+
+
+def test_build_model_default_extends_current_project(monkeypatch):
+    calls = []
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k [Константа] (id=1)")
+    monkeypatch.setattr(workflows.session, "current_project", lambda: object())
+    monkeypatch.setattr(workflows.session, "unsaved_changes", lambda: False)
+
+    text = workflows.build_model(
+        spec=ModelSpec(blocks=[BlockSpec(name="k", type="Константа")]),
+        layout=False,
+    )
+
+    assert "используется текущий проект" in text
+    assert not [call for call in calls if call[0] == "create_project"]

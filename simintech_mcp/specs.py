@@ -15,6 +15,8 @@ _ENDPOINT_RE = re.compile(
 #: Ключ свойства: буква, цифра или подчёркивание в начале; дальше точки.
 #: Цифра в начале допустима: в каталоге есть `2Str_EVC` и `3Dvis`.
 _PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
+#: Свойства, которые задаются полями записи, а не через props.
+_RESERVED_PROPS = frozenset({"type", "points", "portnames", "subsystem"})
 _DEFAULT_POINTS = [(0.0, 0.0), (16.0, 0.0), (0.0, -16.0), (0.0, 32.0)]
 
 
@@ -23,7 +25,6 @@ class WireSpec(BaseModel):
 
     src: str = Field(description="Источник: имя:out:индекс")
     dst: str = Field(description="Приёмник: имя:in:индекс")
-    points: list[tuple[float, float]] = []
 
 
 class BlockSpec(BaseModel):
@@ -55,14 +56,14 @@ class ModelSpec(BaseModel):
                     f"имена к нижнему регистру")
             names[key] = block.name
         for wire in self.wires:
-            _validate_endpoint(wire.src, names, "src")
-            _validate_endpoint(wire.dst, names, "dst")
+            src_name = _validate_endpoint(wire.src, names, "src", "out")
+            dst_name = _validate_endpoint(wire.dst, names, "dst", "in")
+            if src_name.lower() == dst_name.lower():
+                raise ValueError(
+                    f"самопетля: {wire.src} -> {wire.dst}; провод из выхода "
+                    f"блока в его собственный вход обычно означает опечатку")
         for block in self.blocks:
             _validate_text(block.type, f"{block.name}.type")
-            if "portnames" in block.props:
-                raise ValueError(
-                    f"{block.name}: portnames задаётся полем portnames, "
-                    f"а не в props")
             if block.portnames is not None:
                 values = ([block.portnames]
                           if isinstance(block.portnames, str)
@@ -72,23 +73,30 @@ class ModelSpec(BaseModel):
             for point in block.points or []:
                 _validate_point(point, f"{block.name}.points")
             for key, value in block.props.items():
+                if key in _RESERVED_PROPS:
+                    raise ValueError(
+                        f"{block.name}: свойство {key!r} задаётся полем "
+                        f"записи, а не в props")
                 _validate_key(key, block.name)
                 _validate_value(value, key)
-        for wire in self.wires:
-            for point in wire.points:
-                _validate_point(point, "wire.points")
         return self
 
 
-def _validate_endpoint(value: str, names: Dict[str, str], side: str) -> None:
+def _validate_endpoint(value: str, names: Dict[str, str], side: str,
+                       expected_kind: str) -> str:
     match = _ENDPOINT_RE.match(value)
     if match is None:
         raise ValueError(
-            f"{side}={value!r}: ожидается имя:{side}:индекс")
+            f"{side}={value!r}: ожидается имя:{expected_kind}:индекс")
+    if match.group("kind") != expected_kind:
+        raise ValueError(
+            f"{side}={value!r}: для {side} нужен порт {expected_kind}, "
+            f"а указан {match.group('kind')}")
     name = match.group("name")
     if name.lower() not in names:
         raise ValueError(
             f"{side}={value!r}: блока {name!r} нет на этом уровне")
+    return name
 
 
 def _validate_text(value: str, label: str) -> None:
@@ -121,9 +129,17 @@ def _validate_value(value: Any, label: str) -> None:
             _validate_value(item, label)
     elif isinstance(value, dict):
         raise ValueError(f"{label}: словари не поддерживаются")
-    elif not isinstance(value, (int, float, bool)):
+    elif isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{label}: значение должно быть конечным числом")
+    elif not isinstance(value, (int, bool)):
         raise ValueError(
             f"{label}: тип {type(value).__name__} не поддерживается")
+
+
+def _render_number(value: float) -> str:
+    """Число без потери точности: repr даёт кратчайшую обратимую запись."""
+    return repr(value)
 
 
 def _render_value(value: Any) -> str:
@@ -134,7 +150,7 @@ def _render_value(value: Any) -> str:
     if isinstance(value, float):
         if not math.isfinite(value):
             raise ValueError("значение должно быть конечным числом")
-        return f"{value:g}"
+        return _render_number(value)
     if isinstance(value, str):
         _validate_text(value, "value")
         return f'"{value}"'
@@ -145,7 +161,8 @@ def _render_value(value: Any) -> str:
 
 
 def _render_points(points: List[Tuple[float, float]]) -> str:
-    return "[" + ",".join(f"({x:g}, {y:g})" for x, y in points) + "]"
+    pairs = (f"({_render_number(x)}, {_render_number(y)})" for x, y in points)
+    return "[" + ",".join(pairs) + "]"
 
 
 def _render_portnames(value: Union[str, List[str]]) -> str:
@@ -178,11 +195,10 @@ def _render_block(block: BlockSpec, level: int) -> str:
 
 def _render_wire(wire: WireSpec, index: int, level: int) -> str:
     pad = "  " * level
-    points = _render_points(wire.points) if wire.points else "[]"
     return (
         f'{pad}wire_{index}: (\n'
         f'{pad}  type = "wire",\n'
-        f'{pad}  points={points},\n'
+        f'{pad}  points=[],\n'
         f'{pad}  src = "{wire.src}",\n'
         f'{pad}  dst = "{wire.dst}"\n'
         f'{pad})'

@@ -80,7 +80,7 @@ _MUTATING_TOOLS = {
     "import_model_text", "set_page_script", "run_page_script",
     "inject_submodel_script", "set_signal", "set_calc_time",
     "set_project_config",
-    "build_model", "simulate", "format_model",
+    "build_model",
 }
 
 #: Чистые чтения — аннотация `readOnlyHint: True`: ни проект, ни сессия, ни

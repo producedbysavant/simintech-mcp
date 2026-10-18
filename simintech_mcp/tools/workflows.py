@@ -50,11 +50,12 @@ def _block_names(text: str) -> Dict[str, str]:
     return result
 
 
-def _parse_endpoint(value: str) -> tuple[str, int]:
+def _parse_endpoint(value: str, expected_kind: str) -> tuple[str, int]:
     match = _ENDPOINT_RE.match(value)
-    if match is None:
+    if match is None or match.group("kind") != expected_kind:
         raise ToolError(
-            f"конец провода {value!r} не в формате имя:out:N или имя:in:N")
+            f"конец провода {value!r} должен быть в формате "
+            f"имя:{expected_kind}:N")
     return match.group("name"), int(match.group("index"))
 
 
@@ -75,7 +76,15 @@ def _import_notes(result: str) -> List[str]:
 
 def _project_or_create(project_hint: str, end_time: Optional[float],
                        new_project: bool) -> str:
-    if new_project or session.current_project() is None:
+    if new_project:
+        if (session.current_project() is not None
+                and session.unsaved_changes()):
+            raise ToolError(
+                "в текущем проекте есть несохранённые правки; сохраните их "
+                "save_project или передайте new_project=False, чтобы "
+                "дополнить текущий проект")
+        return create_project(project_hint=project_hint, end_time=end_time)
+    if session.current_project() is None:
         return create_project(project_hint=project_hint, end_time=end_time)
     if end_time is not None:
         return set_calc_time(end_time)
@@ -177,7 +186,7 @@ def build_model(spec: Optional[ModelSpec] = None,
                 model_text: str = "",
                 project_hint: str = "model",
                 end_time: Optional[float] = None,
-                new_project: bool = True,
+                new_project: bool = False,
                 layout: bool = True,
                 check: bool = False,
                 screenshot: bool = False) -> str:
@@ -187,6 +196,10 @@ def build_model(spec: Optional[ModelSpec] = None,
     портам; провода внутри субмоделей идут текстом и требуют снимка.
     Для model_text провода импортируются текстом: это быстрый, но менее
     надёжный путь, о чём ответ предупреждает.
+
+    По умолчанию new_project=False: модель дополняет текущий проект, а при
+    его отсутствии создаёт новый. new_project=True закрывает текущий проект;
+    при несохранённых правках вызов отказывает, пока их не сохранить.
     """
     if (spec is None) == (not model_text.strip()):
         raise ToolError(
@@ -207,8 +220,8 @@ def build_model(spec: Optional[ModelSpec] = None,
         connected = 0
         for wire in spec.wires:
             try:
-                src_name, out_index = _parse_endpoint(wire.src)
-                dst_name, in_index = _parse_endpoint(wire.dst)
+                src_name, out_index = _parse_endpoint(wire.src, "out")
+                dst_name, in_index = _parse_endpoint(wire.dst, "in")
                 src = actual.get(src_name.lower())
                 dst = actual.get(dst_name.lower())
                 if src is None or dst is None:
@@ -285,7 +298,7 @@ def inspect_model(include_params: bool = False, limit: int = 200) -> str:
         "open_world_hint": False,
     },
 )
-@runtime.workflow_tool(mutates_project=True)
+@runtime.workflow_tool
 def simulate(to_time: Optional[float] = None,
              end_time: Optional[float] = None,
              step_count: Optional[int] = None,
@@ -316,7 +329,7 @@ def simulate(to_time: Optional[float] = None,
         "open_world_hint": False,
     },
 )
-@runtime.workflow_tool(mutates_project=True)
+@runtime.workflow_tool
 def format_model(
         mode: Literal["place", "normalize", "fit", "screenshot"] = "place",
         check: bool = False,

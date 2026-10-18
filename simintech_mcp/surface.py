@@ -162,7 +162,10 @@ def short_description(name: str, description: str,
     suffix = f"\n\nFull docs: simintech://tools/{name}"
     limit = MAX_SHORT_DESCRIPTION - len(suffix)
     if len(text) > limit:
-        text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.-") + "..."
+        cut = text[:max(limit - 3, 0)]
+        if " " in cut:
+            cut = cut.rsplit(" ", 1)[0]
+        text = cut.rstrip(" ,;:.-") + "..."
     return text + suffix
 
 

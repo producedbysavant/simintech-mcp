@@ -140,10 +140,9 @@ claude mcp add simintech -- simintech-mcp
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 | Композиты | `doctor`, `build_model`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 64. Актуальный состав всегда в `tools/list`; таблица
-выше только для ориентира. По умолчанию видимы 9 ключевых и 2 поисковых
-инструмента, остальные доступны через `search_tools`;
-`SIMINTECH_MCP_DISCOVERY=all` возвращает все 64.
+Всего инструментов: 64. Видимое ядро в `tools/list`; полный каталог в
+`simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
+возвращает все 64.
 
 `build_model(spec=...)` принимает Pydantic `ModelSpec`: блоки и субмодели
 импортируются текстом, верхнеуровневые провода создаются `connect` по

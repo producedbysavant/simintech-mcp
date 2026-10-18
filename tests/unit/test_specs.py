@@ -140,3 +140,70 @@ def test_nan_point_rejected():
             BlockSpec(name="k", type="Константа",
                       points=[(float("nan"), 0.0)]),
         ])
+
+
+@pytest.mark.parametrize("key", ["type", "points", "subsystem", "portnames"])
+def test_reserved_props_rejected(key):
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type="Константа", props={key: 1}),
+        ])
+
+
+def test_src_kind_must_be_out():
+    with pytest.raises(ValidationError):
+        ModelSpec(
+            blocks=[
+                BlockSpec(name="a", type="Константа"),
+                BlockSpec(name="b", type="Усилитель"),
+            ],
+            wires=[WireSpec(src="a:in:0", dst="b:in:0")],
+        )
+
+
+def test_dst_kind_must_be_in():
+    with pytest.raises(ValidationError):
+        ModelSpec(
+            blocks=[
+                BlockSpec(name="a", type="Константа"),
+                BlockSpec(name="b", type="Усилитель"),
+            ],
+            wires=[WireSpec(src="a:out:0", dst="b:out:0")],
+        )
+
+
+def test_self_loop_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(
+            blocks=[BlockSpec(name="k", type="Константа")],
+            wires=[WireSpec(src="k:out:0", dst="k:in:0")],
+        )
+
+
+def test_float_precision_preserved():
+    spec = ModelSpec(blocks=[
+        BlockSpec(name="k", type="Константа", props={"a": 1234567.0}),
+    ])
+
+    text = render_model_text(spec, include_wires=False)
+
+    assert "1234567.0" in text
+
+
+def test_point_precision_preserved():
+    spec = ModelSpec(blocks=[
+        BlockSpec(name="k", type="Константа",
+                  points=[(1234567.0, 0.0)]),
+    ])
+
+    text = render_model_text(spec, include_wires=False)
+
+    assert "1234567.0" in text
+
+
+def test_nan_prop_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type="Константа",
+                      props={"a": float("nan")}),
+        ])
