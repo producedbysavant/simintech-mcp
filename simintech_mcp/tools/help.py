@@ -39,9 +39,16 @@ def help_text() -> str:
     составу — `tools/list`.
     """
     return (
-        "Состав инструментов — в `tools/list` (единственный источник истины).\n"
+        "Состав инструментов: `tools/list` (единственный источник истины).\n"
         "\n"
-        "Порядок работы:\n"
+        "Видимое ядро: doctor, create_project, open_project, build_model,\n"
+        "inspect_model, simulate, format_model, read_output_file, help_text.\n"
+        "Нестандартные операции: search_tools; полные описания:\n"
+        "  simintech://tools/<name>.\n"
+        "Сборка: build_model(spec=...); верхнеуровневые провода создаются\n"
+        "connect, а не текстом (замер 2026-10-18).\n"
+        "\n"
+        "Порядок работы (низкоуровневый):\n"
         "  1. create_project(end_time=N) — проект из шаблона пустой модели\n"
         "  2. add_block(class_name, props=\"a=2\") — блоки; имена не задаются,\n"
         "     фактическое имя возвращает сам вызов\n"
