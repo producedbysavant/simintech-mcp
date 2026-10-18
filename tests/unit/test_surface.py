@@ -140,19 +140,19 @@ async def test_tool_annotations_contract():
     assert not no_title, f"без заголовка: {sorted(no_title)}"
 
     unset = [name for name, t in by_name.items()
-             if t.annotations is None or t.annotations.readOnlyHint is None]
+             if t.annotations is None or t.annotations.read_only_hint is None]
     assert not unset, f"readOnlyHint не задан: {sorted(unset)}"
 
     read_only = {name for name, t in by_name.items()
                  if t.annotations is not None
-                 and t.annotations.readOnlyHint is True}
+                 and t.annotations.read_only_hint is True}
     assert read_only == _READ_ONLY_TOOLS, (
         f"лишний readOnlyHint: {sorted(read_only - _READ_ONLY_TOOLS)}; "
         f"пропал readOnlyHint: {sorted(_READ_ONLY_TOOLS - read_only)}")
 
     destructive = {name for name, t in by_name.items()
                    if t.annotations is not None
-                   and t.annotations.destructiveHint is True}
+                   and t.annotations.destructive_hint is True}
     assert destructive == _DESTRUCTIVE_TOOLS, (
         f"лишний destructiveHint: {sorted(destructive - _DESTRUCTIVE_TOOLS)}; "
         f"пропал destructiveHint: {sorted(_DESTRUCTIVE_TOOLS - destructive)}")
