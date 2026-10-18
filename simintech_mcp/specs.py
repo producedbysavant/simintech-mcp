@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -10,6 +11,9 @@ from pydantic import BaseModel, Field, model_validator
 
 _ENDPOINT_RE = re.compile(
     r"^(?P<name>[A-Za-z_][A-Za-z0-9_]*):(?P<kind>out|in):(?P<index>\d+)$")
+#: Ключ свойства: буква, цифра или подчёркивание в начале; дальше точки.
+#: Цифра в начале допустима: в каталоге есть `2Str_EVC` и `3Dvis`.
+_PROP_KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.]*$")
 _DEFAULT_POINTS = [(0.0, 0.0), (16.0, 0.0), (0.0, -16.0), (0.0, 32.0)]
 
 
@@ -53,6 +57,7 @@ class ModelSpec(BaseModel):
             _validate_endpoint(wire.src, names, "src")
             _validate_endpoint(wire.dst, names, "dst")
         for block in self.blocks:
+            _validate_text(block.type, f"{block.name}.type")
             if "portnames" in block.props:
                 raise ValueError(
                     f"{block.name}: portnames задаётся полем portnames, "
@@ -63,8 +68,14 @@ class ModelSpec(BaseModel):
                           else block.portnames)
                 for value in values:
                     _validate_text(value, "portnames")
+            for point in block.points or []:
+                _validate_point(point, f"{block.name}.points")
             for key, value in block.props.items():
+                _validate_key(key, block.name)
                 _validate_value(value, key)
+        for wire in self.wires:
+            for point in wire.points:
+                _validate_point(point, "wire.points")
         return self
 
 
@@ -84,6 +95,21 @@ def _validate_text(value: str, label: str) -> None:
         raise ValueError(
             f"{label}={value!r}: кавычка в строке не поддерживается; "
             f"используйте chr(34) в тексте или уберите кавычку")
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError(
+            f"{label}: управляющие символы в строке не поддерживаются")
+
+
+def _validate_key(key: str, block: str) -> None:
+    if not _PROP_KEY_RE.fullmatch(key):
+        raise ValueError(
+            f"{block}: недопустимое имя свойства {key!r}; разрешены буквы, "
+            f"цифры, подчёркивание и точки")
+
+
+def _validate_point(point: Tuple[float, float], label: str) -> None:
+    if not all(math.isfinite(value) for value in point):
+        raise ValueError(f"{label}: координата должна быть конечным числом")
 
 
 def _validate_value(value: Any, label: str) -> None:
@@ -105,6 +131,8 @@ def _render_value(value: Any) -> str:
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("значение должно быть конечным числом")
         return f"{value:g}"
     if isinstance(value, str):
         _validate_text(value, "value")

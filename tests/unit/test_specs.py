@@ -100,3 +100,43 @@ def test_portnames_list_uses_clrf():
     text = render_model_text(spec, include_wires=False)
 
     assert 'portnames = "A"+clrf+"B"' in text
+
+
+def test_type_with_quote_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type='Константа" + evil + "'),
+        ])
+
+
+def test_type_with_newline_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type="Константа\nEvil"),
+        ])
+
+
+def test_prop_key_injection_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type="Константа",
+                      props={"a, evil = (": 1}),
+        ])
+
+
+def test_digit_prop_key_allowed():
+    spec = ModelSpec(blocks=[
+        BlockSpec(name="k", type="Класс", props={"2Str_EVC": 1}),
+    ])
+
+    text = render_model_text(spec, include_wires=False)
+
+    assert "2Str_EVC = 1" in text
+
+
+def test_nan_point_rejected():
+    with pytest.raises(ValidationError):
+        ModelSpec(blocks=[
+            BlockSpec(name="k", type="Константа",
+                      points=[(float("nan"), 0.0)]),
+        ])
