@@ -143,3 +143,34 @@ def test_doctor_reports_ok(monkeypatch, tmp_path):
     assert "[OK] com" in text
     assert "[OK] output_dir" in text
     assert "[WARN] pack" in text
+
+
+def test_build_model_explains_probe_not_running(monkeypatch):
+    calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
+    _patch(monkeypatch, calls, "import_model_text",
+           "Вердикт: скрипт отработал, но модель не считает")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k_0 [Константа] (id=1)")
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    text = workflows.build_model(
+        spec=ModelSpec(blocks=[BlockSpec(name="k_0", type="Константа")]),
+        layout=False,
+    )
+
+    assert "simulate" in text
+    assert "пробному контуру" in text
+
+
+def test_format_model_explains_probe_not_running(monkeypatch):
+    calls = []
+    _patch(monkeypatch, calls, "layout_place", "нормализовано")
+    _patch(monkeypatch, calls, "check_model_layout",
+           "Контур: скрипт отработал, но модель не считает")
+    _patch(monkeypatch, calls, "audit_routing", "аудит")
+
+    text = workflows.format_model(mode="normalize", check=True)
+
+    assert "simulate" in text
+    assert "пробному контуру" in text

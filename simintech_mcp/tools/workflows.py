@@ -58,6 +58,21 @@ def _parse_endpoint(value: str) -> tuple[str, int]:
     return match.group("name"), int(match.group("index"))
 
 
+def _import_notes(result: str) -> List[str]:
+    """Результат импорта и пояснение к вердикту пробного контура.
+
+    Контур импорта может не продвинуть модельное время и назвать модель
+    не считающей, хотя обычный run считает: это состояние пробы, а не
+    приговор модели. Агент не должен считать сборку неудачной.
+    """
+    notes = [result]
+    if "модель не считает" in result:
+        notes.append(
+            "Примечание: вердикт «модель не считает» относится к пробному "
+            "контуру импорта; расчёт проверяется вызовом simulate.")
+    return notes
+
+
 def _project_or_create(project_hint: str, end_time: Optional[float],
                        new_project: bool) -> str:
     if new_project or session.current_project() is None:
@@ -182,7 +197,7 @@ def build_model(spec: Optional[ModelSpec] = None,
 
     if spec is not None:
         blocks_text = render_model_text(spec, include_wires=False)
-        notes.append(import_model_text(blocks_text))
+        notes.extend(_import_notes(import_model_text(blocks_text)))
         try:
             listing = list_blocks(limit=0)
         except ToolError as exc:
@@ -208,7 +223,7 @@ def build_model(spec: Optional[ModelSpec] = None,
         notes.append(
             f"Соединено проводов: {connected} из {len(spec.wires)}")
     else:
-        notes.append(import_model_text(model_text))
+        notes.extend(_import_notes(import_model_text(model_text)))
         notes.append(
             "WARNING: провода из текста могут получить неверную геометрию; "
             "для надёжной сборки используйте spec.")
@@ -322,7 +337,12 @@ def format_model(
         screenshot = True
     if check:
         try:
-            parts.append(check_model_layout())
+            checked = check_model_layout()
+            parts.append(checked)
+            if "модель не считает" in checked:
+                parts.append(
+                    "Примечание: «модель не считает» относится к пробному "
+                    "контуру проверки; расчёт проверяется вызовом simulate.")
         except ToolError as exc:
             parts.append(f"WARNING: проверка оформления не выполнена: {exc}")
         try:
