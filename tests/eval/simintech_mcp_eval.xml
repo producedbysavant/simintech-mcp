@@ -1,0 +1,42 @@
+<evaluation>
+  <qa_pair>
+    <question>Сколько блоков на текущей странице проекта?</question>
+    <answer>Число из list_blocks; ответ проверяется по счётчику страницы.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какой класс у блока k_0?</question>
+    <answer>Класс из list_blocks для фактического имени k_0.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Сколько линий связи на текущей странице?</question>
+    <answer>Число из list_wires.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какое текущее модельное время?</question>
+    <answer>Значение get_time.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какое конечное время расчёта задано в проекте?</question>
+    <answer>Значение endtime из get_project_config.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какие параметры есть у класса «Константа»?</question>
+    <answer>Имена из simintech://blocks/catalog или get_block_params.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Каков синтаксис функции createmodel?</question>
+    <answer>Карточка get_language_function или search_language_functions.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>В каком каталоге лежат результаты расчёта?</question>
+    <answer>Путь из help_text.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какую роль играет проект в распределённом расчёте?</question>
+    <answer>Ответ project_network_role.</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Какие пункты проверяет check_model_layout?</question>
+    <answer>Список из simintech://model/checklist и ответа инструмента.</answer>
+  </qa_pair>
+</evaluation>

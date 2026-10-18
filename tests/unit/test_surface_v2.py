@@ -67,3 +67,15 @@ def test_discovery_mode_all(monkeypatch):
 def test_discovery_mode_unknown_falls_back_to_search(monkeypatch):
     monkeypatch.setenv(surface.DISCOVERY_ENV, "опечатка")
     assert surface.discovery_mode() == surface.DISCOVERY_SEARCH
+
+
+def test_eval_has_ten_pairs():
+    from pathlib import Path
+
+    import defusedxml.ElementTree as ET
+
+    path = (Path(__file__).resolve().parents[1]
+            / "eval" / "simintech_mcp_eval.xml")
+    root = ET.parse(path).getroot()
+
+    assert len(root.findall("qa_pair")) == 10
