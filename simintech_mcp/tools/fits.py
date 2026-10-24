@@ -1,7 +1,7 @@
 """Подгонки по правилам: fit_port_blocks и fit_value_labels.
 
 Ширина порт-блоков и блоков памяти по подписям, высота субмоделей и
-мультиплексоров по входным контактам, возврат пина компенсацией центра;
+nport-классов по входным контактам, возврат пина компенсацией центра;
 подписи значений — к их блокам-родителям. Обход страниц — порциями по
 бюджету COM-вызова с курсором продолжения. Выделено из `blocks.py`
 (issue #121).
@@ -19,41 +19,33 @@ from simintech_api import Block, Page
 from .. import runtime, session
 from ..app import mcp
 from ..geometry import CHAR_WIDTH_ESTIMATE
-from .blocks import resolve_block
-from .check_model import read_port_names
-from .layout import first_point
+from ..rules import (MEMORY_WIDTH_CLASSES, NPORT_BLOCK_WIDTH,
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
+                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES, required_height)
+from .blocks import read_port_names, resolve_block
+from .layout import first_point, overlap_report
 from .page_script import (
     activate_or_refuse,
     refuse_contour_failure,
     return_main_active,
     run_contour,
 )
+from .block_size import size_pair_lines, size_value
 from .model_text import page_export_text
-from .sizes import (
-    PORT_ROW_HEIGHT,
-    PORT_HEIGHT_CLASSES,
-    size_pair_lines,
-    size_value,
-)
 
 
 #: Классы, которым `fit_port_blocks` подгоняет **ширину** по подписям
 #: `PortNames`. Кроме порт-блоков это блоки памяти: замер 07.10.2026 —
 #: импорт ставит и «В память», и «Из памяти» 64×16 при любой длине имени
 #: (длинная надпись вылезает за рамку), высоту фит у них не трогает —
-#: правило высоты у этих классов не измерено, к `PORT_HEIGHT_CLASSES`
-#: они поэтому не отнесены (у тех высота жёсткая, и `set_block_size` её
-#: проверяет).
-_FIT_WIDTH_CLASSES = (*PORT_HEIGHT_CLASSES, "В память", "Из памяти")
+#: правило высоты у этих классов не измерено.
+_FIT_WIDTH_CLASSES = (*PORT_HEIGHT_CLASSES, *MEMORY_WIDTH_CLASSES)
 
 
-#: Классы, чья высота считается построчно (`PORT_ROW_HEIGHT` на **входной**
-#: контакт): субмодель (правило владельца 07.10.2026) и мультиплексор
-#: (замер 08.10.2026: импорт ставит 32×32 при любом `nport`, входы ложатся с
-#: шагом `32 / nport` — при `nport = 8` это 4 px; входов ровно `nport`,
-#: выход один, поэтому высота `nport × 16` даёт шаг пинов 16). Демультиплексор
-#: сюда не отнесён: его канон (один вход слева, выходы справа) не замерен.
-_PORT_ROW_CLASSES = ("Субмодель", "Мультиплексор")
+#: Классы, чья высота считается построчно, и их канон живут в `rules.py`
+#: (`ROW_HEIGHT_CLASSES`): один список для подгонки, проверки и руководства.
+#: Демультиплексор сюда не отнесён: его канон (один вход слева, выходы
+#: справа) не замерен.
 
 
 #: Оценка времени одного контурного прогона страницы в фитах: живой замер
@@ -128,51 +120,76 @@ def _port_pin(block: Block) -> Tuple[Any, Any]:
 
 def _plan_signal_width(block: Block, where: str,
                        lines: List[str], plan: List[_SizeFix]) -> None:
-    """Запланировать расширение блока под самую длинную подпись сигнала.
+    """Запланировать ширину по подписи и высоту порт-блока по строкам.
 
     Для порт-блоков и блоков памяти (`_FIT_WIDTH_CLASSES`). Ширина — по
     той же оценке, что ловит `check_model_layout` (`CHAR_WIDTH_ESTIMATE`
     px на символ): правка и проверка обязаны сходиться, иначе проверка
-    продолжила бы ругаться на исправленное. Высота не меняется, но
-    **приводится к «Значению»** (владелец 07.10.2026: габариты тронутого
-    блока — без формулы по обеим осям). Пин запоминается для компенсации
-    центра. Записи здесь нет: саму правку применяет общий прогон страницы.
+    продолжила бы ругаться на исправленное. У порт-блоков высота
+    подчиняется правилу 16 px на строку `PortNames`: импорт ставит
+    64×16 при двух именах, и фит обязан это исправить, а не только
+    привести ось к «Значению». У блоков памяти высота правилом не
+    ограничена. Пин запоминается для компенсации центра. Записи здесь
+    нет: саму правку применяет общий прогон страницы.
     """
     try:
         name = block.get_name()
     except Exception:                                         # noqa: BLE001
         name = f"id={block.id}"
+    try:
+        class_name = str(block.class_name).strip()
+    except Exception:                                         # noqa: BLE001
+        class_name = ""
     names = read_port_names(block)
     if names is None:
-        lines.append(f"{where}: {name}: PortNames не читается — ширина не "
-                     f"проверена.")
+        lines.append(f"{where}: {name}: PortNames не читается - ширина и "
+                     f"высота не проверены.")
         return
     if not names:
+        lines.append(f"{where}: {name}: PortNames пуст - ширина и высота "
+                     f"не проверены.")
         return
     try:
         width = float(block.get_size()[0])
         height = float(block.get_size()[1])
     except Exception as exc:                                  # noqa: BLE001
-        lines.append(f"{where}: {name}: ширина не читается "
+        lines.append(f"{where}: {name}: размер не читается "
                      f"({type(exc).__name__}: {exc}) — пропущен.")
         return
     longest = max(names, key=len)
     estimate = len(longest) * CHAR_WIDTH_ESTIMATE
-    if estimate <= width:
+    want_width = float(estimate)
+    width_fix = want_width > width
+    height_rule = required_height(class_name, len(names))
+    height_fix = height_rule is not None and height != height_rule
+    if not width_fix and not height_fix:
         return
-    pin, pin_before = _port_pin(block)
-    plan.append(_SizeFix(
-        block=block, name=name, prop="Width", before=width,
-        want=float(estimate),
-        note=(f"«{longest}» ~{estimate:g} px, оценка "
-              f"×{CHAR_WIDTH_ESTIMATE:g}"),
-        pin=pin, pin_before=pin_before))
-    plan.append(_SizeFix(
-        block=block, name=name, prop="Height", before=height, want=height,
-        note="", touch=True))
+    if width_fix:
+        pin, pin_before = _port_pin(block)
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Width", before=width,
+            want=want_width,
+            note=(f"«{longest}» ~{estimate:g} px, оценка "
+                  f"×{CHAR_WIDTH_ESTIMATE:g}"),
+            pin=pin, pin_before=pin_before))
+    if height_fix and height_rule is not None:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Height", before=height,
+            want=float(height_rule),
+            note=f"{len(names)} строк(и) × {PORT_ROW_HEIGHT:g}"))
+    # Тронутый блок приводится к «Значению» по обеим осям: рабочая ось
+    # уже в плане, вторую дописываем без изменения числа.
+    if width_fix and not height_fix:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Height", before=height,
+            want=height, note="", touch=True))
+    if height_fix and not width_fix:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Width", before=width,
+            want=width, note="", touch=True))
 
 
-def _plan_in_rows_height(block: Block, where: str,
+def _plan_in_rows_height(block: Block, class_name: str, where: str,
                          lines: List[str], plan: List[_SizeFix]) -> None:
     """Запланировать высоту блока с построчными входами — 16 px на **вход**.
 
@@ -182,13 +199,15 @@ def _plan_in_rows_height(block: Block, where: str,
     и строки не занимает). Прежняя формула «× все порты» давала +16 всем
     девяти субмоделям боевой модели — владелец откатил их вручную.
 
-    Тот же счёт — **мультиплексору** (`_PORT_ROW_CLASSES`): его параметр
+    Тот же счёт - **nport-классам** (`NPORT_SIZE_CLASSES`): их параметр
     `nport` и есть число входов (выход один), поэтому высота `nport × 16`
     задаёт шаг пинов 16 px — как у соседних: импорт ставит 32×32 при любом
-    `nport`, и входы ложатся с шагом `32 / nport` (замер 08.10.2026:
-    `nport = 8` — шаг 4 px; `32×128` — шаг 16). Ширина не меняется, но
-    **приводится к «Значению»** (у субмоделей она оставалась с формулой).
-    Записи здесь нет: саму правку применяет общий прогон страницы.
+    `nport`, и входы ложатся с шагом `32 / nport` (замеры 08.10 и
+    23.10.2026: `nport = 8` - шаг 4 px; `32×128` - шаг 16). Ширина
+    поднимается до штатной 32 px, но **не сужается**: вручную расширенный
+    блок сохраняет ширину. У субмодели ширина только приводится к
+    «Значению». Записи здесь нет: саму правку применяет общий прогон
+    страницы.
     """
     try:
         name = block.get_name()
@@ -200,9 +219,10 @@ def _plan_in_rows_height(block: Block, where: str,
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
         return
-    if in_ports <= 0:
+    height_rule = required_height(class_name, in_ports)
+    if height_rule is None:
         return
-    want = float(in_ports * PORT_ROW_HEIGHT)
+    want_height = float(height_rule)
     try:
         height = float(block.get_size()[1])
         width = float(block.get_size()[0])
@@ -210,14 +230,32 @@ def _plan_in_rows_height(block: Block, where: str,
         lines.append(f"{where}: {name}: высота не читается "
                      f"({type(exc).__name__}: {exc}) — пропущена.")
         return
-    if height == want:
+    height_fix = height != want_height
+    width_fix = (class_name in NPORT_SIZE_CLASSES
+                 and width < NPORT_BLOCK_WIDTH)
+    if not height_fix and not width_fix:
         return
-    plan.append(_SizeFix(
-        block=block, name=name, prop="Height", before=height, want=want,
-        note=f"{in_ports} вход(ов) × {PORT_ROW_HEIGHT:g}"))
-    plan.append(_SizeFix(
-        block=block, name=name, prop="Width", before=width, want=width,
-        note="", touch=True))
+    if width_fix:
+        pin, pin_before = _port_pin(block)
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Width", before=width,
+            want=float(NPORT_BLOCK_WIDTH),
+            note=f"штатная ширина {NPORT_BLOCK_WIDTH:g}",
+            pin=pin, pin_before=pin_before))
+    if height_fix:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Height", before=height,
+            want=want_height,
+            note=f"{in_ports} вход(ов) × {PORT_ROW_HEIGHT:g}"))
+    # Тронутый блок приводится к «Значению» по обеим осям.
+    if width_fix and not height_fix:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Height", before=height,
+            want=height, note="", touch=True))
+    if height_fix and not width_fix:
+        plan.append(_SizeFix(
+            block=block, name=name, prop="Width", before=width,
+            want=width, note="", touch=True))
 
 
 def _size_fixes_body(plan: List[_SizeFix]) -> str:
@@ -235,8 +273,8 @@ def _size_fixes_body(plan: List[_SizeFix]) -> str:
 
 
 def _apply_size_plan(page: Page, where: str, lines: List[str],
-                     plan: List[_SizeFix]) -> Tuple[int, bool]:
-    """Применить план правок одним контурным прогоном; вернуть число сбывшихся.
+                     plan: List[_SizeFix]) -> Tuple[set[int], set[str], bool]:
+    """Применить план правок одним контурным прогоном; вернуть имена и отказ.
 
     Одним прогоном — не оптимизация, а условие: контур перезапускает расчёт,
     и прогон на каждый блок стоил бы его N раз (у порт-блоков N — десятки).
@@ -247,11 +285,15 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     — перечитывание `get_size`: «среда не приняла запись» остаётся
     примечанием, а не успехом.
 
-    Возврат — `(число изменённых блоков, была ли отвергнутая запись)`:
-    у тронутого блока правок две (рабочая ось и приведение второй к
-    «Значению»), и заголовок ответа обязан знать про «среда не приняла
-    запись», иначе «Габариты подогнаны» противоречило бы собственной строке
-    (находка ревью PR #122).
+    Возврат - `(id изменённых блоков, имена изменённых блоков, была ли
+    отвергнутая запись)`: у тронутого блока правок две (рабочая ось и
+    приведение второй к «Значению»), и заголовок ответа обязан знать про
+    «среда не приняла запись», иначе «Габариты подогнаны» противоречило бы
+    собственной строке (находка ревью PR #122). Счёт идёт по id: у пары
+    «В память»/«Из памяти» одно имя на два блока, и счёт по именам занизил
+    бы число правок. Имена нужны отдельно отчёту о наложениях: рост высоты
+    мог накрыть соседа, и это называется сразу, а не после отдельного
+    `check_model_layout`.
     """
     activate_or_refuse(page, action="габариты не записаны", where=where)
     outcome, _restored = run_contour(_size_fixes_body(plan),
@@ -263,6 +305,7 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
     changed_blocks: set[int] = set()
+    changed_names: set[str] = set()
     rejected = False
     # Сначала — правки рабочих осей (`touch=False`), затем приведения
     # (`touch=True`). Порядок важен: «приведена к „Значению"» говорится
@@ -281,6 +324,7 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
             lines.append(f"{where}: {fix.name}: {word} записана, но "
                          f"перечитать не удалось — проверьте снимком.")
             changed_blocks.add(id(fix.block))
+            changed_names.add(fix.name)
             continue
         if after == fix.before:
             if fix.touch:
@@ -296,13 +340,26 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                              f"({size_value(fix.before)}) — среда не приняла "
                              f"запись.")
             continue
+        if float(after) != float(fix.want):
+            # Среда могла принять не то значение (округление, предел класса):
+            # «подогнано» здесь было бы ложью, а check_model_layout продолжил
+            # бы ругаться на этот же блок.
+            rejected = True
+            lines.append(
+                f"{where}: {fix.name}: {word} {size_value(fix.before)} → "
+                f"{size_value(after)}, а запрошено {size_value(fix.want)}: "
+                f"среда приняла не то значение.")
+            changed_blocks.add(id(fix.block))
+            changed_names.add(fix.name)
+            continue
         lines.append(
             f"{where}: {fix.name}: {word} {size_value(fix.before)} → "
             f"{size_value(after)} ({fix.note}).")
         changed_blocks.add(id(fix.block))
+        changed_names.add(fix.name)
         if fix.pin is not None:
             _restore_pin(fix, where, lines)
-    return len(changed_blocks), rejected
+    return changed_blocks, changed_names, rejected
 
 
 def _restore_pin(fix: _SizeFix, where: str, lines: List[str]) -> None:
@@ -513,10 +570,13 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
     """Поправить габариты одной страницы; вернуть (число, был ли отказ записи).
 
     Порт-блоки — ширина по подписям (та же оценка, что у
-    `check_model_layout`); блоки-субмодели — высота по числу **входных**
-    контактов. Правки собираются в план и применяются **одним** контурным
-    прогоном (`_apply_size_plan`): запись идёт в «Значение», а не в
-    «Формулу», и обе оси тронутого блока приводятся к «Значению».
+    `check_model_layout`) и высота по числу строк `PortNames`; субмодели и
+    nport-классы - высота по числу **входных** контактов, у nport-классов
+    ширина поднимается до штатной 32, но не сужается. Правки собираются в
+    план и применяются **одним** контурным прогоном (`_apply_size_plan`):
+    запись идёт в «Значение», а не в «Формулу», и обе оси тронутого блока
+    приводятся к «Значению». После записи называются наложения с участием
+    изменённых блоков: рост высоты мог накрыть соседа.
     """
     try:
         blocks = page.get_blocks()
@@ -532,14 +592,19 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
             continue
         if class_name in _FIT_WIDTH_CLASSES:
             _plan_signal_width(block, where, lines, plan)
-        elif class_name in _PORT_ROW_CLASSES:
-            _plan_in_rows_height(block, where, lines, plan)
+        elif class_name in ROW_HEIGHT_CLASSES:
+            _plan_in_rows_height(block, class_name, where, lines, plan)
     if not plan:
         return 0, False
-    changed, rejected = _apply_size_plan(page, where, lines, plan)
-    if changed and page not in affected:
-        affected.append(page)
-    return changed, rejected
+    changed_blocks, changed_names, rejected = _apply_size_plan(
+        page, where, lines, plan)
+    if changed_blocks:
+        if page not in affected:
+            affected.append(page)
+        for line in overlap_report(page, changed_names).splitlines():
+            if line:
+                lines.append(f"{where}: {line}")
+    return len(changed_blocks), rejected
 
 
 @mcp.tool(title="Подгонка порт-блоков", annotations={"readOnlyHint": False})
@@ -547,8 +612,9 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
 def fit_port_blocks() -> str:
     """Подогнать габариты блоков, связанных с портами, по правилам.
 
-    Три правила (наблюдения владельца: замеры 06.10 и боевой прогон
-    с ручной доводкой 07.10.2026; правило мультиплексора — замер 08.10.2026):
+    Четыре правила (наблюдения владельца: замеры 06.10 и боевой прогон
+    с ручной доводкой 07.10.2026; мультиплексор - замер 08.10.2026;
+    пять nport-классов - замер 23.10.2026):
 
     * **ширина порт-блоков и блоков памяти** — по длиннейшей подписи
       `PortNames` (импорт нормализует рамку ~32 px независимо от поданных
@@ -558,14 +624,18 @@ def fit_port_blocks() -> str:
       подгонки его примечание «подписи шире рамки» снимается (само
       примечание — не дефект: свисание текста владелец допускает —
       замечание 07.10.2026);
-    * **высота субмодели и мультиплексора** — `PORT_ROW_HEIGHT` px на
+    * **высота порт-блоков** - `PORT_ROW_HEIGHT` px на строку `PortNames`:
+      импорт ставит двум именам 64×16, и высота 32 чинится здесь, а не
+      только через `set_block_size`;
+    * **высота субмодели и nport-классов** - `PORT_ROW_HEIGHT` px на
       **входной** контакт: считаются входы, не все порты (у субмодели с
       единственным выходом — «все порты − 1»; выход уходит на правую сторону
       рамки и строки не занимает — правило владельца 07.10.2026). Импорт
-      ставит субмоделям 48×32, мультиплексору — 32×32 независимо от
+      ставит субмоделям 48×32, nport-классам - 32×32 независимо от
       `nport` (его `nport` и есть число входов; входы ложатся с шагом
       `32 / nport`: при `nport = 8` это 4 px), и фит даёт шаг 16, как у
-      соседей (замер 08.10.2026; ширина не меняется);
+      соседей. Ширина nport-класса поднимается до штатной 32, но вручную
+      расширенный блок не сужается; ширина субмодели не меняется;
     * **пин на месте** — при смене ширины порт-блока центр компенсируется
       так, чтобы координата порта не сдвинулась: владелец держит пин на
       фиксированном X и меняет ширину «влево от пина» — иначе связи
@@ -603,9 +673,16 @@ def fit_port_blocks() -> str:
     После правок — перерисовка и трассировка линий затронутых страниц
     (`NormalizeWire`), как у `set_block_size`.
 
+    **Наложения называются сразу.** После правок страницы фит читает
+    габариты и перечисляет пары с участием изменённых блоков: рост высоты
+    мог накрыть соседа. Устраняет наложения `layout_place`; фит не
+    переставляет блоки и не разводит наложения. При смене ширины центр
+    может сдвинуться на ΔX, чтобы пин остался на месте.
+
     **Только по правилам.** Блок, уже им соответствующий, не трогается:
     ширину, выставленную руками с запасом, инструмент не «оптимизирует»
-    (сужает), высоту — не подгоняет под иные представления.
+    (сужает), высоту - не подгоняет под иные представления. У nport-класса
+    ширина ниже штатной 32 поднимается до неё, выше - сохраняется.
     """
     project = session.ensure_project()
     main = project.get_main_page()

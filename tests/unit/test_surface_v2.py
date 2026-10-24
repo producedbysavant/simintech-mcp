@@ -79,6 +79,39 @@ async def test_help_text_points_to_full_catalog():
     text = _text(await mcp.call_tool("help_text", {}))
     assert "simintech://tools" in text
     assert "search_tools" in text
+    assert "simintech://guides/block-sizing" in text
+
+
+@pytest.mark.anyio
+async def test_instructions_link_block_sizing_guide():
+    """Инструкция сервера называет правило размеров nport-блоков."""
+    from simintech_mcp.server import mcp
+
+    assert "simintech://guides/block-sizing" in (mcp.instructions or "")
+
+
+@pytest.mark.anyio
+async def test_search_finds_set_block_param_by_nport():
+    """Поиск по nport ведёт к set_block_param с пересборкой пинов."""
+    result = await mcp.call_tool("search_tools", {"query": "nport пины высота"})
+    data = json.loads(_text(result))
+    names = {item["name"] for item in data}
+    assert "set_block_param" in names
+
+
+@pytest.mark.anyio
+async def test_short_descriptions_name_size_fit_and_nport():
+    """Краткие описания композитов и параметра называют размеры и nport."""
+    tools = await surface.catalog_tools(mcp)
+    descriptions = {
+        tool.name: surface.short_description(
+            tool.name, tool.description or "", tool)
+        for tool in tools
+    }
+    assert "размер" in descriptions["build_model"].lower()
+    assert "размер" in descriptions["format_model"].lower()
+    assert "nport" in descriptions["set_block_param"].lower()
+    assert "пин" in descriptions["set_block_param"].lower()
 
 
 def test_eval_has_ten_pairs():

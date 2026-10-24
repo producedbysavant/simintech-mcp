@@ -276,7 +276,36 @@ async def test_resource_model_checklist_covers_key_rules():
     assert "fit_port_blocks" in text
     assert "fit_value_labels" in text
     assert "16 px" in text
+    assert "nport" in text
+    assert "simintech://guides/block-sizing" in text
     assert "GUI" in text  # непроверяемое машинно названо
+
+
+@pytest.mark.anyio
+async def test_block_sizing_guide_covers_rule_and_tools():
+    """Канон правила: числа, классы и порядок инструментов на месте."""
+    from simintech_mcp import rules
+
+    text = await _resource_text("simintech://guides/block-sizing")
+
+    assert f"{rules.PORT_ROW_HEIGHT} px" in text
+    assert f"{rules.PORT_MARGIN} px" in text
+    assert f"{rules.NPORT_BLOCK_WIDTH} px" in text
+    for name in rules.NPORT_SIZE_CLASSES:
+        assert name in text
+    for tool in ("set_block_param", "layout_place", "normalize_only",
+                 "format_model", "save_screenshot"):
+        assert tool in text
+    assert "simintech://model/checklist" in text
+
+
+@pytest.mark.anyio
+async def test_model_text_guide_points_to_block_sizing():
+    """Руководство по тексту модели называет nport и правило размеров."""
+    text = await _resource_text("simintech://guides/model-text")
+
+    assert "nport" in text
+    assert "simintech://guides/block-sizing" in text
 
 
 @pytest.mark.anyio

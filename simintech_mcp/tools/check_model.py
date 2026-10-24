@@ -3,6 +3,7 @@
 Проверяется по фактической геометрии, а не глазами:
 
 * наложения габаритов блоков — нет свободного буфера (через COM, `Points`);
+* высота блоков с входными контактами: 16 px на вход или строку сигнала;
 * подписи порт-блоков шире рамки — грубая оценка по `PortNames` и ширине;
   это **примечание, не дефект**: свисание подписи за рамку владелец
   допускает, если текст читается (замечание 07.10.2026);
@@ -19,8 +20,10 @@
 точки линий (изломы) через COM и по документированным функциям языка не
 читаются — доступны только концы, поэтому «диагональных сегментов» здесь
 нет, а «с изломом» — это связь, концы которой не совпадают ни по X, ни по Y.
-Разметка проверяется по центрам блоков (шаг 8 px); шаг портов и величины
-зазоров между блоками — вне проверки.
+Разметка проверяется по центрам блоков (шаг 8 px). Высота сверяется с
+числом входов для классов правила (порт-блоки, субмодели и nport-классы),
+но фактический шаг портов по координатам не измеряется; величины зазоров
+между блоками - вне проверки.
 """
 
 from __future__ import annotations
@@ -32,7 +35,6 @@ from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.catalog import NON_BLOCK_CLASSES
-from simintech_api.core.block import Block
 from simintech_api.core.script_bridge import ScriptBridge
 from simintech_api.exceptions import ScriptBridgeError
 from simintech_api.script_probe import (
@@ -45,11 +47,14 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..rules import MAX_NODE_LINES
+from ..rules import (MAX_NODE_LINES, NPORT_BLOCK_WIDTH, NPORT_PARAM,
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
+                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES, required_height)
 from ..geometry import (
     CHAR_WIDTH_ESTIMATE, STUB, WIRE_PITCH, channel_width, collinear_overlap,
     cut_sizes, overlaps, predicted_polyline, proper_crossing, rect_of,
     segment_hits_rect, segments_of)
+from .blocks import read_port_names
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -134,21 +139,6 @@ def _sweep_previous() -> None:
         except OSError:
             pass
     _PREVIOUS_PATHS.clear()
-
-
-def read_port_names(block: Block) -> Optional[List[str]]:
-    """Имена сигналов из `PortNames`; `None` — прочитать не удалось.
-
-    Пустой список и «не прочиталось» — разные вещи: у обычного блока портов
-    по имени нет вовсе, а нечитаемое свойство обязано быть названо.
-    """
-    try:
-        value = block.get_property("PortNames")
-    except Exception:                                          # noqa: BLE001
-        return None
-    if not value:
-        return []
-    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -289,6 +279,14 @@ def check_model_layout() -> str:
     у пропущенного блока честно видна одному порту, и предупреждение по
     ней было бы ложным (находки ревью 08.10.2026).
 
+    **Высота, ширина и `nport`.** Для порт-блоков высота сверяется с 16 ×
+    число строк `PortNames`; для субмоделей и nport-классов - с 16 ×
+    фактическое число входов. У nport-классов ширина меньше штатной 32 и
+    расхождение параметра `nport` с числом пинов - отдельные
+    предупреждения: запись свойства в обход `set_block_param` пины не
+    пересобирает. Нечитаемое число входов - «не проверена», а не чистый
+    вердикт. Правило и оговорки: `simintech://guides/block-sizing`.
+
     **Проверка идёт контуром страницы и сдвигает модельное время** — как
     `step`: порты и концы линий через COM не читаются, их отдают функции
     языка. На остановленном проекте расчёт запускается и останавливается
@@ -302,8 +300,11 @@ def check_model_layout() -> str:
 
     * промежуточные точки линий (изломы) не читаются — «с изломом» значит
       лишь, что концы не совпали ни по X, ни по Y;
-    * шаг портов и величины зазоров между блоками не проверяются — вне
-      критерия разметки (на разметке проверяются центры блоков);
+    * фактический шаг портов по координатам не измеряется; проверяется
+      высота по числу входных контактов для классов правила (порт-блоки -
+      16 px на строку `PortNames`, субмодели и nport-классы - 16 px на
+      вход), а зазоры между блоками - вне критерия разметки (на разметке
+      проверяются центры блоков);
     * пустой порт — это порт без линии; для выходных портов это не всегда
       дефект, решает человек.
     * **кадр (масштаб и смещение вида) не проверяется**: свойства страницы
@@ -322,6 +323,13 @@ def check_model_layout() -> str:
     geometry: List[Tuple[str, Tuple[float, float, float, float]]] = []
     no_geometry: List[str] = []
     label_warnings: List[str] = []
+    height_warnings: List[str] = []
+    height_skipped: List[str] = []
+    height_checked = 0
+    height_rule_blocks = 0
+    width_narrow: List[str] = []
+    nport_mismatch: List[str] = []
+    nport_skipped: List[str] = []
     off_grid: List[str] = []
     port_blocks: List[Tuple[str, int]] = []
     port_skipped: List[str] = []
@@ -331,8 +339,10 @@ def check_model_layout() -> str:
             name = block.get_name()
         except Exception:                                      # noqa: BLE001
             name = str(block.id)
+        class_name = ""
         try:
-            if block.class_name in LABEL_CLASSES:
+            class_name = str(block.class_name).strip()
+            if class_name in LABEL_CLASSES:
                 continue
         except Exception:                                      # noqa: BLE001
             pass
@@ -355,6 +365,7 @@ def check_model_layout() -> str:
             if _outside_sheet(rect):
                 outside_sheet.append(name)
         width = size[0] if size else None
+        height = size[1] if size else None
         names = read_port_names(block)
         if width and names:
             longest = max(names, key=len)
@@ -363,8 +374,70 @@ def check_model_layout() -> str:
                 label_warnings.append(
                     f"{name}: «{longest}» (~{estimate:g} px) при ширине "
                     f"{width:g}")
+        if class_name in (*PORT_HEIGHT_CLASSES, *ROW_HEIGHT_CLASSES):
+            height_rule_blocks += 1
+        # Ширина nport-блока - свойство габарита, а не следствие читаемости
+        # пинов: проверяется и тогда, когда число входов не прочиталось.
+        if class_name in NPORT_SIZE_CLASSES and width is not None:
+            if float(width) < float(NPORT_BLOCK_WIDTH):
+                width_narrow.append(
+                    f"{name}: ширина {width:g} < {NPORT_BLOCK_WIDTH}")
+        # Высота по правилу: порт-блоки - 16 px на строку PortNames,
+        # субмодели и nport-классы - 16 px на входной контакт. Нечитаемые
+        # данные дают «не проверена», а не положительный вердикт.
+        if height is None and class_name in (*PORT_HEIGHT_CLASSES,
+                                             *ROW_HEIGHT_CLASSES):
+            height_skipped.append(name)
+        elif class_name in PORT_HEIGHT_CLASSES and names is None:
+            height_skipped.append(name)
+        if height is not None and class_name in PORT_HEIGHT_CLASSES and names:
+            required = required_height(class_name, len(names))
+            if required is not None:
+                height_checked += 1
+                if float(height) != float(required):
+                    height_warnings.append(
+                        f"{name}: высота {height:g}, строк {len(names)}, нужно "
+                        f"{required} ({PORT_ROW_HEIGHT} px на строку)")
+        if height is not None and class_name in ROW_HEIGHT_CLASSES:
+            try:
+                in_ports = int(block.get_in_port_count())
+            except Exception:                                  # noqa: BLE001
+                height_skipped.append(name)
+                if class_name in NPORT_SIZE_CLASSES:
+                    # Сверка nport с пинами без числа входов невозможна.
+                    nport_skipped.append(name)
+            else:
+                required = required_height(class_name, in_ports)
+                if required is not None:
+                    height_checked += 1
+                    if float(height) != float(required):
+                        height_warnings.append(
+                            f"{name}: высота {height:g}, входов {in_ports}, "
+                            f"нужно {required} ({PORT_ROW_HEIGHT} px на вход)")
+                if class_name in NPORT_SIZE_CLASSES:
+                    try:
+                        nport = block.get_property(NPORT_PARAM)
+                    except Exception:                          # noqa: BLE001
+                        nport_skipped.append(name)
+                    else:
+                        try:
+                            nport_num = int(float(str(nport).strip()))
+                        except Exception:                      # noqa: BLE001
+                            nport_skipped.append(name)
+                        else:
+                            if nport_num != in_ports:
+                                nport_mismatch.append(
+                                    f"{name}: nport={nport_num}, входов "
+                                    f"{in_ports}")
         if names is None:
             port_skipped.append(name)
+            continue
+        if not names and class_name in PORT_HEIGHT_CLASSES:
+            # У порт-блока имя сигнала есть всегда: пустой список здесь
+            # означает отказ чтения, а не «имён нет».
+            port_skipped.append(name)
+            if name not in height_skipped:
+                height_skipped.append(name)
             continue
         try:
             count = block.get_port_count()
@@ -486,6 +559,50 @@ def check_model_layout() -> str:
     else:
         lines.append("Подписи порт-блоков: в рамках (оценка "
                      f"{CHAR_WIDTH_ESTIMATE:g} px/символ).")
+    if height_warnings:
+        shown = "; ".join(height_warnings[:MAX_REPORTED])
+        more = (f" (и ещё {len(height_warnings) - MAX_REPORTED})"
+                if len(height_warnings) > MAX_REPORTED else "")
+        lines.append(
+            f"ВНИМАНИЕ: высота не по правилу {PORT_ROW_HEIGHT} px на "
+            f"вход/строку: {shown}{more}. Подгоните `fit_port_blocks`; у "
+            f"nport-классов число входов меняет "
+            f"`set_block_param(nport=N)`; правило: "
+            f"simintech://guides/block-sizing.")
+    elif not height_skipped:
+        if height_checked:
+            lines.append(f"Высота блоков с входными контактами: по правилу "
+                         f"{PORT_ROW_HEIGHT} px на вход/строку.")
+        elif not height_rule_blocks:
+            lines.append("Высота блоков с входными контактами: блоков "
+                         "правила на странице нет.")
+    if height_skipped:
+        shown = ", ".join(height_skipped[:MAX_REPORTED])
+        more = (f" (и ещё {len(height_skipped) - MAX_REPORTED})"
+                if len(height_skipped) > MAX_REPORTED else "")
+        lines.append(f"Высота не проверена (число входов не читается): "
+                     f"{shown}{more}.")
+    if width_narrow:
+        shown = "; ".join(width_narrow[:MAX_REPORTED])
+        more = (f" (и ещё {len(width_narrow) - MAX_REPORTED})"
+                if len(width_narrow) > MAX_REPORTED else "")
+        lines.append(f"ВНИМАНИЕ: ширина nport-блока меньше штатной "
+                     f"{NPORT_BLOCK_WIDTH}: {shown}{more}.")
+    if nport_mismatch:
+        shown = "; ".join(nport_mismatch[:MAX_REPORTED])
+        more = (f" (и ещё {len(nport_mismatch) - MAX_REPORTED})"
+                if len(nport_mismatch) > MAX_REPORTED else "")
+        lines.append(
+            f"ВНИМАНИЕ: nport не совпадает с числом входов: {shown}{more}. "
+            f"Это расхождение параметра и пинов: смените nport через "
+            f"`set_block_param`, он пересоберёт пины; запись свойства в обход "
+            f"инструмента пины не меняет.")
+    if nport_skipped:
+        shown = ", ".join(nport_skipped[:MAX_REPORTED])
+        more = (f" (и ещё {len(nport_skipped) - MAX_REPORTED})"
+                if len(nport_skipped) > MAX_REPORTED else "")
+        lines.append(f"nport не проверен (не читается или не число): "
+                     f"{shown}{more}.")
     if off_grid:
         shown = ", ".join(off_grid[:MAX_REPORTED])
         more = (f" (и ещё {len(off_grid) - MAX_REPORTED})"

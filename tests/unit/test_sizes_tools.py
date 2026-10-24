@@ -37,6 +37,25 @@ class _ImmutableSizeBlock(_SizeBlock):
         return
 
 
+class _NPortBlock(_SizeBlock):
+    """Блок с переменным числом входов: высота подчинена 16 px на вход."""
+
+    def __init__(self, name="or_0", class_name="Оператор ИЛИ",
+                 in_ports=4, size=(32.0, 32.0), raise_on_ports=False):
+        super().__init__(name=name, size=size)
+        self.class_name = class_name
+        self._in_ports = in_ports
+        self.raise_on_ports = raise_on_ports
+
+    def get_in_port_count(self):
+        if self.raise_on_ports:
+            raise OSError("COM недоступен")
+        return self._in_ports
+
+    def get_points(self):
+        return f"[({self._size[0]:g} , 0)]"
+
+
 class _EvenOnlyBlock(_SizeBlock):
     """Блок, принимающий только чётные значения (трансформация записи)."""
 
@@ -457,3 +476,49 @@ async def test_set_block_size_refuses_when_body_did_not_compile(monkeypatch,
 
     assert "не собралось" in text
     assert block.get_size() == (32.0, 32.0), "размер изменился при отказе"
+
+
+@pytest.mark.anyio
+async def test_set_block_size_nport_accepts_rule_height(monkeypatch, tmp_path):
+    """nport-блок: 4 входа - высота 64 (16 × 4) принимается, ширина свободна."""
+    block = _NPortBlock(in_ports=4)
+    bridge = _size_bridge(block)
+    _install_size_contour(monkeypatch, tmp_path, {"or_0": block}, bridge)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size", {"block": "or_0", "width": 32, "height": 64}))
+
+    assert block.get_size() == (32.0, 64.0)
+    assert "32x32 → 32x64" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("height", [32, 48, 80])
+async def test_set_block_size_nport_refuses_other_height(monkeypatch, tmp_path,
+                                                         height):
+    """Высота не 16 × входы - отказ до записи, текст называет входы и норму."""
+    block = _NPortBlock(in_ports=4)
+    bridge = _size_bridge(block)
+    _install_size_contour(monkeypatch, tmp_path, {"or_0": block}, bridge)
+
+    text = await _error("set_block_size",
+                        {"block": "or_0", "width": 32, "height": height})
+
+    assert "16 px" in text and "входов 4" in text and "64 px" in text
+    assert block.get_size() == (32.0, 32.0)
+    assert bridge.body == "", "нарушающая правило высота записана в блок"
+
+
+@pytest.mark.anyio
+async def test_set_block_size_nport_refuses_unreadable_ports(monkeypatch,
+                                                             tmp_path):
+    """Число входов не читается - высоту не задаём: проверить правило нечем."""
+    block = _NPortBlock(raise_on_ports=True)
+    bridge = _size_bridge(block)
+    _install_size_contour(monkeypatch, tmp_path, {"or_0": block}, bridge)
+
+    text = await _error("set_block_size",
+                        {"block": "or_0", "width": 32, "height": 64})
+
+    assert "число входов не читается" in text
+    assert bridge.body == ""

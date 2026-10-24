@@ -27,6 +27,7 @@ from simintech_api import language as language_api
 
 from .. import runtime, sandbox
 from ..app import mcp
+from ..rules import PORT_ROW_HEIGHT
 
 
 @mcp.tool(title="Справка", annotations={"readOnlyHint": True})
@@ -56,8 +57,14 @@ def help_text() -> str:
         "  3. connect(src, dst) — связи; соединяйте ВСЕ входы: блок расчёта\n"
         "     с висящим входом молча останавливает расчёт всей модели (у\n"
         "     порт-блоков не так: висячий «Порт входа» — не блокер)\n"
-        "  4. layout_place() — без аргументов: все блоки и все связи сессии —\n"
-        "     расставит и трассирует линии (иначе провода идут по диагонали)\n"
+        "  3a. Число входов nport-класса меняет set_block_param(..., \"nport\",\n"
+        f"     N): пересобирает пины, ставит высоту {PORT_ROW_HEIGHT} px на вход\n"
+        "     и требует layout_place заново. Правило:\n"
+        "     simintech://guides/block-sizing.\n"
+        "  4. format_model() - размеры по числу входов, расстановка и\n"
+        "     нормализация линий; голый layout_place() размеры не меняет,\n"
+        "     только расставляет и нормализует (иначе провода идут по\n"
+        "     диагонали, а рост высоты даёт наложения)\n"
         "  5. run(to_time=N) — расчёт; проверьте get_time() в ответе\n"
         f"  6. read_output_file(путь) или summarize_output_file(путь) —\n"
         f"     результат блока «В файл» (сводка: min/max/среднее/наклон)\n"
@@ -107,6 +114,8 @@ def help_text() -> str:
         "  simintech://blocks/catalog — классы и имена параметров блоков;\n"
         "  simintech://model/checklist — чек-лист оформления модели\n"
         "  (что агент проверяет сам после сборки);\n"
+        "  simintech://guides/block-sizing - размеры блоков с переменным\n"
+        "  числом входов (nport), смена числа входов и повторная раскладка;\n"
         "  simintech://language/functions и .../<имя> — реестр функций\n"
         "  встроенного языка (имя, назначение, синтаксис, аргументы);\n"
         "  искать — search_language_functions, карточка — get_language_function;\n"

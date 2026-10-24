@@ -301,6 +301,147 @@ async def test_fit_submodel_height_counts_in_ports_only(monkeypatch, tmp_path):
     assert "высота 112 → 96 (6 вход(ов) × 16)" in text
 
 
+class _LogicBlock(_PortedSubmodelBlock):
+    """Класс с nport: входов ровно `in_ports`, выход один, центр для наложений."""
+
+    def __init__(self, class_name="Оператор ИЛИ", name="or_0", block_id=9,
+                 in_ports=4, size=(32.0, 32.0), center=(200.0, 100.0)):
+        super().__init__(name=name, block_id=block_id, ports=in_ports,
+                         size=size)
+        self.class_name = class_name
+        self.center = center
+
+    def get_points(self):
+        cx, cy = self.center
+        _width, height = self.get_size()
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - height / 2:g}), ({cx:g} , {cy + 24:g})]")
+
+
+class _NeighborBlock(_SizeBlock):
+    """Сосед для проверки наложений: обычный блок с центром и габаритом."""
+
+    def __init__(self, name="k_0", block_id=10, size=(32.0, 16.0),
+                 center=(200.0, 130.0)):
+        super().__init__(name=name, size=size)
+        self.class_name = "Константа"
+        self.id = block_id
+        self.center = center
+
+    def get_points(self):
+        cx, cy = self.center
+        _width, height = self.get_size()
+        return (f"[({cx:g} , {cy:g}), ({cx + 16:g} , {cy:g}), "
+                f"({cx:g} , {cy - height / 2:g}), ({cx:g} , {cy + 24:g})]")
+
+
+class _SnappingFitBlock(_LogicBlock):
+    """Блок, принимающий высоту на 8 px меньше запрошенной (среда иначе)."""
+
+    def set_size_value(self, name, value):
+        if name == "Height":
+            value = float(value) - 8
+        super().set_size_value(name, value)
+
+
+@pytest.mark.anyio
+async def test_fit_nport_class_reports_wrong_accepted_value(monkeypatch,
+                                                            tmp_path):
+    """Среда приняла 56 вместо 64: это отказ, а не «подогнано»."""
+    block = _SnappingFitBlock(in_ports=4)
+    project = _FakeProject({block.get_name(): block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.get_size() == (32.0, 56.0)
+    assert "среда приняла не то значение" in text
+    assert "запрошено 64" in text
+    assert "часть записей среда не приняла" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("class_name", [
+    "Оператор И", "Оператор ИЛИ", "Перемножитель", "Минимум по входам",
+])
+async def test_fit_nport_class_height(monkeypatch, tmp_path, class_name):
+    """nport-класс: 4 входа - высота 64, ширина 32 приводится к «Значению»."""
+    block = _LogicBlock(class_name=class_name, in_ports=4)
+    project = _FakeProject({block.get_name(): block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.get_size() == (32.0, 64.0)
+    assert block.value_writes == [("Height", "64"), ("Width", "32")]
+    assert "высота 32 → 64 (4 вход(ов) × 16)" in text
+
+
+@pytest.mark.anyio
+async def test_fit_nport_class_raises_narrow_width(monkeypatch, tmp_path):
+    """Ширина ниже штатной поднимается до 32, высота - по входам."""
+    block = _LogicBlock(in_ports=4, size=(20.0, 32.0))
+    project = _FakeProject({block.get_name(): block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.get_size() == (32.0, 64.0)
+    assert ("Width", "32") in block.value_writes
+    assert ("Height", "64") in block.value_writes
+    assert "ширина 20 → 32 (штатная ширина 32)" in text
+
+
+@pytest.mark.anyio
+async def test_fit_nport_class_keeps_manual_width(monkeypatch, tmp_path):
+    """Вручную расширенный блок не сужается: 48 остаётся, высота - 64."""
+    block = _LogicBlock(in_ports=4, size=(48.0, 32.0))
+    project = _FakeProject({block.get_name(): block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.get_size() == (48.0, 64.0)
+    assert block.value_writes == [("Height", "64"), ("Width", "48")]
+
+
+@pytest.mark.anyio
+async def test_fit_nport_class_reports_overlap(monkeypatch, tmp_path):
+    """Рост высоты накрыл соседа: пара названа, блоки фит не двигает."""
+    block = _LogicBlock(in_ports=4, center=(200.0, 100.0))
+    neighbor = _NeighborBlock(center=(200.0, 130.0))
+    project = _FakeProject({block.get_name(): block,
+                            neighbor.get_name(): neighbor})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert "ВНИМАНИЕ: наложения блоков" in text
+    assert "or_0" in text and "k_0" in text
+    assert block.center == (200.0, 100.0)
+    assert neighbor.center == (200.0, 130.0)
+
+
+@pytest.mark.anyio
+async def test_fit_port_block_fixes_height_by_names(monkeypatch, tmp_path):
+    """Порт-блок из двух сигналов: высота чинится с 16 до 32."""
+    block = _PortBlock(names="a\r\nb\r\n", size=(64.0, 16.0))
+    project = _FakeProject({"InputPort_0": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.get_size() == (64.0, 32.0)
+    assert ("Height", "32") in block.value_writes
+    assert "высота 16 → 32 (2 строк(и) × 16)" in text
+
+
 class _MultiplexerBlock(_PortedSubmodelBlock):
     """Мультиплексор: входов ровно `nport`, выход один (замер 08.10.2026)."""
 

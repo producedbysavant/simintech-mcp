@@ -526,6 +526,41 @@ def test_refuse_contour_failure_not_compiled_says_where_to_look():
     assert "Проект не изменён" in message
 
 
+def test_refuse_contour_failure_not_compiled_uses_project_note():
+    """Вызывающий, уже изменивший проект, заменяет «Проект не изменён»."""
+    from fastmcp.exceptions import ToolError
+    from simintech_api.script_probe import OUTCOME_NOT_COMPILED
+
+    outcome = ContourOutcome(kind=OUTCOME_NOT_COMPILED, lines=[])
+    with pytest.raises(ToolError) as exc:
+        page_script.refuse_contour_failure(
+            outcome, failed="размер не записан",
+            project_note="Проект уже изменён: nport записан.")
+
+    message = str(exc.value)
+    assert "Проект уже изменён: nport записан." in message
+    assert "Проект не изменён" not in message
+
+
+def test_activate_or_refuse_uses_project_note():
+    """Отказ активации страницы тоже не врёт о неизменном проекте."""
+    from fastmcp.exceptions import ToolError
+
+    class _Page:
+        def activate(self):
+            raise OSError("страницы нет")
+
+    with pytest.raises(ToolError) as exc:
+        page_script.activate_or_refuse(
+            _Page(), action="размер не записан",
+            project_note="Проект уже изменён: nport записан.")
+
+    message = str(exc.value)
+    assert "страницы нет" in message
+    assert "Проект уже изменён: nport записан." in message
+    assert "Проект не изменён" not in message
+
+
 def test_refuse_contour_failure_aborted_uses_failed_by_default():
     """Обрыв без своего `unsure` называет подлежащее «… не выполнена».
 
