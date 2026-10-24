@@ -22,6 +22,7 @@ from ..specs import ModelSpec, render_model_text
 from .blocks import get_block_params, list_blocks
 from .check_model import audit_routing, check_model_layout
 from .files import read_output_file, summarize_output_file
+from .fits import fit_port_blocks
 from .layout import fit_view, layout_place
 from .model_text import import_model_text
 from .project import create_project, set_calc_time
@@ -188,6 +189,7 @@ def build_model(spec: Optional[ModelSpec] = None,
                 end_time: Optional[float] = None,
                 new_project: bool = False,
                 layout: bool = True,
+                fit_sizes: bool = True,
                 check: bool = False,
                 screenshot: bool = False) -> str:
     """Собрать модель из ModelSpec или декларативного текста.
@@ -196,6 +198,14 @@ def build_model(spec: Optional[ModelSpec] = None,
     портам; провода внутри субмоделей идут текстом и требуют снимка.
     Для model_text провода импортируются текстом: это быстрый, но менее
     надёжный путь, о чём ответ предупреждает.
+
+    fit_sizes=True (по умолчанию) подгоняет габариты блоков до раскладки:
+    у nport-классов высота 16 px на вход, у порт-блоков ширина по подписям
+    и высота по строкам. Подгонка идёт после импорта и, в ветке spec, до
+    connect: провода создаются по фактическим портам. Сбой подгонки не
+    отменяет сборку, а даёт WARNING. layout=False не переставляет блоки;
+    подгонка размеров при этом выполняется и при смене ширины может
+    сдвинуть центр на ΔX, чтобы сохранить пин.
 
     По умолчанию new_project=False: модель дополняет текущий проект, а при
     его отсутствии создаёт новый. new_project=True закрывает текущий проект;
@@ -208,9 +218,19 @@ def build_model(spec: Optional[ModelSpec] = None,
     notes: List[str] = []
     notes.append(_project_or_create(project_hint, end_time, new_project))
 
+    def fit_sizes_note() -> None:
+        """Подогнать габариты до connect/раскладки; сбой - предупреждение."""
+        if not fit_sizes:
+            return
+        try:
+            notes.append(fit_port_blocks())
+        except ToolError as exc:
+            notes.append(f"WARNING: подгонка размеров не выполнена: {exc}")
+
     if spec is not None:
         blocks_text = render_model_text(spec, include_wires=False)
         notes.extend(_import_notes(import_model_text(blocks_text)))
+        fit_sizes_note()
         try:
             listing = list_blocks(limit=0)
         except ToolError as exc:
@@ -237,6 +257,7 @@ def build_model(spec: Optional[ModelSpec] = None,
             f"Соединено проводов: {connected} из {len(spec.wires)}")
     else:
         notes.extend(_import_notes(import_model_text(model_text)))
+        fit_sizes_note()
         notes.append(
             "WARNING: провода из текста могут получить неверную геометрию; "
             "для надёжной сборки используйте spec.")
@@ -331,17 +352,40 @@ def simulate(to_time: Optional[float] = None,
 )
 @runtime.workflow_tool
 def format_model(
-        mode: Literal["place", "normalize", "fit", "screenshot"] = "place",
+        mode: Literal["place", "normalize", "sizes", "fit",
+                      "screenshot"] = "place",
         check: bool = False,
         screenshot: bool = False,
         hires: bool = False,
         zoom: Optional[float] = None) -> str:
-    """Разложить, нормализовать, вписать кадр, проверить и снять снимок."""
+    """Подогнать размеры, разложить, нормализовать, вписать кадр и проверить.
+
+    Режимы:
+
+    * `place` (по умолчанию) - подгонка габаритов (`fit_port_blocks`), затем
+      раскладка и `NormalizeWire`; сбой подгонки - предупреждение, раскладка
+      всё равно выполняется;
+    * `sizes` - подгонка габаритов и нормализация линий без расстановки;
+      при смене ширины центр может сдвинуться на ΔX, чтобы сохранить пин;
+      сбой подгонки - отказ;
+    * `normalize` - только нормализация линий, без подгонки и перемещения;
+    * `fit` - вписать кадр (`fit_view`), а не размеры блоков;
+    * `screenshot` - снимок схемы.
+
+    Правило размеров: `simintech://guides/block-sizing`.
+    """
     if hires and zoom is not None:
         raise ToolError("hires и zoom не сочетаются")
     parts: List[str] = []
     if mode == "place":
+        try:
+            parts.append(fit_port_blocks())
+        except ToolError as exc:
+            parts.append(f"WARNING: подгонка размеров не выполнена: {exc}")
         parts.append(layout_place())
+    elif mode == "sizes":
+        parts.append(fit_port_blocks())
+        parts.append(layout_place(normalize_only=True))
     elif mode == "normalize":
         parts.append(layout_place(normalize_only=True))
     elif mode == "fit":

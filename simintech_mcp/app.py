@@ -27,6 +27,8 @@ mcp = FastMCP(
         "Начните с doctor. Сборка: build_model(spec=...) с ModelSpec; "
         "верхнеуровневые провода создаются connect, не текстом. "
         "Обзор: inspect_model; расчёт: simulate; оформление: format_model. "
+        "Размеры блоков с nport и повторная раскладка после смены числа "
+        "входов: simintech://guides/block-sizing. "
         "Нестандартные операции ищутся search_tools; полные описания "
         "инструментов: simintech://tools/<name>. "
         "Имена параметров блоков: simintech://blocks/catalog. "

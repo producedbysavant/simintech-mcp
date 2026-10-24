@@ -295,6 +295,25 @@ def _overlap_report(
     return text
 
 
+def overlap_report(page: Page, names: Optional[set[str]] = None) -> str:
+    """Строки о наложениях блоков страницы.
+
+    `names` - блоки, чьи габариты изменились: в ответ попадают пары с их
+    участием (чужие наложения не наша правка). `None` - все пары страницы;
+    так отвечает `check_model_layout`-подобный вызов, которому нужен полный
+    список. Подписи и прочие объекты оформления пропускаются: их карточка
+    60×40 накрывает блок и дала бы ложную пару.
+
+    Один сбор габаритов на страницу: тем же чтением пользуется
+    `layout_place`, а `fit_port_blocks`, `set_block_size` и
+    `set_block_param(nport)` называют наложения сразу после правки, не
+    дожидаясь отдельного вызова.
+    """
+    rects, no_geometry = _page_rects(page)
+    moved = names if names is not None else {name for name, _ in rects}
+    return _overlap_report(rects, no_geometry, moved)
+
+
 def _routing_metrics(
         rects: "list[tuple[str, tuple[float, float, float, float]]]",
         pairs: "list[tuple[str, int, str, int]]",

@@ -6,6 +6,9 @@ import json
 
 from . import surface
 from .app import mcp
+from .rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES,
+                    NPORT_OTHER_REASONS, NPORT_SIZE_CLASSES, PORT_MARGIN,
+                    PORT_ROW_HEIGHT)
 
 
 @mcp.resource("simintech://tools")
@@ -77,6 +80,11 @@ def resource_model_text_guide() -> str:
         "Геометрия: верхнеуровневые провода в тексте получают маршрут, не\n"
         "совпадающий с фактическими портами. Создавайте их connect после\n"
         "импорта блоков; подробности: simintech://guides/wire-geometry.\n"
+        "\n"
+        "Число входов блоков с параметром nport в тексте задаёт nport = N:\n"
+        "пины создаются при создании блока. Размер текст не задаёт: высоту\n"
+        "по числу входов подгоняют build_model и format_model; правило:\n"
+        "simintech://guides/block-sizing.\n"
     )
 
 
@@ -104,4 +112,70 @@ def resource_wire_geometry_guide() -> str:
         "верхнеуровневые\n"
         "провода создаются connect по фактическим портам, затем layout_place.\n"
         "Провода внутри субмоделей остаются текстовыми и требуют снимка.\n"
+    )
+
+
+@mcp.resource("simintech://guides/block-sizing")
+def resource_block_sizing_guide() -> str:
+    """Размеры блоков с переменным числом входов: один канон правила.
+
+    Числа и список классов берутся из `rules`, а не переписываются здесь:
+    подгонка, проверка и руководство обязаны меняться одной правкой.
+    Остальные агентские тексты ссылаются сюда, а не повторяют список.
+    """
+    classes = ", ".join(f"«{name}»" for name in NPORT_SIZE_CLASSES)
+    other = "; ".join(
+        f"«{name}»: "
+        f"{NPORT_OTHER_REASONS.get(name, 'nport не число входных контактов')}"
+        for name in NPORT_OTHER_CLASSES)
+    return (
+        "Размеры блоков с переменным числом входов\n"
+        "\n"
+        f"Правило: высота = {PORT_ROW_HEIGHT} px × число входных контактов;\n"
+        f"входы с шагом {PORT_ROW_HEIGHT} px, первый на {PORT_MARGIN} px ниже\n"
+        f"верхнего края, последний на {PORT_MARGIN} px выше нижнего; выход\n"
+        "один, посередине правой стороны; ширина штатная\n"
+        f"{NPORT_BLOCK_WIDTH} px, подгонка поднимает ширину до неё, но не\n"
+        "сужает вручную расширенный блок; обе оси пишутся в «Значение», не в\n"
+        "«Формулу».\n"
+        "\n"
+        f"Классы с nport: {classes}.\n"
+        f"Оговорка: {other}; правило к ним не относится.\n"
+        "\n"
+        "Смена числа входов:\n"
+        "  1. Основной путь: set_block_param(block, \"nport\", N). Инструмент\n"
+        "     вызывает SetPortCount, сверяет фактические пины, ставит высоту\n"
+        f"     {PORT_ROW_HEIGHT} × N и ширину не уже {NPORT_BLOCK_WIDTH},\n"
+        "     нормализует линии и называет наложения. Проект должен быть\n"
+        "     остановлен; пины не пересобрались - отказ без записи размера.\n"
+        "  2. import_model_text с nport = N: пины создаются при создании\n"
+        "     блока; build_model подгоняет размер до connect и раскладки.\n"
+        "  3. add_block(props=\"nport=N\") пины не пересобирает; nport и\n"
+        "     in_ports у этих классов отвергаются: после создания вызывайте\n"
+        "     set_block_param.\n"
+        "\n"
+        "После роста высоты:\n"
+        "  1. Соедините новые входы: пустой вход блока расчёта молча\n"
+        "     останавливает расчёт всей модели.\n"
+        "  2. layout_place(): расстановка и NormalizeWire. Без неё рост\n"
+        "     высоты даёт наложения блоков.\n"
+        "  3. Если блоки двигать нельзя: layout_place(normalize_only=True)\n"
+        "     или format_model(mode=\"normalize\"). Линии нормализуются,\n"
+        "     блоки стоят; наложения разводятся вручную set_block_center и\n"
+        "     проверяются check_model_layout.\n"
+        "\n"
+        "Композиты: build_model(layout=True) и format_model(mode=\"place\")\n"
+        "подгоняют размеры до раскладки; format_model(mode=\"sizes\") делает\n"
+        "подгонку и нормализацию без расстановки; при смене ширины центр\n"
+        "может сдвинуться на ΔX, чтобы сохранить пин.\n"
+        "\n"
+        "Проверка: check_model_layout предупреждает о высоте не по правилу,\n"
+        f"ширине меньше {NPORT_BLOCK_WIDTH} и расхождении nport с числом\n"
+        "пинов; ширину больше штатной и «Формула vs Значение» через COM не\n"
+        "проверяет. Нормализация видна только снимком (save_screenshot):\n"
+        "выгрузка показывает прежние точки.\n"
+        "\n"
+        "Соседнее правило: порт-блоки («Порт входа»/«Порт выхода») имеют\n"
+        f"высоту {PORT_ROW_HEIGHT} px на строку сигнала PortNames;\n"
+        "simintech://model/checklist, п.4.\n"
     )

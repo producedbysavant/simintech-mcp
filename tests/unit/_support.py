@@ -393,10 +393,20 @@ class _RenamingBlock:
 
     AUTO_NAME = "k_0"
 
+    #: Число входных контактов по умолчанию у nport-классов: CreateBlock
+    #: создаёт их столько, сколько задаёт собственный параметр (2/6/3).
+    DEFAULT_IN_PORTS = {
+        "Мультиплексор": 6,
+        "Оператор И": 2,
+        "Оператор ИЛИ": 2,
+        "Перемножитель": 2,
+        "Минимум по входам": 3,
+    }
+
     def __init__(self, class_name):
         self._class_name = class_name
         self._props = {"Name": self.AUTO_NAME}
-        self.in_ports = 0
+        self.in_ports = self.DEFAULT_IN_PORTS.get(class_name, 0)
         self.position = None
 
     @property
@@ -419,6 +429,9 @@ class _RenamingBlock:
     def set_in_port_count(self, count):
         self.in_ports = count
         return self
+
+    def get_in_port_count(self):
+        return self.in_ports
 
     def set_position(self, x, y, *, width=None, height=None):
         self.position = (x, y, width, height)

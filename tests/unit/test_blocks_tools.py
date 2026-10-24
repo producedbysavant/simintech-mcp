@@ -12,6 +12,8 @@ import pytest
 from simintech_mcp.server import mcp
 
 from simintech_mcp import catalog, session
+from simintech_mcp.tools import block_size
+from simintech_mcp.tools import blocks as blocks_module
 from simintech_mcp.tools.blocks import (
     MAX_BLOCK_IN_PORTS,
     MAX_BLOCK_PROPS,
@@ -20,6 +22,7 @@ from simintech_mcp.tools.blocks import (
 
 from _support import (
     _FakeBlock,
+    _FakeProject,
     _FakeProjectWithCreate,
     _PlacedBlock,
     _StateStub,
@@ -704,3 +707,264 @@ async def test_list_blocks_rejects_limit_out_of_range(monkeypatch):
     assert "вне диапазона" in await _error("list_blocks", {"limit": -1})
     assert "вне диапазона" in await _error(
         "list_blocks", {"limit": MAX_LIST_BLOCKS + 1})
+
+
+# ─── set_block_param(nport): пины, высота и ширина ─────────────────
+
+
+class _NPortParamBlock:
+    """nport-блок для ветки set_block_param: пины, параметр и размер."""
+
+    def __init__(self, name="or_0", class_name="Оператор ИЛИ", in_ports=2,
+                 nport="2", size=(32.0, 32.0), rebuild=True,
+                 init_error=False):
+        self._name = name
+        self.class_name = class_name
+        self.id = 9
+        self._in_ports = in_ports
+        self._nport = nport
+        self._size = list(size)
+        self.rebuild = rebuild
+        self.init_error = init_error
+        self.props = {}
+        self.inited = False
+        self.wires = []
+
+    def get_name(self):
+        return self._name
+
+    def get_in_port_count(self):
+        return self._in_ports
+
+    def set_in_port_count(self, count):
+        if self.rebuild:
+            self._in_ports = count
+        return self
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def set_size_value(self, name, value):
+        self._size[0 if name == "Width" else 1] = float(value)
+
+    def get_property(self, name):
+        if name == "nport":
+            return self._nport
+        raise AssertionError(f"подделка читает nport, а спрошено {name!r}")
+
+    def set_property(self, name, value):
+        self.props[name] = value
+        if name == "nport":
+            self._nport = str(value)
+        return self
+
+    def init(self):
+        if self.init_error:
+            raise OSError("InitBlock отказал")
+        self.inited = True
+        return self
+
+    def get_port_count(self):
+        return self._in_ports + 1
+
+    def get_points(self):
+        return f"[({self._size[0]:g} , 0)]"
+
+
+def _install_nport_block(monkeypatch, block, state=0, wires=None):
+    """Проект с блоком и подменённая запись размера (контур не нужен)."""
+    project = _FakeProject({block.get_name(): block})
+    project._simulation = _StateStub(state)
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(session, "WIRES", list(wires or []))
+
+    def fake_write(page, target, width, height, *, action="размер не записан"):
+        before = target.get_size()
+        target.set_size_value("Width", width)
+        target.set_size_value("Height", height)
+        return block_size.SizeWriteResult(
+            before=before, after=target.get_size(), tail_note="",
+            overlaps="\nНаложений блоков нет.")
+
+    # `_set_nport` импортирует функцию на уровне модуля: патчим имя в
+    # `blocks`, иначе реальный контур ушёл бы в COM.
+    monkeypatch.setattr(blocks_module, "write_block_size", fake_write)
+    return project
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_rebuilds_pins_and_size(monkeypatch):
+    """nport=4: пины 2 → 4, высота 16 × 4, ширина остаётся 32."""
+    block = _NPortParamBlock()
+    _install_nport_block(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "or_0", "param": "nport", "value": "4"}))
+
+    assert block.get_in_port_count() == 4
+    assert block.get_size() == (32.0, 64.0)
+    assert block.get_property("nport") == "4"
+    assert block.inited is True
+    assert "пины: 2 → 4" in text
+    assert "32x32 → 32x64" in text
+    assert "4 вход(ов) × 16" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_keeps_manual_width(monkeypatch):
+    """Вручную расширенный блок не сужается: 48 остаётся при высоте 64."""
+    block = _NPortParamBlock(size=(48.0, 32.0))
+    _install_nport_block(monkeypatch, block)
+
+    _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "or_0", "param": "nport", "value": "4"}))
+
+    assert block.get_size() == (48.0, 64.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_raises_narrow_width(monkeypatch):
+    """Ширина ниже штатной поднимается до 32."""
+    block = _NPortParamBlock(size=(20.0, 32.0))
+    _install_nport_block(monkeypatch, block)
+
+    _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "or_0", "param": "nport", "value": "4"}))
+
+    assert block.get_size() == (32.0, 64.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_shrink_forgets_removed_wires(monkeypatch):
+    """4 → 2: запись реестра о линии на удалённом входе снимается."""
+    class _Wire:
+        id = 123
+
+    block = _NPortParamBlock(in_ports=4, nport="4")
+    record = (_Wire(), "c_0", 0, "or_0", 3)
+    _install_nport_block(monkeypatch, block, wires=[record])
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "or_0", "param": "nport", "value": "2"}))
+
+    assert block.get_in_port_count() == 2
+    assert session.WIRES == []
+    assert "сняты" in text and "ВНИМАНИЕ" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_init_failure_is_partial_state(
+        monkeypatch):
+    """InitBlock упал после записи nport: это полунастроенное состояние."""
+    block = _NPortParamBlock(init_error=True)
+    _install_nport_block(monkeypatch, block)
+
+    text = await _error("set_block_param",
+                        {"block": "or_0", "param": "nport", "value": "4"})
+
+    assert "nport блока 'or_0' записан" in text
+    assert "InitBlock" in text
+    assert block.get_in_port_count() == 2
+    assert block.get_size() == (32.0, 32.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_refuses_when_pins_not_rebuilt(monkeypatch):
+    """Среда пины не пересобрала: отказ, размер не записан."""
+    block = _NPortParamBlock(rebuild=False)
+    _install_nport_block(monkeypatch, block)
+
+    text = await _error("set_block_param",
+                        {"block": "or_0", "param": "nport", "value": "4"})
+
+    assert "пины" in text and "не пересобрались" in text
+    assert block.get_size() == (32.0, 32.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_refuses_running_project(monkeypatch):
+    """Проект не остановлен: отказ до SetPortCount."""
+    block = _NPortParamBlock()
+    _install_nport_block(monkeypatch, block, state=3)
+
+    text = await _error("set_block_param",
+                        {"block": "or_0", "param": "nport", "value": "4"})
+
+    assert "остановленном" in text
+    assert block.get_in_port_count() == 2
+    assert block.get_size() == (32.0, 32.0)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", ["0", "4.5", "x",
+                                   str(MAX_BLOCK_IN_PORTS + 1)])
+async def test_set_block_param_nport_rejects_bad_value(monkeypatch, value):
+    """nport - целое 1…MAX_BLOCK_IN_PORTS; иначе отказ до COM."""
+    block = _NPortParamBlock()
+    _install_nport_block(monkeypatch, block)
+
+    text = await _error("set_block_param",
+                        {"block": "or_0", "param": "nport", "value": value})
+
+    assert ("вне" in text or "не число" in text or "не целое" in text)
+    assert block.get_in_port_count() == 2
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_other_class_keeps_old_path(monkeypatch):
+    """«Внешняя DLL»: nport не число контактов, поведение прежнее."""
+    block = _NPortParamBlock(class_name="Внешняя DLL", in_ports=0, nport="0")
+    _install_nport_block(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "or_0", "param": "nport", "value": "4"}))
+
+    assert "класс вне правила" in text
+    assert block.get_in_port_count() == 0
+    assert block.get_size() == (32.0, 32.0)
+
+
+@pytest.mark.anyio
+async def test_add_block_rejects_in_ports_for_nport_class(monkeypatch):
+    """in_ports у nport-класса отвергается до CreateBlock."""
+    project = _FakeProjectWithCreate()
+    monkeypatch.setattr(session, "_project", project)
+
+    text = await _error("add_block",
+                        {"class_name": "Оператор ИЛИ", "in_ports": 4})
+
+    assert "set_block_param" in text and "in_ports" in text
+    assert project.page._created == []
+
+
+@pytest.mark.anyio
+async def test_add_block_rejects_nport_prop_for_nport_class(monkeypatch):
+    """props="nport=N" у nport-класса отвергается до CreateBlock."""
+    project = _FakeProjectWithCreate()
+    monkeypatch.setattr(session, "_project", project)
+
+    text = await _error("add_block",
+                        {"class_name": "Оператор ИЛИ", "props": "nport=4"})
+
+    assert "set_block_param" in text and "пины" in text
+    assert project.page._created == []
+
+
+@pytest.mark.anyio
+async def test_add_block_sets_size_for_nport_class(monkeypatch):
+    """Созданный nport-блок получает 32 × (16 × фактических входов)."""
+    project = _FakeProjectWithCreate()
+    monkeypatch.setattr(session, "_project", project)
+
+    text = _tool_text(await mcp.call_tool(
+        "add_block", {"class_name": "Оператор ИЛИ"}))
+
+    created = project.page._created[-1]
+    assert created.in_ports == 2
+    assert created.position == (0.0, 0.0, 32.0, 32.0)
+    assert "размер по числу входов: 32x32" in text

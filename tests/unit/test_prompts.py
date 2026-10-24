@@ -125,6 +125,16 @@ async def test_prompt_params_pass_catalog_check(name: str) -> None:
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("name", PROMPTS)
+async def test_prompt_uses_format_model_and_names_size_rule(name: str) -> None:
+    """Шаблон зовёт format_model, а не голый layout_place, и указывает правило."""
+    text = await _render(name, {})
+
+    assert "format_model()" in text
+    assert "simintech://guides/block-sizing" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", PROMPTS)
 async def test_prompt_sum_ports_match_weights(name: str) -> None:
     """Число входов «Сумматора» совпадает с длиной `a`.
 

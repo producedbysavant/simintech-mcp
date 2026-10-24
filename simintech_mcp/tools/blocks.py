@@ -17,6 +17,9 @@ from simintech_api.constants import standard_block_size
 
 from .. import catalog, runtime, session
 from ..app import mcp
+from ..rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES, NPORT_PARAM,
+                     NPORT_SIZE_CLASSES, PORT_ROW_HEIGHT)
+from .block_size import size_value, write_block_size
 
 
 def _created_ref(block: Any) -> str:
@@ -131,16 +134,16 @@ def add_block(class_name: str, name_hint: str = "",
         in_ports: число входных портов (0 — не менять, иначе
             1…`MAX_BLOCK_IN_PORTS`). Нужно для блоков с настраиваемым числом
             входов: у «Сумматора» их по умолчанию два, и более длинный `a`
-            сам по себе портов не добавляет. У части классов число входов
-            задаётся **собственным параметром** (напр. `nport`): запись
-            `props="nport=8"` пины **не** пересобирает — COM-путь их не
-            размножает (`initobject`, `reinittopology`, save+переоткрытие не
-            помогают, замер 03.10.2026). Такие блоки собирайте
-            `import_model_text` с `nport = N` в тексте: пины создаются при
-            создании блока. То же у «В файл»: `props="count=2"` пишет параметр
-            (читается обратно как 2), но входной порт остаётся один —
-            `initobject` и повторный `set_block_param` порт не добавляют
-            (замер 03.10.2026).
+            сам по себе портов не добавляет. У классов с **собственным
+            параметром `nport`** («Мультиплексор», «Оператор И», «Оператор
+            ИЛИ», «Перемножитель», «Минимум по входам») `in_ports` и
+            `props="nport=..."` отвергаются: блок создаётся, затем
+            `set_block_param(block, "nport", N)` пересобирает пины и ставит
+            размер по правилу 16 px на вход. У остальных классов с
+            собственным параметром запись `props` пины **не** пересобирает
+            (замер 03.10.2026) - их собирайте `import_model_text` с
+            параметром в тексте. То же у «В файл»: `props="count=2"` пишет
+            параметр, но входной порт остаётся один (замер 03.10.2026).
         allow_unknown_props: True — не сверять имена с каталогом. Нужно, если
             параметр у блока есть, а в каталог не попал (каталог собран не
             для всех классов).
@@ -209,6 +212,23 @@ def add_block(class_name: str, name_hint: str = "",
             f"занял бы выделенный поток надолго (по таймауту COM-вызов не "
             f"прерывается)."
         )
+    if class_name in NPORT_SIZE_CLASSES:
+        # У этих классов число входов - параметр nport; COM-запись параметра
+        # пины не пересобирает (замер 03.10.2026), а SetPortCount без записи
+        # nport оставил бы параметр и пины вразнобой. Один канонический путь:
+        # создать блок и сменить число входов set_block_param.
+        if in_ports:
+            raise ToolError(
+                f"add_block: у класса '{class_name}' число входов задаётся "
+                f"после создания: set_block_param(block, \"{NPORT_PARAM}\", N). "
+                f"in_ports здесь не применяется: параметр {NPORT_PARAM}, пины "
+                f"и размер разошлись бы молча.")
+        if any(key.lower() == NPORT_PARAM for key in pairs):
+            raise ToolError(
+                f"add_block: props с {NPORT_PARAM} у класса '{class_name}' "
+                f"пины не пересобирает (замер 03.10.2026). Создайте блок без "
+                f"{NPORT_PARAM} и вызовите "
+                f"set_block_param(block, \"{NPORT_PARAM}\", N).")
     notes: List[str] = []
     catalog.check_params(class_name, list(pairs),
                          allow_unknown=allow_unknown_props, notes=notes)
@@ -225,6 +245,23 @@ def add_block(class_name: str, name_hint: str = "",
             size = standard_block_size(class_name, in_ports)
             if size:
                 block.set_position(x, y, width=size[0], height=size[1])
+        if class_name in NPORT_SIZE_CLASSES:
+            # Штатный размер nport-класса зависит от фактического числа
+            # входов: CreateBlock даёт 60x40, а правило - 32 x 16×входы.
+            try:
+                actual_in = int(block.get_in_port_count())
+            except Exception as exc:                              # noqa: BLE001
+                notes.append(f"размер не задан: число входов не читается "
+                             f"({type(exc).__name__}: {exc})")
+            else:
+                if actual_in > 0:
+                    block.set_position(
+                        x, y, width=float(NPORT_BLOCK_WIDTH),
+                        height=float(PORT_ROW_HEIGHT * actual_in))
+                    notes.append(
+                        f"размер по числу входов: {NPORT_BLOCK_WIDTH}x"
+                        f"{PORT_ROW_HEIGHT * actual_in} ({actual_in} вход(ов) "
+                        f"× {PORT_ROW_HEIGHT})")
         for name, value in pairs.items():
             block.set_property(name, value)
         actual = block.get_name()
@@ -295,6 +332,23 @@ def resolve_block(page: Page, token: str) -> Optional[Block]:
     if token.isdecimal():
         return block_by_id(page, int(token))
     return None
+
+
+def read_port_names(block: Block) -> Optional[List[str]]:
+    """Имена сигналов из `PortNames`; `None` - прочитать не удалось.
+
+    Пустой список и «не прочиталось» - разные вещи: у обычного блока портов
+    по имени нет вовсе, а нечитаемое свойство обязано быть названо. У
+    порт-блока пустой список тоже означает отказ чтения: имя у него есть
+    всегда (замер: `'in\r\n'` сразу после создания).
+    """
+    try:
+        value = block.get_property("PortNames")
+    except Exception:                                          # noqa: BLE001
+        return None
+    if not value:
+        return []
+    return [line.strip() for line in value.splitlines() if line.strip()]
 
 
 def resolved_name(block: Block, fallback: str) -> str:
@@ -421,6 +475,183 @@ def get_block_params(block: str) -> str:
     return f"Блок '{block}' [{class_name}]:\n" + "\n".join(lines)
 
 
+def _nport_value(value: str) -> int:
+    """Разобрать число входов для `nport`: целое 1…MAX_BLOCK_IN_PORTS.
+
+    Параметр принимает строку, но `nport` - число контактов: дробное,
+    массив, пустое и отрицательное отвергаются до COM, иначе `SetPortCount`
+    получил бы мусор.
+    """
+    parsed = _coerce_param_value(value)
+    if isinstance(parsed, bool) or not isinstance(parsed, (int, float)):
+        raise ToolError(
+            f"nport={value!r} не число: ожидается целое число входов "
+            f"1…{MAX_BLOCK_IN_PORTS}.")
+    if isinstance(parsed, float) and not parsed.is_integer():
+        raise ToolError(
+            f"nport={value!r} не целое: число входов - целое "
+            f"1…{MAX_BLOCK_IN_PORTS}.")
+    count = int(parsed)
+    if not 1 <= count <= MAX_BLOCK_IN_PORTS:
+        raise ToolError(
+            f"nport={count} вне пределов: число входов - целое "
+            f"1…{MAX_BLOCK_IN_PORTS}.")
+    return count
+
+
+def _set_nport(page: Page, target: Block, class_name: str, token: str,
+               value: str, notes: List[str]) -> str:
+    """Сменить число входов nport-класса и сразу поставить размер.
+
+    Порядок проверен живым замером 23.10.2026 (2.26.9.29): `SetBlockProp`
+    пишет `nport`, но пины не пересобирает; `SetPortCount` (`N + 1` с
+    выходом) добавляет контакты, координаты которых среда раскладывает по
+    новой высоте. Поэтому сначала параметр и `InitBlock`, затем
+    `SetPortCount`, затем запись высоты 16 × фактических входов и ширины не
+    уже 32 в «Значение» (`write_block_size`). Пины сверяются с запросом:
+    расхождение - отказ без записи размера, иначе блок выглядел бы
+    настроенным при старом числе контактов.
+
+    Проект должен быть остановлен: контурная запись размера на идущем
+    расчёте отвергается средой (`ScriptBridgeUnsafeStateError`). Это тот же
+    гейт, что у `add_block`.
+    """
+    count = _nport_value(value)
+    project = session.ensure_project()
+    try:
+        state = project.simulation().get_state()
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"число входов не изменено: состояние проекта не прочитано "
+            f"({type(exc).__name__}: {exc}); в идущем расчёте запись размера "
+            f"отвергается. Остановите расчёт (`stop`) и повторите."
+        ) from exc
+    if state != 0:
+        raise ToolError(
+            f"число входов не изменено: проект не в остановленном состоянии "
+            f"(состояние {state}; 0 - остановлен, 1 - инициализирован, "
+            f"3 - идёт расчёт, 7 - пауза). Остановите расчёт (`stop`) и "
+            f"повторите: контурная запись размера на идущем расчёте "
+            f"отвергается средой.")
+    try:
+        name = target.get_name()
+    except Exception:                                             # noqa: BLE001
+        name = token
+    try:
+        before_in = int(target.get_in_port_count())
+        before_size = target.get_size()
+        before_wires = len(page.get_wires())
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"число входов не изменено: состояние блока '{token}' не "
+            f"прочитано ({type(exc).__name__}: {exc})."
+        ) from exc
+    removed = [record for record in session.WIRES
+               if record[3] == name and record[4] >= count]
+    try:
+        target.set_property(NPORT_PARAM, count)
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"nport блока '{token}' не записан ({type(exc).__name__}: {exc}); "
+            f"число входов и размер не менялись."
+        ) from exc
+    try:
+        target.init()
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"nport блока '{token}' записан, но InitBlock не выполнен "
+            f"({type(exc).__name__}: {exc}); пины и размер не менялись. "
+            f"Перечитайте параметр и пины (`get_block_params`, "
+            f"`check_model_layout`) и повторите; если состояние расходится, "
+            f"пересоберите блок импортом."
+        ) from exc
+    if before_in != count:
+        try:
+            target.set_in_port_count(count)
+        except Exception as exc:                                  # noqa: BLE001
+            raise ToolError(
+                f"nport блока '{token}' записан, но пины не пересобраны "
+                f"({type(exc).__name__}: {exc}); высота 16 × {count} не "
+                f"записана. Пересоберите блок импортом текста с "
+                f"nport = {count}."
+            ) from exc
+    try:
+        after_in = int(target.get_in_port_count())
+        actual = target.get_property(NPORT_PARAM)
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"nport блока '{token}' записан, но перечитать пины не удалось "
+            f"({type(exc).__name__}: {exc}); высота не записана."
+        ) from exc
+    if after_in != count:
+        raise ToolError(
+            f"пины блока '{token}' не пересобрались: запрошено {count} "
+            f"входов, фактически {after_in}. `SetBlockProp` nport пины не "
+            f"пересобирает (замер 03.10.2026); высота 16 × {count} НЕ "
+            f"записана. Пересоберите блок импортом текста с nport = {count}.")
+    if after_in <= 0:
+        raise ToolError(
+            f"у блока '{token}' после записи nport = {count} нет входных "
+            f"контактов; высота не записана.")
+    # Пины пересобраны: записи реестра о линиях на удалённых входах больше
+    # не описывают существующие порты. Держать их нельзя: layout_place
+    # построил бы граф по связям, которых в модели уже нет.
+    forgotten = 0
+    for record in removed:
+        try:
+            session.forget_wire(record[0].id)
+            forgotten += 1
+        except Exception as exc:                                  # noqa: BLE001
+            notes.append(f"реестр связей не очистить для линии "
+                         f"{getattr(record[0], 'id', '?')}: {exc}")
+    try:
+        actual_num = int(float(str(actual).strip()))
+    except Exception:                                             # noqa: BLE001
+        notes.append(f"nport перечитать не удалось ({actual!r}); размер "
+                     f"посчитан по фактическим входам {after_in}")
+    else:
+        if actual_num != count:
+            raise ToolError(
+                f"nport блока '{token}' = {actual_num}, а запрошено {count}; "
+                f"параметр и пины разошлись, высота не записана.")
+    width = max(float(before_size[0]), float(NPORT_BLOCK_WIDTH))
+    height = float(after_in * PORT_ROW_HEIGHT)
+    result = write_block_size(page, target, width, height,
+                              action="размер не записан")
+    if float(result.after[1]) != height:
+        raise ToolError(
+            f"nport блока '{token}' записан, но среда приняла высоту "
+            f"{size_value(result.after[1])} вместо {size_value(height)} "
+            f"({after_in} вход(ов) × {PORT_ROW_HEIGHT}); отображение входов "
+            f"испорчено. Повторите вызов; если повтор не помогает - сообщите "
+            f"среду и версию.")
+    if float(result.after[0]) < float(NPORT_BLOCK_WIDTH):
+        notes.append(f"ширина {size_value(result.after[0])} меньше штатной "
+                     f"{NPORT_BLOCK_WIDTH}")
+    if after_in > before_in:
+        notes.append("соедините новые входы: висячий вход блока расчёта "
+                     "молча останавливает расчёт")
+    if removed:
+        notes.append(f"ВНИМАНИЕ: к удалённым входам было подключено "
+                     f"{len(removed)} линий; записи реестра связей сняты: "
+                     f"{forgotten} - проверьте `export_model_text`")
+    try:
+        after_wires = len(page.get_wires())
+    except Exception:                                             # noqa: BLE001
+        after_wires = None
+    if after_wires is not None and after_wires != before_wires:
+        notes.append(f"число линий страницы изменилось: {before_wires} → "
+                     f"{after_wires}; проверьте связи")
+    head = (f"{token}.{NPORT_PARAM} = {actual}; пины: {before_in} → "
+            f"{after_in}; размер: "
+            f"{size_value(before_size[0])}x{size_value(before_size[1])} → "
+            f"{size_value(result.after[0])}x{size_value(result.after[1])} "
+            f"({after_in} вход(ов) × {PORT_ROW_HEIGHT}, ширина не уже "
+            f"{NPORT_BLOCK_WIDTH}).")
+    tail = (" " + "; ".join(notes) + ".") if notes else ""
+    return head + tail + result.tail_note + result.overlaps
+
+
 @mcp.tool(title="Записать параметр блока", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def set_block_param(block: str, param: str, value: str,
@@ -453,6 +684,18 @@ def set_block_param(block: str, param: str, value: str,
     было увидеть, что записалось. Расхождение с запрошенным — примечанием, а не
     отказом: запись уже прошла.
 
+    **`nport` у блоков с переменным числом входов.** Для «Мультиплексора»,
+    «Оператора И», «Оператора ИЛИ», «Перемножителя», «Минимума по входам»
+    запись `nport=N` - не просто параметр: инструмент вызывает
+    `SetPortCount` (N входов плюс выход), сверяет фактическое число пинов,
+    ставит высоту 16 × N и ширину не уже 32 в «Значение», затем
+    нормализует линии и называет наложения. Проект должен быть остановлен
+    (`stop`): контурная запись размера на идущем расчёте отвергается.
+    Пины не пересобрались - отказ без записи размера, а не блок со старым
+    числом контактов. У «Внешней DLL» и векторного «Минимума по всем
+    элементам вектора» `nport` не число входных контактов: поведение
+    прежнее.
+
     **Другие блоки не двигаются**: правка касается только названного блока —
     координаты и габариты остальных не меняются (контракт #24 п.6), ручная
     раскладка переживает повторные правки параметров.
@@ -461,7 +704,8 @@ def set_block_param(block: str, param: str, value: str,
         block: имя блока на главной странице (автоимя из `list_blocks`) или
             его числовой id.
         param: имя параметра блока (см. `get_block_params`).
-        value: значение строкой; массивы — в стиле SimInTech, напр. '[1, -1]'.
+        value: значение строкой; массивы - в стиле SimInTech, напр. '[1, -1]';
+            для `nport` - целое число входов.
         allow_unknown: True — не сверять имя с каталогом (для параметров,
             которых в каталоге нет).
     """
@@ -471,14 +715,25 @@ def set_block_param(block: str, param: str, value: str,
         return missing_block(block)
     notes: List[str] = []
     try:
-        catalog.check_params(target.class_name, [param],
+        class_name = target.class_name
+        catalog.check_params(class_name, [param],
                              allow_unknown=allow_unknown, notes=notes)
-        target.set_property(param, _coerce_param_value(value))
-        target.init()
     except ToolError:
         # Отказ проверки (нет параметра, вычисляемый, `Name`) — уже готовый
         # `ToolError`; возвращать его текстом с префиксом значило бы гонять
         # типизированный отказ через строку и восстанавливать тип обратно.
+        raise
+    except Exception as exc:
+        return f"ERROR: {exc}"
+    if param.strip().lower() == NPORT_PARAM and class_name in NPORT_SIZE_CLASSES:
+        return _set_nport(page, target, class_name, block, value, notes)
+    if param.strip().lower() == NPORT_PARAM and class_name in NPORT_OTHER_CLASSES:
+        notes.append("класс вне правила высоты: nport здесь не число входных "
+                     "контактов, пины и размер не пересобираются")
+    try:
+        target.set_property(param, _coerce_param_value(value))
+        target.init()
+    except ToolError:
         raise
     except Exception as exc:
         return f"ERROR: {exc}"
