@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from simintech_mcp.server import mcp
 
@@ -778,7 +779,8 @@ def _install_nport_block(monkeypatch, block, state=0, wires=None):
     monkeypatch.setattr(session, "_project", project)
     monkeypatch.setattr(session, "WIRES", list(wires or []))
 
-    def fake_write(page, target, width, height, *, action="размер не записан"):
+    def fake_write(page, target, width, height, *, action="размер не записан",
+                   project_note="Проект не изменён."):
         before = target.get_size()
         target.set_size_value("Width", width)
         target.set_size_value("Height", height)
@@ -870,6 +872,29 @@ async def test_set_block_param_nport_init_failure_is_partial_state(
     assert "InitBlock" in text
     assert block.get_in_port_count() == 2
     assert block.get_size() == (32.0, 32.0)
+
+
+@pytest.mark.anyio
+async def test_set_block_param_nport_size_failure_reports_changed_project(
+        monkeypatch):
+    """Сбой записи размера после nport: сообщение не врёт про «не изменён»."""
+    block = _NPortParamBlock()
+    _install_nport_block(monkeypatch, block)
+
+    def failing_write(page, target, width, height, *,
+                      action="размер не записан",
+                      project_note="Проект не изменён."):
+        raise ToolError(project_note)
+
+    monkeypatch.setattr(blocks_module, "write_block_size", failing_write)
+
+    text = await _error("set_block_param",
+                        {"block": "or_0", "param": "nport", "value": "4"})
+
+    assert "Проект не изменён" not in text
+    assert "Проект уже изменён" in text
+    assert "nport = 4" in text and "входов 4" in text
+    assert block.get_in_port_count() == 4
 
 
 @pytest.mark.anyio

@@ -38,3 +38,12 @@ def test_required_height_applies_to_nport_classes_only():
 def test_port_height_classes_are_separate():
     """Порт-блоки считаются по строкам PortNames, а не по nport."""
     assert set(rules.PORT_HEIGHT_CLASSES).isdisjoint(rules.ROW_HEIGHT_CLASSES)
+
+
+def test_required_height_helper_is_shared_rule():
+    """Одна функция правила: число, ноль и класс вне правила."""
+    assert rules.required_height("Оператор И", 4) == 64
+    assert rules.required_height("Порт входа", 2) == 32
+    assert rules.required_height("Субмодель", 3) == 48
+    assert rules.required_height("Оператор И", 0) is None
+    assert rules.required_height("Константа", 4) is None

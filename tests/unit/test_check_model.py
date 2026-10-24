@@ -47,7 +47,7 @@ class _CheckBlock:
 
     def __init__(self, name, center=None, portnames="", ports=2,
                  width=32.0, height=16.0, class_name="", in_ports=None,
-                 nport="", in_ports_error=False):
+                 nport="", in_ports_error=False, size_error=False):
         self._name = name
         self._center = center
         self._portnames = portnames
@@ -58,6 +58,7 @@ class _CheckBlock:
         self._in_ports = ports if in_ports is None else in_ports
         self._nport = nport
         self._in_ports_error = in_ports_error
+        self._size_error = size_error
 
     @property
     def id(self):
@@ -67,6 +68,8 @@ class _CheckBlock:
         return self._name
 
     def get_size(self):
+        if self._size_error:
+            raise OSError("размер не читается")
         return (self._width, self._height)
 
     def get_points(self):
@@ -1020,6 +1023,7 @@ async def test_check_model_nport_height_ok_is_quiet(monkeypatch, tmp_path):
 
     assert "ВНИМАНИЕ: высота не по правилу" not in text
     assert "nport не совпадает" not in text
+    assert "Высота блоков с входными контактами: по правилу 16 px" in text
 
 
 @pytest.mark.anyio
@@ -1063,6 +1067,51 @@ async def test_check_model_nport_height_unreadable_is_not_verified(
 
 
 @pytest.mark.anyio
+async def test_check_model_narrow_width_checked_without_input_count(
+        monkeypatch, tmp_path):
+    """Число входов не читается: ширина проверена, nport помечен как непроверенный."""
+    block = _CheckBlock("or_0", center=(0, 0), class_name="Оператор ИЛИ",
+                        width=16.0, height=64.0, in_ports=4, nport="4",
+                        in_ports_error=True)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "ширина nport-блока меньше штатной 32" in text
+    assert "nport не проверен" in text
+    assert "Высота не проверена" in text
+
+
+@pytest.mark.anyio
+async def test_check_model_no_rule_blocks_has_no_height_verdict(
+        monkeypatch, tmp_path):
+    """Страница без блоков правила не получает положительный вердикт."""
+    block = _CheckBlock("const_0", center=(0, 0), class_name="Константа",
+                        width=32.0, height=32.0, ports=0)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "Высота блоков с входными контактами: по правилу" not in text
+    assert "блоков правила на странице нет" in text
+
+
+@pytest.mark.anyio
+async def test_check_model_unreadable_size_empty_portnames_not_duplicated(
+        monkeypatch, tmp_path):
+    """Один блок - одна строка «Высота не проверена», а не две."""
+    block = _CheckBlock("InputPort_0", center=(0, 0), class_name="Порт входа",
+                        portnames="", ports=2, size_error=True)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    skipped = next(line for line in text.splitlines()
+                   if line.startswith("Высота не проверена"))
+    assert skipped.count("InputPort_0") == 1
+
+
+@pytest.mark.anyio
 async def test_check_model_empty_portnames_is_not_verified(monkeypatch,
                                                            tmp_path):
     """Пустой PortNames у порт-блока: высота и порты не проверены, не чисто."""
@@ -1089,3 +1138,4 @@ async def test_check_model_warns_port_block_height(monkeypatch, tmp_path):
 
     assert "ВНИМАНИЕ: высота не по правилу" in text
     assert "строк 2" in text and "32" in text
+    assert "у nport-классов число входов меняет" in text

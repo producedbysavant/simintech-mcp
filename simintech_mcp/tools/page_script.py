@@ -247,7 +247,8 @@ def describe_outcome(outcome: ContourOutcome, *, what: str) -> str:
 def refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
                            unsure: Optional[str] = None,
                            aborted_hint: str = "",
-                           section_note: str = "") -> None:
+                           section_note: str = "",
+                           project_note: str = "Проект не изменён.") -> None:
     """Отказ по несделанному исходу контура — **единственный маппер** (issue #123).
 
     «Не сделано» не имеет права вернуться успехом, а последняя строка тела —
@@ -267,12 +268,16 @@ def refuse_contour_failure(outcome: ContourOutcome, *, failed: str,
     **до** вызова: у `aborted` она своя у каждого. Успешные исходы
     (`ok`/`model-not-running`) маппер пропускает — их описывает
     `describe_outcome`.
+
+    `project_note` - что сказать о состоянии проекта в исходе «не
+    собралось»: по умолчанию «Проект не изменён.», а вызывающий, уже
+    изменивший проект до контура, передаёт своё состояние.
     """
     if outcome.kind == OUTCOME_NOT_COMPILED:
         raise ToolError(
-            f"{failed}: тело не собралось (текст ошибки — в окне сообщений "
-            f"редактора SimInTech; через COM он не читается). Проект не "
-            f"изменён.")
+            f"{failed}: тело не собралось (текст ошибки - в окне сообщений "
+            f"редактора SimInTech; через COM он не читается). "
+            f"{project_note}")
     who = unsure if unsure is not None else f"{failed} не выполнена"
     if outcome.kind == OUTCOME_ABORTED:
         detail = (f" Последняя строка тела: {outcome.lines[-1]!r}."
@@ -532,7 +537,8 @@ def inject_submodel_script(script: str) -> str:
 
 
 def activate_or_refuse(page: Any, *, action: str,
-                       where: Optional[str] = None) -> None:
+                       where: Optional[str] = None,
+                       project_note: str = "Проект не изменён.") -> None:
     """Сделать страницу правки текущей или отказать — до контура.
 
     Скрипт ставится в текущую страницу (`SetPageScript` → `GetCurentPage`),
@@ -540,6 +546,8 @@ def activate_or_refuse(page: Any, *, action: str,
     или в блок-двойник с тем же id (находка ревью PR #94). Не удалось
     активировать — **отказ**, а не запись вслепую: промах выглядел бы как
     «среда не приняла запись» и уводил бы диагноз в сторону среды.
+    `project_note` - что сказать о состоянии проекта в отказе; по умолчанию
+    «Проект не изменён.», а вызывающий, уже изменивший проект, передаёт своё.
 
     Блок повторялся у трёх инструментов (ветвь, размер, габариты фитов) с
     дословным обоснованием и разными текстами — тексты сведены сюда
@@ -554,8 +562,8 @@ def activate_or_refuse(page: Any, *, action: str,
         named = f" «{where}»" if where else ""
         raise ToolError(
             f"{action}: страницу{named} не удалось сделать активной "
-            f"({type(exc).__name__}: {exc}) — запись по id могла бы уйти в "
-            f"блок другой страницы. Проект не изменён.") from exc
+            f"({type(exc).__name__}: {exc}) - запись по id могла бы уйти в "
+            f"блок другой страницы. {project_note}") from exc
 
 
 def return_main_active(main: Any, lines: List[str]) -> None:

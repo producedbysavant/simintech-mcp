@@ -49,7 +49,7 @@ from .. import runtime, sandbox, session
 from ..app import mcp
 from ..rules import (MAX_NODE_LINES, NPORT_BLOCK_WIDTH, NPORT_PARAM,
                      NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
-                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES)
+                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES, required_height)
 from ..geometry import (
     CHAR_WIDTH_ESTIMATE, STUB, WIRE_PITCH, channel_width, collinear_overlap,
     cut_sizes, overlaps, predicted_polyline, proper_crossing, rect_of,
@@ -325,6 +325,8 @@ def check_model_layout() -> str:
     label_warnings: List[str] = []
     height_warnings: List[str] = []
     height_skipped: List[str] = []
+    height_checked = 0
+    height_rule_blocks = 0
     width_narrow: List[str] = []
     nport_mismatch: List[str] = []
     nport_skipped: List[str] = []
@@ -372,6 +374,14 @@ def check_model_layout() -> str:
                 label_warnings.append(
                     f"{name}: «{longest}» (~{estimate:g} px) при ширине "
                     f"{width:g}")
+        if class_name in (*PORT_HEIGHT_CLASSES, *ROW_HEIGHT_CLASSES):
+            height_rule_blocks += 1
+        # Ширина nport-блока - свойство габарита, а не следствие читаемости
+        # пинов: проверяется и тогда, когда число входов не прочиталось.
+        if class_name in NPORT_SIZE_CLASSES and width is not None:
+            if float(width) < float(NPORT_BLOCK_WIDTH):
+                width_narrow.append(
+                    f"{name}: ширина {width:g} < {NPORT_BLOCK_WIDTH}")
         # Высота по правилу: порт-блоки - 16 px на строку PortNames,
         # субмодели и nport-классы - 16 px на входной контакт. Нечитаемые
         # данные дают «не проверена», а не положительный вердикт.
@@ -381,27 +391,30 @@ def check_model_layout() -> str:
         elif class_name in PORT_HEIGHT_CLASSES and names is None:
             height_skipped.append(name)
         if height is not None and class_name in PORT_HEIGHT_CLASSES and names:
-            required = len(names) * PORT_ROW_HEIGHT
-            if float(height) != float(required):
-                height_warnings.append(
-                    f"{name}: высота {height:g}, строк {len(names)}, нужно "
-                    f"{required} ({PORT_ROW_HEIGHT} px на строку)")
+            required = required_height(class_name, len(names))
+            if required is not None:
+                height_checked += 1
+                if float(height) != float(required):
+                    height_warnings.append(
+                        f"{name}: высота {height:g}, строк {len(names)}, нужно "
+                        f"{required} ({PORT_ROW_HEIGHT} px на строку)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
                 in_ports = int(block.get_in_port_count())
             except Exception:                                  # noqa: BLE001
                 height_skipped.append(name)
+                if class_name in NPORT_SIZE_CLASSES:
+                    # Сверка nport с пинами без числа входов невозможна.
+                    nport_skipped.append(name)
             else:
-                if in_ports > 0:
-                    required = in_ports * PORT_ROW_HEIGHT
+                required = required_height(class_name, in_ports)
+                if required is not None:
+                    height_checked += 1
                     if float(height) != float(required):
                         height_warnings.append(
                             f"{name}: высота {height:g}, входов {in_ports}, "
                             f"нужно {required} ({PORT_ROW_HEIGHT} px на вход)")
                 if class_name in NPORT_SIZE_CLASSES:
-                    if width is not None and float(width) < float(NPORT_BLOCK_WIDTH):
-                        width_narrow.append(
-                            f"{name}: ширина {width:g} < {NPORT_BLOCK_WIDTH}")
                     try:
                         nport = block.get_property(NPORT_PARAM)
                     except Exception:                          # noqa: BLE001
@@ -423,7 +436,8 @@ def check_model_layout() -> str:
             # У порт-блока имя сигнала есть всегда: пустой список здесь
             # означает отказ чтения, а не «имён нет».
             port_skipped.append(name)
-            height_skipped.append(name)
+            if name not in height_skipped:
+                height_skipped.append(name)
             continue
         try:
             count = block.get_port_count()
@@ -551,12 +565,17 @@ def check_model_layout() -> str:
                 if len(height_warnings) > MAX_REPORTED else "")
         lines.append(
             f"ВНИМАНИЕ: высота не по правилу {PORT_ROW_HEIGHT} px на "
-            f"вход/строку: {shown}{more}. Подгоните `fit_port_blocks` или "
+            f"вход/строку: {shown}{more}. Подгоните `fit_port_blocks`; у "
+            f"nport-классов число входов меняет "
             f"`set_block_param(nport=N)`; правило: "
             f"simintech://guides/block-sizing.")
     elif not height_skipped:
-        lines.append(f"Высота блоков с входными контактами: по правилу "
-                     f"{PORT_ROW_HEIGHT} px на вход/строку.")
+        if height_checked:
+            lines.append(f"Высота блоков с входными контактами: по правилу "
+                         f"{PORT_ROW_HEIGHT} px на вход/строку.")
+        elif not height_rule_blocks:
+            lines.append("Высота блоков с входными контактами: блоков "
+                         "правила на странице нет.")
     if height_skipped:
         shown = ", ".join(height_skipped[:MAX_REPORTED])
         more = (f" (и ещё {len(height_skipped) - MAX_REPORTED})"

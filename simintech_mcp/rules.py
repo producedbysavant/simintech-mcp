@@ -73,3 +73,20 @@ PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")
 
 #: Классы блоков памяти: ширина по подписям `PortNames` (замер 07.10.2026).
 MEMORY_WIDTH_CLASSES = ("В память", "Из памяти")
+
+
+def required_height(class_name: str, count: int) -> int | None:
+    """Высота блока по правилу: 16 px на вход или строку сигнала.
+
+    `count` - строки `PortNames` у порт-блоков или входные контакты у
+    `ROW_HEIGHT_CLASSES`. Ноль и меньше правила не дают: у блока без входов
+    проверять нечего. Класс вне правила - `None`. Что считать (`PortNames`
+    или `get_in_port_count`) и как отказывать при нечитаемых данных, решают
+    вызывающие: у подгонки, проверки и записи размера разные тексты и разная
+    цена ошибки.
+    """
+    if count <= 0:
+        return None
+    if class_name in PORT_HEIGHT_CLASSES or class_name in ROW_HEIGHT_CLASSES:
+        return PORT_ROW_HEIGHT * count
+    return None

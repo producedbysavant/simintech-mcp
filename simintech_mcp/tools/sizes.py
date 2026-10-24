@@ -16,7 +16,7 @@ from simintech_api import Block
 from .. import runtime, session
 from ..app import mcp
 from ..rules import (NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
-                     PORT_MARGIN, PORT_ROW_HEIGHT)
+                     PORT_MARGIN, PORT_ROW_HEIGHT, required_height)
 from .block_size import size_value, write_block_size
 from .blocks import missing_block, read_port_names, resolve_block
 
@@ -104,7 +104,7 @@ def _required_height(name: str, target: Block,
                 f"px на строку сигнала, а список сигналов (`PortNames`) не "
                 f"читается - проверить высоту нечем, и запись наугад могла "
                 f"бы испортить отображение.")
-        return PORT_ROW_HEIGHT * count
+        return required_height(class_name, count)
     if class_name in NPORT_SIZE_CLASSES:
         try:
             in_ports = int(target.get_in_port_count())
@@ -115,9 +115,7 @@ def _required_height(name: str, target: Block,
                 f"px на входной контакт, а число входов не читается "
                 f"({type(exc).__name__}: {exc}) - проверить высоту нечем."
             ) from exc
-        if in_ports <= 0:
-            return None
-        return PORT_ROW_HEIGHT * in_ports
+        return required_height(class_name, in_ports)
     return None
 
 

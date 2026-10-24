@@ -59,7 +59,8 @@ class SizeWriteResult(NamedTuple):
 
 
 def write_block_size(page: Any, target: Block, width: float, height: float,
-                     *, action: str = "размер не записан") -> SizeWriteResult:
+                     *, action: str = "размер не записан",
+                     project_note: str = "Проект не изменён.") -> SizeWriteResult:
     """Записать обе оси в «Значение», перерисовать и трассировать линии.
 
     Одна точка рецепта для `set_block_size` и ветки `set_block_param(nport)`:
@@ -69,17 +70,23 @@ def write_block_size(page: Any, target: Block, width: float, height: float,
 
     Наложения считаются по изменённому блоку: рост высоты легко накрывает
     соседа, и это должно быть видно в ответе, а не только после отдельного
-    `check_model_layout`.
+    `check_model_layout`. Скан идёт только при росте габарита: уменьшение
+    новых пар не создаёт.
+
+    `project_note` называет состояние проекта в отказе: по умолчанию
+    «Проект не изменён.», а вызывающий, уже изменивший блок до контура
+    (ветка nport), передаёт своё.
     """
     before = target.get_size()
-    activate_or_refuse(page, action=action)
+    activate_or_refuse(page, action=action, project_note=project_note)
     outcome, _restored = run_contour(
         _set_size_body(target.id, float(width), float(height)),
         failed="записать размер блока не удалось")
     refuse_contour_failure(
         outcome, failed=action, unsure="размер не подтверждён",
         aborted_hint=("Проверьте габарит в GUI (`get_size` прочитает "
-                      "фактический)."))
+                      "фактический)."),
+        project_note=project_note)
     session.ensure_project().repaint()
     tail_note = ""
     try:
@@ -92,9 +99,12 @@ def write_block_size(page: Any, target: Block, width: float, height: float,
         name = target.get_name()
     except Exception:                                         # noqa: BLE001
         name = f"id={target.id}"
-    try:
-        overlaps = overlap_report(page, {name})
-    except Exception:                                         # noqa: BLE001
-        overlaps = ""
+    overlaps = ""
+    if (float(after[0]) > float(before[0])
+            or float(after[1]) > float(before[1])):
+        try:
+            overlaps = overlap_report(page, {name})
+        except Exception:                                     # noqa: BLE001
+            overlaps = ""
     return SizeWriteResult(before=before, after=after,
                            tail_note=tail_note, overlaps=overlaps)

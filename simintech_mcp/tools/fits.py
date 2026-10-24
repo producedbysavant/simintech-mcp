@@ -21,7 +21,7 @@ from ..app import mcp
 from ..geometry import CHAR_WIDTH_ESTIMATE
 from ..rules import (MEMORY_WIDTH_CLASSES, NPORT_BLOCK_WIDTH,
                      NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
-                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES)
+                     PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES, required_height)
 from .blocks import read_port_names, resolve_block
 from .layout import first_point, overlap_report
 from .page_script import (
@@ -160,9 +160,8 @@ def _plan_signal_width(block: Block, where: str,
     estimate = len(longest) * CHAR_WIDTH_ESTIMATE
     want_width = float(estimate)
     width_fix = want_width > width
-    want_height = float(len(names) * PORT_ROW_HEIGHT)
-    height_fix = (class_name in PORT_HEIGHT_CLASSES
-                  and height != want_height)
+    height_rule = required_height(class_name, len(names))
+    height_fix = height_rule is not None and height != height_rule
     if not width_fix and not height_fix:
         return
     if width_fix:
@@ -173,10 +172,10 @@ def _plan_signal_width(block: Block, where: str,
             note=(f"«{longest}» ~{estimate:g} px, оценка "
                   f"×{CHAR_WIDTH_ESTIMATE:g}"),
             pin=pin, pin_before=pin_before))
-    if height_fix:
+    if height_fix and height_rule is not None:
         plan.append(_SizeFix(
             block=block, name=name, prop="Height", before=height,
-            want=want_height,
+            want=float(height_rule),
             note=f"{len(names)} строк(и) × {PORT_ROW_HEIGHT:g}"))
     # Тронутый блок приводится к «Значению» по обеим осям: рабочая ось
     # уже в плане, вторую дописываем без изменения числа.
@@ -220,9 +219,10 @@ def _plan_in_rows_height(block: Block, class_name: str, where: str,
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
         return
-    if in_ports <= 0:
+    want_height = required_height(class_name, in_ports)
+    if want_height is None:
         return
-    want_height = float(in_ports * PORT_ROW_HEIGHT)
+    want_height = float(want_height)
     try:
         height = float(block.get_size()[1])
         width = float(block.get_size()[0])

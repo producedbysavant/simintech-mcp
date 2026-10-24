@@ -616,8 +616,18 @@ def _set_nport(page: Page, target: Block, class_name: str, token: str,
                 f"параметр и пины разошлись, высота не записана.")
     width = max(float(before_size[0]), float(NPORT_BLOCK_WIDTH))
     height = float(after_in * PORT_ROW_HEIGHT)
+    # Отказ записи размера случается уже после записи nport, пересборки
+    # пинов и чистки реестра: «Проект не изменён» здесь было бы ложью и
+    # увело бы восстановление (находка ревью).
+    project_note = (f"Проект уже изменён: nport = {count}, входов "
+                    f"{after_in}, высота {PORT_ROW_HEIGHT} × {after_in} не "
+                    f"записана.")
+    if removed:
+        project_note += (f" Записи реестра связей удалённых входов сняты: "
+                         f"{forgotten}.")
     result = write_block_size(page, target, width, height,
-                              action="размер не записан")
+                              action="размер не записан",
+                              project_note=project_note)
     if float(result.after[1]) != height:
         raise ToolError(
             f"nport блока '{token}' записан, но среда приняла высоту "
