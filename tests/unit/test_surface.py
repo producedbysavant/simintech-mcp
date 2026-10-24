@@ -95,7 +95,7 @@ _MUTATING_TOOLS = {
 _READ_ONLY_TOOLS = {
     "status", "get_time", "list_blocks", "list_wires", "get_block_params",
     "get_page_script", "get_block_script", "get_project_config",
-    "list_signals", "get_signal", "read_output_file",
+    "list_signals", "get_signal", "read_output_file", "list_annotations",
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function",
@@ -192,7 +192,7 @@ async def test_all_tools_registered():
         "read_output_file", "summarize_output_file", "inspect_project_file",
         "audit_routing", "layout_place", "check_model_layout", "help_text",
         "search_language_functions", "get_language_function",
-        "export_model_text", "import_model_text",
+        "export_model_text", "import_model_text", "list_annotations",
         "get_page_script", "set_page_script", "run_page_script",
         "inject_submodel_script",
         "get_block_script", "set_block_script",

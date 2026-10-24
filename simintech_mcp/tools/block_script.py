@@ -7,20 +7,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import re
-import tempfile
-from typing import Any, List, NamedTuple, Optional
+from typing import List, NamedTuple, Optional
 import uuid
 
 from fastmcp.exceptions import ToolError
-from simintech_api.catalog import decode_xprt, parse_xprt_block_script
+from simintech_api.catalog import parse_xprt_block_script
 from simintech_api.exceptions import ScriptBridgeError
 
 from .. import runtime, session
 from ..app import mcp
 from .blocks import missing_block, resolve_block, resolved_name
 from .page_script import describe_outcome, refuse_contour_failure, run_contour
+from .xprt import snapshot_xprt
 
 
 #: Имя свойства скрипта блока в языке и выгрузке.
@@ -69,30 +68,6 @@ def _runtime_literal(text: str) -> str:
     return " + ".join(parts) if parts else '""'
 
 
-def _block_script_snapshot(project: Any) -> str:
-    """Снимок проекта в `.xprt` как текст — без запуска расчёта.
-
-    `SaveProjectXML` — тот же путь, которым мост читает скриптовые записи:
-    выгрузка не запускает расчёт и не сдвигает модельное время (в отличие от
-    чтения скрипта контуром — `getpropasstring` перезапускает модель).
-    Каталог временный: файл уходит вместе с ним.
-    """
-    with tempfile.TemporaryDirectory(
-            prefix="simintech-block-script-",
-            ignore_cleanup_errors=True) as tmp:
-        path = Path(tmp) / "page.xprt"
-        project.save_xml(str(path))
-        try:
-            raw = path.read_bytes()
-        except OSError as exc:
-            raise ToolError(
-                f"выгрузка проекта не создана: SaveProjectXML сообщил об "
-                f"успехе, но файла {path} нет ({exc}). Снимок — путь чтения "
-                f"скрипта блока без запуска расчёта, и продолжать без него "
-                f"нельзя.") from exc
-    return decode_xprt(raw)
-
-
 @mcp.tool(title="Скрипт блока", annotations={"readOnlyHint": True})
 @runtime.com_threaded
 def get_block_script(block: str) -> str:
@@ -127,7 +102,7 @@ def get_block_script(block: str) -> str:
         class_name = ""
     marked = f"'{name}'" + (f" [{class_name}]" if class_name else "")
     try:
-        script = parse_xprt_block_script(_block_script_snapshot(project), name)
+        script = parse_xprt_block_script(snapshot_xprt(project), name)
     except ScriptBridgeError as exc:
         raise ToolError(
             f"прочитать скрипт блока {marked} не удалось: {exc}. Снимок "
