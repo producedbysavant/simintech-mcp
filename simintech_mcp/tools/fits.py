@@ -219,10 +219,10 @@ def _plan_in_rows_height(block: Block, class_name: str, where: str,
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
         return
-    want_height = required_height(class_name, in_ports)
-    if want_height is None:
+    height_rule = required_height(class_name, in_ports)
+    if height_rule is None:
         return
-    want_height = float(want_height)
+    want_height = float(height_rule)
     try:
         height = float(block.get_size()[1])
         width = float(block.get_size()[0])
