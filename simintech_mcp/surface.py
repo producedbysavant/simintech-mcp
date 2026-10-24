@@ -74,6 +74,10 @@ SHORT_DESCRIPTIONS = {
         "Выгрузить модель в декларативный текст: блоки, субмодели, концы "
         "проводов."
     ),
+    "list_annotations": (
+        "Прочитать текст подписей TextLabel/Комментарий и имена ячеек "
+        "памяти по всем страницам из снимка проекта; расчёт не запускается."
+    ),
     "connect": "Соединить выход блока src с входом dst по фактическим портам.",
     "layout_place": (
         "Расставить блоки по слоям, применить координаты и нормализовать линии."
@@ -93,6 +97,7 @@ _MODULE_TAGS = {
     "simulation": "simulate",
     "files": "results",
     "model_text": "text",
+    "annotations": "text",
     "page_script": "script",
     "block_script": "script",
     "pack": "pack",
@@ -107,7 +112,7 @@ _MODULE_TAGS = {
 IDEMPOTENT_TOOLS = frozenset({
     "status", "get_time", "list_blocks", "list_wires", "get_block_params",
     "get_page_script", "get_block_script", "get_project_config",
-    "list_signals", "get_signal", "read_output_file",
+    "list_signals", "get_signal", "read_output_file", "list_annotations",
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function", "doctor", "inspect_model",

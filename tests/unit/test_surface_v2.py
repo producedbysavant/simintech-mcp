@@ -23,7 +23,7 @@ async def test_visible_surface_is_core_plus_search():
 @pytest.mark.anyio
 async def test_catalog_still_has_all_tools():
     tools = await surface.catalog_tools(mcp)
-    assert len(tools) == 64
+    assert len(tools) == 65
 
 
 @pytest.mark.anyio
@@ -46,6 +46,15 @@ async def test_search_finds_key_tools():
     data = json.loads(_text(result))
     names = {item["name"] for item in data}
     assert "connect" in names
+
+
+@pytest.mark.anyio
+async def test_search_finds_annotations():
+    result = await mcp.call_tool(
+        "search_tools", {"query": "TextLabel annotations"})
+    data = json.loads(_text(result))
+    names = {item["name"] for item in data}
+    assert "list_annotations" in names
 
 
 @pytest.mark.anyio
