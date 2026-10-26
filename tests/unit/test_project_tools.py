@@ -497,6 +497,45 @@ async def test_save_project_can_skip_showing_form(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("state", [1, 3, 7])
+async def test_save_project_refuses_non_stopped_project(
+        monkeypatch, tmp_path, state):
+    """Ненулевое состояние - отказ до формы и записи.
+
+    На состоянии 1/3/7 SaveProjectBinary может зависнуть вместе с COM-потоком;
+    ждать 120 с и терять сессию нельзя.
+    """
+    target = tmp_path / "m.prt"
+    project = _install_savable(monkeypatch, state=state)
+
+    text = await _error("save_project",
+                        {"path": str(target), "binary": True})
+
+    assert "не в остановленном состоянии" in text
+    assert f"состояние {state}" in text
+    assert "stop" in text
+    assert project.calls == [], "форма и запись не должны вызываться"
+    assert not target.exists()
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_unreadable_state(monkeypatch, tmp_path):
+    """Нечитаемое состояние - отказ: неизвестное не обещает безопасность."""
+    target = tmp_path / "m.prt"
+    project = _install_savable(
+        monkeypatch, state_error=OSError("COM не отвечает"))
+
+    text = await _error("save_project",
+                        {"path": str(target), "binary": True})
+
+    assert "состояние проекта не прочитано" in text
+    assert "COM не отвечает" in text
+    assert "файл не тронут" in text
+    assert project.calls == []
+    assert not target.exists()
+
+
+@pytest.mark.anyio
 async def test_save_project_failure_is_error(monkeypatch):
     """Неудачная запись — отказ, а не ответ «проект сохранён»."""
     _install_savable(monkeypatch, raises=True)

@@ -595,6 +595,20 @@ def _install_fake_template(monkeypatch):
     return project, opened
 
 
+class _SavableSimulation:
+    """Состояние проекта для гейта `save_project`."""
+
+    def __init__(self, state: int = 0,
+                 state_error: "BaseException | None" = None):
+        self.state = state
+        self.state_error = state_error
+
+    def get_state(self) -> int:
+        if self.state_error is not None:
+            raise self.state_error
+        return self.state
+
+
 class _SavableProject:
     """Проект, запоминающий, каким методом его сохранили.
 
@@ -604,10 +618,16 @@ class _SavableProject:
     удобный ответ. `writes=False` моделирует ту самую залипшую сессию.
     """
 
-    def __init__(self, raises: bool = False, writes: bool = True):
+    def __init__(self, raises: bool = False, writes: bool = True,
+                 state: int = 0,
+                 state_error: "BaseException | None" = None):
         self.calls = []
         self._raises = raises
         self._writes = writes
+        self._simulation = _SavableSimulation(state, state_error)
+
+    def simulation(self) -> _SavableSimulation:
+        return self._simulation
 
     def _record(self, kind: str, path=None) -> None:
         self.calls.append((kind, path))
@@ -627,9 +647,12 @@ class _SavableProject:
 
 
 def _install_savable(monkeypatch, raises: bool = False,
-                     writes: bool = True) -> "_SavableProject":
+                     writes: bool = True, state: int = 0,
+                     state_error: "BaseException | None" = None
+                     ) -> "_SavableProject":
 
-    project = _SavableProject(raises=raises, writes=writes)
+    project = _SavableProject(raises=raises, writes=writes,
+                              state=state, state_error=state_error)
     monkeypatch.setattr(session, "_project", project)
     return project
 
