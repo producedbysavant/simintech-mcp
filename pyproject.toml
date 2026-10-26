@@ -79,7 +79,14 @@ dependencies = [
     # `disconnect` называет процесс «завершённым» по этому исходу и больше не
     # сканирует снимки.
     # sha: ff87db189b2e5569eeb0a704ebeab1bd0ae2fbb6
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.14.0",
+    # v0.15.0 - релизный тег simintech-code (библиотека 0.15.0): запуск
+    # макроса через `mstarter` (#56) и слот скриптовой записи на каждую
+    # страницу: страница без собственного script больше не ломает
+    # `export_model_text` и `run_page_script` (issue #69, PR #70; squash-коммит
+    # main 2303eca, тег указывает на него). Нумерация записей не сдвигается,
+    # скрипт свойства за страничный не берётся.
+    # sha: 2303ecade74b594f1d3611e408d0010b6879b76c
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.15.0",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.
