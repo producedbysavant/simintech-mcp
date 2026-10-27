@@ -532,6 +532,46 @@ async def test_save_project_refuses_invisible_write(monkeypatch, tmp_path,
 
 
 @pytest.mark.anyio
+async def test_save_project_keeps_temp_when_visibility_unreadable(
+        monkeypatch, tmp_path):
+    """Если проверка не прочитала записанный файл, временный файл цел.
+
+    Антивирус или индексатор может на мгновение запереть свежий `.tmp`.
+    Сырой `OSError` уходил в `except BaseException` и удалял единственную
+    запись; теперь отказ называет файл и оставляет его.
+    """
+    target = tmp_path / "m.xprt"
+    _install_savable(monkeypatch)
+
+    def _locked(path, binary):
+        raise project_tools._UnverifiedSave("файл занят")
+
+    monkeypatch.setattr(project_tools, "_visible_flag", _locked)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "файл занят" in text
+    assert os.path.exists(_temp_of(target)), "записанный файл потерян"
+    assert not target.exists()
+
+
+def test_visible_flag_reads_project_block_not_first_tag(tmp_path):
+    """Чужой `<visible>` до `<project>` не подменяет признак формы."""
+    path = tmp_path / "m.xprt"
+    path.write_bytes(
+        b"<Header><other><visible>`0`</visible></other>"
+        b"<project><visible>`1`</visible></project></Header>")
+
+    assert project_tools._visible_flag(str(path), False) == 1
+
+
+def test_visible_flag_wraps_oserror(tmp_path):
+    """Каталог вместо файла даёт отказ проверки, а не сырой OSError."""
+    with pytest.raises(project_tools._UnverifiedSave):
+        project_tools._visible_flag(str(tmp_path), False)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("state", [1, 3, 7])
 async def test_save_project_refuses_non_stopped_project(
         monkeypatch, tmp_path, state):
@@ -573,11 +613,13 @@ async def test_save_project_refuses_unreadable_state(monkeypatch, tmp_path):
 @pytest.mark.anyio
 async def test_save_project_failure_is_error(monkeypatch):
     """Неудачная запись — отказ, а не ответ «проект сохранён»."""
-    _install_savable(monkeypatch, raises=True)
+    project = _install_savable(monkeypatch, raises=True)
 
     text = await _error("save_project", {"path": r"C:\m.prt", "binary": True})
 
     assert "диск переполнен" in text
+    assert any(kind == "binary" for kind, _ in project.calls), \
+        "сбой обязан дойти до записи, а не случиться на показе формы"
 
 
 @pytest.mark.anyio

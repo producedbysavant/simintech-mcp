@@ -666,7 +666,10 @@ class _SavableProject:
             Path(path).write_bytes(raw)
 
     def show_form(self) -> None:
-        self._record("show_form")
+        # Показ формы не пишет файл и не должен срабатывать на `raises`:
+        # тесты сбоя записи обязаны дойти до save_xml/save_binary, иначе
+        # атомарная запись остаётся непроверенной (замечание ревью PR #176).
+        self.calls.append(("show_form", None))
 
     def save_xml(self, path: str) -> None:
         self._record("xml", path)

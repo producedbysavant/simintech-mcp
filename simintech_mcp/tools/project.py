@@ -655,6 +655,16 @@ _XPRT_VISIBLE_RE = re.compile(
     rb"<visible>\s*[`']?\s*([01])\s*[`']?\s*</visible>")
 
 
+class _UnverifiedSave(ToolError):
+    """Файл записан, но прочитать его для проверки не удалось.
+
+    Отдельный тип нужен, чтобы не удалять временный файл: запись состоялась,
+    и проект может понадобиться человеку. Сырой `OSError` здесь тоже
+    недопустим: он уходил в `except BaseException` и уносил единственную
+    запись (замечание ревью PR #176).
+    """
+
+
 def _visible_flag(path: str, binary: bool) -> int:
     """Прочитать признак «окно проекта видимо» из записанного файла.
 
@@ -665,10 +675,22 @@ def _visible_flag(path: str, binary: bool) -> int:
     Нечитаемая шапка - отказ, а не догадка: иначе проверка молча пропускала
     бы ровно тот файл, ради которого написана.
     """
-    with open(path, "rb") as handle:
-        head = handle.read(_VISIBLE_HEAD_BYTES)
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_VISIBLE_HEAD_BYTES)
+    except OSError as exc:
+        raise _UnverifiedSave(
+            f"записанный файл не читается для проверки видимости "
+            f"({type(exc).__name__}: {exc}).") from exc
     if not binary:
-        match = _XPRT_VISIBLE_RE.search(head)
+        # Тегов <visible> в выгрузке много (форма, вкладки, объекты), поэтому
+        # ищем первый после начала блока <project>, а не первый в файле.
+        project_start = head.find(b"<project")
+        if project_start < 0:
+            raise ToolError(
+                "в записанном .xprt нет блока <project>: признак видимости "
+                "не к чему привязать.")
+        match = _XPRT_VISIBLE_RE.search(head, project_start)
         if match is None:
             raise ToolError(
                 "в записанном .xprt не найден признак видимости "
@@ -676,7 +698,8 @@ def _visible_flag(path: str, binary: bool) -> int:
                 "модели, нельзя.")
         return int(match.group(1))
     try:
-        raw = zlib.decompressobj().decompress(head)
+        raw = zlib.decompressobj().decompress(
+            head, _PRT_VISIBLE_OFFSET + 1)
     except zlib.error as exc:
         raise ToolError(
             f"записанный .prt не распаковывается как zlib ({exc}): "
@@ -866,6 +889,15 @@ def save_project(path: str, binary: bool = False) -> str:
             project.save_xml(tmp)
         _verify_saved(tmp, before)
         _require_visible(tmp, binary)
+    except _UnverifiedSave as exc:
+        # Запись состоялась, но проверка не прочитала файл (антивирус,
+        # индексатор). Временный файл оставляем: это единственная копия
+        # записанного проекта, и человек может её спасти.
+        raise ToolError(
+            f"{exc}\nЗапись шла во временный файл «{tmp}», и целевой "
+            f"«{path}» не тронут. Временный файл оставлен: проверьте его "
+            f"вручную или повторите сохранение."
+        ) from exc
     except ToolError as exc:
         _remove_quietly(tmp)
         raise ToolError(
