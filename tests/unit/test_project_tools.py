@@ -23,6 +23,9 @@ from _support import (
     _install_fake_template,
     _install_savable,
     _text,
+    _visible_prt,
+    _visible_xprt,
+    all_tools,
 )
 
 
@@ -464,7 +467,8 @@ async def test_save_project_defaults_to_xml(monkeypatch, tmp_path):
         "среда обязана писать временный файл, а не целевой"
     assert "XML" in text
     assert "Форма проекта показана" in text
-    assert target.read_bytes() == b"<stub/>", "целевой файл не получил запись"
+    assert target.read_bytes() == _visible_xprt(), \
+        "целевой файл не получил запись"
     assert not os.path.exists(_temp_of(target)), "временный хвост остался"
 
 
@@ -479,21 +483,52 @@ async def test_save_project_binary_flag_writes_prt(monkeypatch, tmp_path):
 
     assert project.calls == [("show_form", None), ("binary", _temp_of(target))]
     assert ".prt" in text
-    assert target.read_bytes() == b"<stub/>"
+    assert target.read_bytes() == _visible_prt()
 
 
 @pytest.mark.anyio
-async def test_save_project_can_skip_showing_form(monkeypatch, tmp_path):
-    """show_form=False — безоконное сохранение: форму не показываем."""
+async def test_save_project_has_no_hidden_window_option(monkeypatch, tmp_path):
+    """Возможности записать проект с невидимым окном больше нет.
+
+    Инструмент больше не принимает `show_form`: невидимый проект в GUI
+    выглядит как «не открылся», и такой файл нельзя выдавать за результат
+    сохранения (живой случай 27.10.2026).
+    """
     target = tmp_path / "m.prt"
     project = _install_savable(monkeypatch)
 
-    text = _text(await mcp.call_tool(
-        "save_project", {"path": str(target), "binary": True,
-                         "show_form": False}))
+    tools = await all_tools()
+    schema = next(tool.parameters for tool in tools
+                  if tool.name == "save_project")
+    assert "show_form" not in (schema.get("properties") or {})
 
-    assert project.calls == [("binary", _temp_of(target))]
-    assert "Форму не показывали" in text
+    with pytest.raises(Exception):
+        await mcp.call_tool("save_project", {
+            "path": str(target), "binary": True, "show_form": False})
+    assert project.calls == []
+    assert not target.exists()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("binary,name", [(True, "m.prt"), (False, "m.xprt")])
+async def test_save_project_refuses_invisible_write(monkeypatch, tmp_path,
+                                                    binary, name):
+    """Запись с visible=0 отвергается до замены целевого файла.
+
+    `FormShow` вызван, но среда всё равно записала «окно скрыто»: файл
+    помечен невидимым, GUI покажет пустую рамку. Проверка обязана поймать это
+    по содержимому, а не верить ответу среды.
+    """
+    target = tmp_path / name
+    _install_savable(monkeypatch, visible=0)
+
+    text = await _error("save_project",
+                        {"path": str(target), "binary": binary})
+
+    assert "невидим" in text
+    assert "FormShow" in text
+    assert not target.exists(), "невидимый файл не должен заменить целевой"
+    assert not os.path.exists(_temp_of(target)), "временный хвост остался"
 
 
 @pytest.mark.anyio
@@ -609,7 +644,7 @@ async def test_save_project_keeps_temp_when_replace_fails(monkeypatch,
     assert "заменить" in text
     tmp = _temp_of(target)
     assert os.path.exists(tmp), "записанный временный файл потерян"
-    assert Path(tmp).read_bytes() == b"<stub/>"
+    assert Path(tmp).read_bytes() == _visible_xprt()
     assert target.read_bytes() == b"<old/>", "целевой файл тронут"
 
 
@@ -706,7 +741,7 @@ class _CoarseTimestampProject(_SavableProject):
         if not self._writes:
             return
         old = os.stat(path)
-        Path(path).write_bytes(b"<new!>")
+        Path(path).write_bytes(_visible_xprt())
         os.utime(path, ns=(old.st_atime_ns, old.st_mtime_ns))
 
 
@@ -743,7 +778,7 @@ async def test_save_project_accepts_coarse_timestamp_fs(monkeypatch, tmp_path):
     text = _text(await mcp.call_tool("save_project", {"path": str(target)}))
 
     assert "сохранён" in text
-    assert target.read_bytes() == b"<new!>"
+    assert target.read_bytes() == _visible_xprt()
 
 
 @pytest.mark.anyio
@@ -756,7 +791,7 @@ async def test_save_project_refuses_identical_rewrite_on_coarse_fs(
     сессии нечем — и «сохранено» здесь было бы догадкой.
     """
     target = tmp_path / "m.xprt"
-    Path(_temp_of(target)).write_bytes(b"<same>")
+    Path(_temp_of(target)).write_bytes(_visible_xprt())
     monkeypatch.setattr(session, "_project", _IdenticalRewriteProject())
 
     text = await _error("save_project", {"path": str(target)})
