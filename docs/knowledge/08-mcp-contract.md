@@ -33,7 +33,8 @@
 | `mcp-project-change-only-via-set-project` | Проект меняется только `session.set_project`; вместе с ним сбрасываются линии сессии, курсоры фитов и счёт несохранённого | code-confirmed | `session.py:286-313` |
 | `mcp-pack-member-protection` | Участник открытого пакета не закрывается (`CloseProject` исключил бы его из состава); «неизвестно» трактуется как «нельзя исключить» | live-verified | замер 01.10.2026 (состав 2 → 1); `session.py:430-517` |
 | `mcp-session-scene-degradation` | После `save_project` возможна деградация сцены mmain (выгрузка «успешна» без файла; далее AV) — правило: сохранили → `reload_project`/`open_project`, потом page-вызовы | live-verified | живые случаи 06.10.2026; `tools/project.py:714-722` |
-| `mcp-save-atomic-temp-file` | `save_project` пишет через `<имя>.tmp.<ext>` + `os.replace`; нулевая длина — отказ, не успех; расширение = формат | live-verified | репорт 08.10.2026; замеры 13.10.2026; `project.py:480-779` |
+| `mcp-save-atomic-temp-file` | `save_project` пишет через `<имя>.tmp.<ext>` + `os.replace`; нулевая длина: отказ, не успех; расширение = формат | live-verified | репорт 08.10.2026; замеры 13.10.2026; `project.py::_verify_saved, save_project` |
+| `mcp-save-visible-window` | `save_project` всегда вызывает `FormShow`; после записи проверяет признак видимости (`<visible>`1`</visible>` в `.xprt`, байт 8 zlib-заголовка `.prt`) и при нуле отказывает, не заменяя целевой файл. Параметра `show_form` больше нет | code-confirmed | `project.py::_visible_flag, _require_visible, save_project`; `test_project_tools.py` |
 
 ## 4. Контракт правок (issue #18)
 

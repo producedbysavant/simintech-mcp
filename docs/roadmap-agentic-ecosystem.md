@@ -1932,7 +1932,7 @@ PR прошёл ревью шестью независимыми агентам�
 | состояние сессии глобальное | `session.py:41` — `_WIRES`; читается в `tools/layout.py:123,142` |
 | `layout_place` привязан к сессии | тот же `_WIRES` — связи, созданные **через MCP в этой сессии** |
 | `errors="replace"` при чтении результатов | `tools/files.py:63`, `tables.py:71`, `resources.py:151`, `skills.py:87` |
-| `save_project` с GUI-эффектом по умолчанию | `tools/project.py:240` — `show_form: bool = True`, вызов на `:266` |
+| `save_project` с GUI-эффектом по умолчанию | `tools/project.py`: `show_form` удалён, `FormShow` вызывается всегда; параметр больше не принимается |
 | сводка материализует строки в память | `tables.py:18-19` — 500 000 строк / 32 МБ; оценка «~640 МБ» **уже написана** там же на `:24` — это задокументированный риск, а не незамеченный |
 | `delete`/`removeobject` есть в языке, но не в COM | `data/language_functions.json` — обе записи есть; COM-операции нет |
 | каталог 958 классов | `len(block_catalog.json["classes"]) == 958` |

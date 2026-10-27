@@ -609,6 +609,29 @@ class _SavableSimulation:
         return self.state
 
 
+def _visible_xprt(visible: int = 1) -> bytes:
+    """Минимальный `.xprt` с признаком видимости в шапке.
+
+    Инструмент читает `<visible>` после записи, поэтому подделка обязана
+    писать реалистичный заголовок, а не заглушку: иначе тест проверял бы
+    отказ там, где запись на самом деле годная.
+    """
+    return (
+        b'<?xml version="1.0" encoding="utf-8"?>\n'
+        b'<Header>\n<project>\n'
+        b' <visible>`' + str(visible).encode("ascii") + b'`</visible>\n'
+        b'</project>\n</Header>\n'
+    )
+
+
+def _visible_prt(visible: int = 1) -> bytes:
+    """Минимальный бинарный `.prt`: zlib-поток, байт 8 - признак окна."""
+    import zlib
+    head = bytearray(b"\x87\x00\x00\x00\x00\x00\x01\x01\x00" + b"\x00" * 8)
+    head[8] = visible
+    return zlib.compress(bytes(head), 9)
+
+
 class _SavableProject:
     """Проект, запоминающий, каким методом его сохранили.
 
@@ -616,14 +639,18 @@ class _SavableProject:
     проверяет факт записи по диску (залипшая сессия сообщает об успехе без
     файла, simintech-code#21), и подделка обязана моделировать переход, а не
     удобный ответ. `writes=False` моделирует ту самую залипшую сессию.
+    `visible` задаёт признак окна в записанном файле: 0 проверяет отказ
+    инструмента на невидимом проекте.
     """
 
     def __init__(self, raises: bool = False, writes: bool = True,
                  state: int = 0,
-                 state_error: "BaseException | None" = None):
+                 state_error: "BaseException | None" = None,
+                 visible: int = 1):
         self.calls = []
         self._raises = raises
         self._writes = writes
+        self._visible = visible
         self._simulation = _SavableSimulation(state, state_error)
 
     def simulation(self) -> _SavableSimulation:
@@ -634,10 +661,15 @@ class _SavableProject:
         if self._raises:
             raise RuntimeError("диск переполнен")
         if self._writes and kind in ("xml", "binary"):
-            Path(path).write_bytes(b"<stub/>")
+            raw = (_visible_xprt(self._visible) if kind == "xml"
+                   else _visible_prt(self._visible))
+            Path(path).write_bytes(raw)
 
     def show_form(self) -> None:
-        self._record("show_form")
+        # Показ формы не пишет файл и не должен срабатывать на `raises`:
+        # тесты сбоя записи обязаны дойти до save_xml/save_binary, иначе
+        # атомарная запись остаётся непроверенной (замечание ревью PR #176).
+        self.calls.append(("show_form", None))
 
     def save_xml(self, path: str) -> None:
         self._record("xml", path)
@@ -648,11 +680,12 @@ class _SavableProject:
 
 def _install_savable(monkeypatch, raises: bool = False,
                      writes: bool = True, state: int = 0,
-                     state_error: "BaseException | None" = None
-                     ) -> "_SavableProject":
+                     state_error: "BaseException | None" = None,
+                     visible: int = 1) -> "_SavableProject":
 
     project = _SavableProject(raises=raises, writes=writes,
-                              state=state, state_error=state_error)
+                              state=state, state_error=state_error,
+                              visible=visible)
     monkeypatch.setattr(session, "_project", project)
     return project
 
