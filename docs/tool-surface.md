@@ -3,7 +3,8 @@
 ## Видимое ядро
 
 `doctor`, `create_project`, `open_project`, `build_model`, `inspect_model`,
-`simulate`, `format_model`, `read_output_file`, `help_text`.
+`load_model`, `get_model_manifest`, `query_model`, `simulate`,
+`format_model`, `read_output_file`, `help_text`.
 
 Плюс `search_tools` и `call_tool`.
 
@@ -12,6 +13,14 @@
 Остальные инструменты доступны через `search_tools`. Полное описание:
 `simintech://tools/<name>`. Переменная `SIMINTECH_MCP_DISCOVERY=all`
 возвращает все инструменты без поиска.
+
+## Model IR
+
+`load_model` читает текущий проект снимком `.xprt` без запуска расчёта или
+файл из каталога результатов. Ответ содержит `model_ref`, счётчики,
+покрытие и первые расхождения; XML и скрипты не возвращаются.
+`get_model_manifest` отдаёт паспорт 2000..5000 токенов, `query_model` -
+точные запросы к полному графу. После правки проекта снимок устаревает.
 
 ## Сборка модели
 

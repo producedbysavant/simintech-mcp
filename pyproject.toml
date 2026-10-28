@@ -86,7 +86,14 @@ dependencies = [
     # main 2303eca, тег указывает на него). Нумерация записей не сдвигается,
     # скрипт свойства за страничный не берётся.
     # sha: 2303ecade74b594f1d3611e408d0010b6879b76c
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.15.0",
+    # v0.16.0: релизный тег simintech-code (библиотека 0.16.0): Model IR.
+    # Разбор .xprt потоковый, обе формы тегов, отказы на повреждённый XML и
+    # пределы; текст savemodeltofile и topology дают синтетические порты и
+    # рёбра; сборка сохраняет .xprt первичным. Графовые запросы возвращают
+    # evidence, покрытие и unknown; паспорт ограничен 2000..5000 токенов.
+    # squash-коммит main f249b0d, тег указывает на него.
+    # sha: f249b0dc98f0ff0ffe331f0e0c41a2647c2d5f6a
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.16.0",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.

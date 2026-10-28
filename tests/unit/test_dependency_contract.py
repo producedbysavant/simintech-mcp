@@ -73,6 +73,16 @@ REQUIRED = [
     # в библиотеке; переименование обязано падать здесь, а не у клиента.
     ("simintech_api.pak", "write_pack"),
     ("simintech_api.pak", "PackEntry"),
+    # Model IR (tools/model_ir.py): разбор источников, сборка, граф и паспорт.
+    ("simintech_api.model_ir", "parse_xprt"),
+    ("simintech_api.model_ir", "parse_xprt_file"),
+    ("simintech_api.model_ir", "parse_model_text"),
+    ("simintech_api.model_ir", "topology_to_ir"),
+    ("simintech_api.model_ir", "build_model_ir"),
+    ("simintech_api.model_ir", "ModelIndex"),
+    ("simintech_api.model_ir", "build_manifest"),
+    ("simintech_api.topology", "parse_topology"),
+    ("simintech_api.core.topology", "read_topology"),
 ]
 
 #: Методы, вызываемые сервером у `Project`.

@@ -37,6 +37,9 @@ CORE_TOOLS = (
     "open_project",
     "build_model",
     "inspect_model",
+    "load_model",
+    "get_model_manifest",
+    "query_model",
     "simulate",
     "format_model",
     "read_output_file",
@@ -57,6 +60,17 @@ SHORT_DESCRIPTIONS = {
     "inspect_model": (
         "Кратко показать блоки, линии и параметры текущей страницы без "
         "запуска расчёта."
+    ),
+    "load_model": (
+        "Загрузить текущий проект или файл в Model IR; вернуть model_ref, "
+        "счётчики, покрытие и первые расхождения без XML."
+    ),
+    "get_model_manifest": (
+        "Компактный паспорт снимка IR в бюджете 2000..5000 токенов."
+    ),
+    "query_model": (
+        "Точный запрос к полному графу IR: trace, пути, циклы, проверки, "
+        "сравнение моделей."
     ),
     "simulate": (
         "Задать время, запустить расчёт или шаги, прочитать и свести "
@@ -105,6 +119,7 @@ _MODULE_TAGS = {
     "simulation": "simulate",
     "files": "results",
     "model_text": "text",
+    "model_ir": "model",
     "annotations": "text",
     "page_script": "script",
     "block_script": "script",
@@ -124,6 +139,7 @@ IDEMPOTENT_TOOLS = frozenset({
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function", "doctor", "inspect_model",
+    "get_model_manifest", "query_model",
     "set_block_param", "set_calc_time", "set_project_config",
     "layout_place", "fit_view", "set_block_center", "save_project",
     "format_model",

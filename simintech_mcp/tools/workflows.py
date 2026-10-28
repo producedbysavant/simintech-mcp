@@ -350,7 +350,7 @@ def simulate(to_time: Optional[float] = None,
         "open_world_hint": False,
     },
 )
-@runtime.workflow_tool
+@runtime.workflow_tool(mutates_project=True)
 def format_model(
         mode: Literal["place", "normalize", "sizes", "fit",
                       "screenshot"] = "place",

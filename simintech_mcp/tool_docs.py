@@ -88,6 +88,39 @@ def resource_model_text_guide() -> str:
     )
 
 
+@mcp.resource("simintech://guides/model-ir")
+def resource_model_ir_guide() -> str:
+    """Как читать модель через Model IR, а не XML-снимком."""
+    return (
+        "Model IR: полное представление модели вне контекста агента\n"
+        "\n"
+        "load_model(path='', sources=['xprt'], strict=False) читает текущий\n"
+        "проект снимком SaveProjectXML без запуска расчёта. path указывает\n"
+        "файл в каталоге результатов: .xprt/.xml, .txt (savemodeltofile),\n"
+        ".topology/.tsv. model_text и topology идут контуром и сдвигают\n"
+        "модельное время.\n"
+        "\n"
+        "Ответ содержит model_ref, хеш, счётчики, покрытие и первые\n"
+        "расхождения. XML, скрипты и полные значения свойств не возвращаются.\n"
+        "\n"
+        "get_model_manifest(model_ref, budget_tokens=3000, focus) отдаёт\n"
+        "Markdown-паспорт 2000..5000 токенов с блоками Coverage, Structure,\n"
+        "Classes, Signals, Hot nodes, Discrepancies и Omitted.\n"
+        "\n"
+        "query_model(model_ref, query, arguments) выполняет точный запрос:\n"
+        "inspect_node, find_objects, trace_signal, ancestors, descendants,\n"
+        "find_path, find_cycles, check_connections, compare_models,\n"
+        "validate_invariants, list_discrepancies, coverage. Для\n"
+        "compare_models в arguments нужен other_ref.\n"
+        "\n"
+        "Покрытие важнее ответа: source_status=partial, unresolved_ends,\n"
+        "unknown и not_evaluated не означают пустое множество. Снимок живёт\n"
+        "в памяти; после правки проекта или смены проекта старый model_ref\n"
+        "устаревает, а вытесненный ref неизвестен. В обоих случаях нужен\n"
+        "новый load_model.\n"
+    )
+
+
 @mcp.resource("simintech://guides/wire-geometry")
 def resource_wire_geometry_guide() -> str:
     """Живой замер геометрии проводов и правило сборки."""

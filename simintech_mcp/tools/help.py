@@ -41,7 +41,7 @@ def help_text() -> str:
     """
     return (
         "Видимое ядро: `tools/list`; полный каталог: simintech://tools и\n"
-        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает все 64.\n"
+        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает все 68.\n"
         "\n"
         "Видимое ядро: doctor, create_project, open_project, build_model,\n"
         "inspect_model, simulate, format_model, read_output_file, help_text.\n"

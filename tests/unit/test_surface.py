@@ -24,6 +24,7 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 #: вывод из кода: будь оно выводом, проверка повторяла бы декоратор.
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
+    "get_model_manifest", "query_model",
     "help_text", "project_network_role", "create_pack",
     "search_language_functions", "get_language_function",
 }
@@ -80,7 +81,7 @@ _MUTATING_TOOLS = {
     "import_model_text", "set_page_script", "run_page_script",
     "inject_submodel_script", "set_signal", "set_calc_time",
     "set_project_config",
-    "build_model",
+    "build_model", "format_model",
 }
 
 #: Чистые чтения — аннотация `readOnlyHint: True`: ни проект, ни сессия, ни
@@ -99,7 +100,7 @@ _READ_ONLY_TOOLS = {
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function",
-    "doctor", "inspect_model",
+    "doctor", "inspect_model", "get_model_manifest", "query_model",
 }
 
 #: Удаление/перезапись/сброс — `destructiveHint: True` (хост показывает
@@ -198,7 +199,7 @@ async def test_all_tools_registered():
         "get_block_script", "set_block_script",
         "save_screenshot", "fit_view", "set_block_center",
         "doctor", "build_model", "inspect_model", "simulate",
-        "format_model",
+        "format_model", "load_model", "get_model_manifest", "query_model",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "
