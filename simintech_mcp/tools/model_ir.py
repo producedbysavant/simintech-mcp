@@ -85,8 +85,15 @@ def _topology_source() -> Any:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _models(path: str, sources: List[str],
-            strict: bool) -> tuple[ModelIR, bool, Optional[int]]:
+def read_model(path: str, sources: List[str],
+               strict: bool) -> tuple[ModelIR, bool, Optional[int]]:
+    """Собрать Model IR из файла или текущего проекта без снимка в кэше.
+
+    Возвращает модель, признак привязки к проекту и id проекта. Нужна и
+    `load_model`, который кладёт результат в `model_store`, и инструментам,
+    которым модель нужна только для проверки: снимок после мутирующего
+    вызова всё равно устарел бы.
+    """
     if path:
         inferred = _source_from_path(path)
         if sources and sources != [inferred]:
@@ -219,7 +226,7 @@ def load_model(path: str = "",
             f"неизвестные источники {unknown}; допустимы {list(_SOURCES)}")
     if not chosen:
         raise ToolError("sources пуст: нужен хотя бы один источник")
-    model, bound, project_id = _models(path, chosen, strict)
+    model, bound, project_id = read_model(path, chosen, strict)
     ref = model_store.store(model, bound=bound, project_id=project_id)
     return _summary(model, ref, chosen)
 

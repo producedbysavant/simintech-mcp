@@ -134,16 +134,17 @@ claude mcp add simintech -- simintech-mcp
 | Результаты | `read_output_file`, `summarize_output_file` |
 | Текст модели | `export_model_text`, `import_model_text`, `list_annotations` |
 | Model IR | `load_model`, `get_model_manifest`, `query_model` |
+| SystemSpec | `build_and_verify` |
 | Языковой слой | `get_page_script`, `set_page_script`, `get_block_script`, `set_block_script`, `run_page_script`, `inject_submodel_script` |
 | Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role`, `read_output_file`, `summarize_output_file`, `help_text`, `search_language_functions`, `get_language_function`, `create_pack` |
 | Layout | `layout_place`, `fit_view`, `audit_routing`, `check_model_layout`, `set_block_center` |
 | Снимок схемы | `save_screenshot` (кадр подгоняется сам; `fit=False` — текущий вид) |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
-| Композиты | `doctor`, `build_model`, `inspect_model`, `simulate`, `format_model` |
+| Композиты | `doctor`, `build_model`, `build_and_verify`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 68. Видимое ядро в `tools/list`; полный каталог в
+Всего инструментов: 69. Видимое ядро в `tools/list`; полный каталог в
 `simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
-возвращает все 68.
+возвращает все 69.
 
 `build_model(spec=...)` принимает Pydantic `ModelSpec`: блоки и субмодели
 импортируются текстом, верхнеуровневые провода создаются `connect` по
@@ -152,6 +153,12 @@ claude mcp add simintech -- simintech-mcp
 2026-10-18: провода, импортированные текстом на сложной модели, дают веер
 диагоналей; порт-ориентированный `connect` даёт чистые маршруты. Подробности:
 `simintech://guides/wire-geometry`.
+
+`build_and_verify(spec=SystemSpec)` идёт дальше: компилирует спецификацию до
+обращения к COM, собирает модель как `ModelSpec`, читает фактический `.xprt`
+и возвращает вердикт `passed`, `partial` или `failed`. `partial` означает
+`unknown` или `not_evaluated` и не выдаётся за успех; расчётные `assertions`
+без simulate остаются `not_evaluated`.
 
 **Размеры блоков с переменным числом входов (`nport`).** Импорт ставит такому
 блоку 32×32 при любом числе входов, и среда размер сама не пересчитывает.

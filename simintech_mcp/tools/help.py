@@ -25,7 +25,7 @@ from typing import Dict, List
 from fastmcp.exceptions import ToolError
 from simintech_api import language as language_api
 
-from .. import runtime, sandbox
+from .. import runtime, sandbox, surface
 from ..app import mcp
 from ..rules import PORT_ROW_HEIGHT
 
@@ -39,16 +39,18 @@ def help_text() -> str:
     расходился бы с ним при каждом добавлении инструмента. Источник истины по
     составу — `tools/list`.
     """
+    core = ", ".join(surface.CORE_TOOLS)
     return (
         "Видимое ядро: `tools/list`; полный каталог: simintech://tools и\n"
-        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает все 68.\n"
+        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает все 69.\n"
         "\n"
-        "Видимое ядро: doctor, create_project, open_project, build_model,\n"
-        "inspect_model, simulate, format_model, read_output_file, help_text.\n"
+        f"Видимое ядро: {core}.\n"
         "Нестандартные операции: search_tools; полные описания:\n"
         "  simintech://tools/<name>.\n"
         "Сборка: build_model(spec=...); верхнеуровневые провода создаются\n"
         "connect, а не текстом (замер 2026-10-18).\n"
+        "Полная сборка с проверкой: build_and_verify(spec=SystemSpec);\n"
+        "partial и not_evaluated не выдаются за passed.\n"
         "\n"
         "Порядок работы (низкоуровневый):\n"
         "  1. create_project(end_time=N) — проект из шаблона пустой модели\n"

@@ -2,9 +2,9 @@
 
 ## Видимое ядро
 
-`doctor`, `create_project`, `open_project`, `build_model`, `inspect_model`,
-`load_model`, `get_model_manifest`, `query_model`, `simulate`,
-`format_model`, `read_output_file`, `help_text`.
+`doctor`, `create_project`, `open_project`, `build_model`,
+`build_and_verify`, `inspect_model`, `load_model`, `get_model_manifest`,
+`query_model`, `simulate`, `format_model`, `read_output_file`, `help_text`.
 
 Плюс `search_tools` и `call_tool`.
 
@@ -28,8 +28,9 @@
 образец `unknown`; `simintech://blocks/contracts/<класс>`: свойства,
 порты, создание и ограничения одного класса. Полный дамп не выводится.
 `query_model(check_connections)` добавляет контрактную проверку:
-`fixed`/`nport`/`portnames` получают `evaluated`, неизмеренный контракт:
-`not_evaluated` с причиной.
+`fixed`/`nport` получают `evaluated`; `portnames` не оценивается по образцу
+реестра и остаётся `not_evaluated` с причиной `portnames_instance_defined`;
+неизмеренный контракт: `not_evaluated` с причиной.
 
 ## Сборка модели
 
@@ -39,6 +40,17 @@
 
 Провода внутри субмоделей импортируются текстом; их геометрию проверяйте
 снимком.
+
+## SystemSpec и проверка
+
+`build_and_verify(spec=SystemSpec(...))` компилирует спецификацию до COM:
+классы, свойства, имена, концы проводов, инварианты и профиль проверяются
+одним проходом. Затем модель собирается как `ModelSpec`, читается фактический
+`.xprt` и возвращается вердикт: `failed` при расхождении, `partial` при
+`unknown` или `not_evaluated`, `passed` только при всех пройденных проверках.
+`contract_ports_match` подкрепляется реестром контрактов. Снимок `model_ref`
+не возвращается: сборка помечает проект изменённым; для запросов нужен
+новый `load_model`.
 
 ## Размеры блоков с переменным числом входов
 

@@ -118,6 +118,12 @@ def resource_model_ir_guide() -> str:
         "в памяти; после правки проекта или смены проекта старый model_ref\n"
         "устаревает, а вытесненный ref неизвестен. В обоих случаях нужен\n"
         "новый load_model.\n"
+        "\n"
+        "build_and_verify(spec=SystemSpec) компилирует спецификацию до COM,\n"
+        "собирает модель как ModelSpec, читает фактический .xprt и отдаёт\n"
+        "вердикт passed/partial/failed. Partial не маскируется. Снимок\n"
+        "model_ref не выдаётся: после сборки проект изменён; для запросов\n"
+        "нужен новый load_model.\n"
     )
 
 

@@ -97,6 +97,11 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
         return _item(
             "contract_unknown", "not_evaluated", obj,
             reason, expected.reason or expected.model)
+    if expected.model == "portnames":
+        return _item(
+            "contract_ports_unknown", "not_evaluated", obj,
+            "порты задаются PortNames; образец реестра не эталон",
+            "portnames_instance_defined")
     actual_in, actual_out = _directions(obj)
     expected_in = list(expected.inputs)
     expected_out = list(expected.outputs)
