@@ -448,6 +448,10 @@ def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
         lines.append("Предупреждения сборки:")
         lines.extend(f"  {warning}" for warning in warnings)
     hints: List[str] = []
+    if any(str(item.get("kind")) == "port_unknown" for item in items):
+        hints.append(
+            "port_unknown: у portnames-классов укажите ports (inputs/outputs); "
+            "иначе портовая схема класса не проверяется.")
     if counts.get("not_evaluated") or counts.get("unknown"):
         hints.append(
             "not_evaluated и unknown означают, что проверка не выполнялась; "
