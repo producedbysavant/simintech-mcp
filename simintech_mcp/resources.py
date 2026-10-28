@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import List
 
 from fastmcp.exceptions import ToolError
 from simintech_api import language as language_api
 from simintech_api.constants import SUPPORTED_COM_BLOCK_CLASSES
+from simintech_api.model_ir import ModelQueryError, load_default_contracts
 
 from . import catalog, sandbox, skills
 from .app import mcp
@@ -102,6 +104,82 @@ def resource_blocks_catalog() -> str:
                  f"читает get_block_params(block=…) по блоку в проекте "
                  f"(имя блока даёт list_blocks).")
     return text
+
+
+@mcp.resource("simintech://blocks/contracts")
+def resource_block_contracts() -> str:
+    """Сводка реестра контрактов: покрытие и образец unknown."""
+    registry = load_default_contracts()
+    coverage = registry.coverage()
+    models = ", ".join(f"{key}={value}"
+                       for key, value in sorted(coverage.port_models.items()))
+    unknown = [name for name in registry.classes()
+               if registry.require(name).ports.model == "unknown"]
+    lines = [
+        "Контракты блоков: block-contract/1",
+        f"классов: {coverage.classes}; measured: {coverage.measured}; "
+        f"derived: {coverage.derived}; unknown: {coverage.unknown}",
+        f"портовые модели: {models}",
+        "Неизмеренные портовые схемы не достраиваются: у них есть reason.",
+    ]
+    if unknown:
+        sample = unknown[:3]
+        for name in sample:
+            contract = registry.require(name)
+            lines.append(
+                f"unknown: {name}: {contract.ports.reason or 'без причины'}")
+    example = registry.get("Перемножитель")
+    if example is not None:
+        ports = registry.ports_for("Перемножитель", {"nport": 3})
+        lines.append(
+            "nport: Перемножитель при nport=3: входов "
+            f"{len(ports.inputs)}, выходов {len(ports.outputs)}")
+    lines.append(
+        "Полный дамп не выводится; контракт класса: "
+        "simintech://blocks/contracts/<класс>.")
+    return "\n".join(lines)
+
+
+@mcp.resource("simintech://blocks/contracts/{class_name}")
+def resource_block_contract(class_name: str) -> str:
+    """Контракт одного класса без полного дампа реестра."""
+    registry = load_default_contracts()
+    try:
+        contract = registry.require(class_name)
+    except ModelQueryError:
+        return (f"Класса «{class_name}» нет в реестре контрактов. "
+                f"Сводка: simintech://blocks/contracts.")
+    lines = [
+        f"# {contract.class_name}",
+        f"status: {contract.status}",
+        "ports: " + contract.ports.model,
+    ]
+    if contract.ports.reason:
+        lines.append("ports.reason: " + contract.ports.reason)
+    if contract.ports.nport_property:
+        lines.append("nport_property: " + contract.ports.nport_property)
+    if contract.ports.portnames_property:
+        lines.append("portnames_property: " + contract.ports.portnames_property)
+    inputs = ", ".join(f"{item.name or '?'}:{item.direction.value}"
+                       for item in contract.ports.inputs)
+    outputs = ", ".join(f"{item.name or '?'}:{item.direction.value}"
+                        for item in contract.ports.outputs)
+    if inputs:
+        lines.append("inputs: " + inputs)
+    if outputs:
+        lines.append("outputs: " + outputs)
+    for name, prop in sorted(contract.properties.items()):
+        tail = " readonly" if prop.readonly else ""
+        lines.append(f"property {name}: {prop.default!r}{tail}")
+    for path in contract.creation:
+        lines.append(f"creation: {path.path} ({path.status})")
+    for item in contract.constraints:
+        lines.append(
+            f"constraint {item.code}: {item.description} "
+            f"{json.dumps(dict(item.params), ensure_ascii=False)}")
+    if contract.provenance:
+        lines.append("provenance: " + ", ".join(contract.provenance))
+    return "\n".join(lines)
 
 
 @mcp.resource("simintech://skills")

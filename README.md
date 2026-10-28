@@ -183,6 +183,9 @@ claude mcp add simintech -- simintech-mcp
 нормализация и наложения),
 `simintech://guides/model-ir` (снимок, паспорт, запросы и свежесть
 `model_ref`),
+`simintech://blocks/contracts` (сводка реестра контрактов и образец
+`unknown`) и `simintech://blocks/contracts/<класс>` (контракт одного
+класса; полный дамп не выводится),
 `simintech://skills` и `simintech://skills/<имя>` (скиллы из `simintech-skill`).
 Промпты: `create_pid_model`, `create_rc_chain`.
 

@@ -27,6 +27,7 @@ from simintech_api.model_ir import (
 from simintech_api.topology import parse_topology
 
 from .. import model_store, runtime, session, sandbox
+from ..contracts import check_model_contracts
 from ..app import mcp
 from .model_text import page_export_text
 
@@ -277,8 +278,29 @@ def query_model(model_ref: str, query: str,
         model_store.require_fresh(other)
         result = snapshot.index.compare_models(
             other.model, bool(args.get("include_geometry", False)))
+        payload = result.to_dict()
+    elif query == "check_connections":
+        result = snapshot.index.query(query, args)
+        payload = result.to_dict()
+        report = check_model_contracts(snapshot.model)
+        payload["evidence"]["contracts"] = report.summary()
+        if report.failed:
+            payload["evidence"]["status"] = "fail"
+        payload["items"].extend(report.items)
+    elif query == "validate_invariants":
+        result = snapshot.index.query(query, args)
+        payload = result.to_dict()
+        report = check_model_contracts(snapshot.model)
+        payload["evidence"]["contracts"] = report.summary()
+        for item in payload["items"]:
+            if item.get("kind") == "contract_ports_match":
+                item["status"] = report.status
+                item["detail"] = (
+                    f"контракты: проверено {report.evaluated}, "
+                    f"ошибок {report.failed}, "
+                    f"не проверено {report.not_evaluated}")
     else:
         result = snapshot.index.query(query, args)
-    payload = result.to_dict()
+        payload = result.to_dict()
     payload["model_ref"] = model_ref
     return json.dumps(payload, ensure_ascii=False)
