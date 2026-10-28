@@ -57,7 +57,7 @@
 | `mcp-every-tool-wrapped` | Каждый инструмент обёрнут `com_threaded` или `plain_tool` — иначе отказ уходит успехом и вызова нет в журнале | code-confirmed | `test_surface.py::test_all_tools_have_failure_contract` |
 | `mcp-plain-tools-exactly-ten` | `plain_tool`: ровно 10 инструментов без COM (список закреплён равенством) | code-confirmed | `test_surface.py:202-218` |
 | `mcp-tool-annotations-contract` | У каждого инструмента — `title` и `readOnlyHint`; `destructiveHint: True` — ровно семь; `save_screenshot` — `readOnlyHint: False` без мутирующей метки | code-confirmed | PR #160: `test_surface.py::test_tool_annotations_contract` |
-| `mcp-readme-counts-contract` | Число инструментов в README (68) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py:129-163` |
+| `mcp-readme-counts-contract` | Число инструментов в README (69) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py:129-163` |
 | `mcp-contour-core-single-entry` | Мост вызывается только через `page_script.run_contour` (исключение — `check_model.py`, отчётным протоколом) — архитектурный тест | code-confirmed | `test_dependency_contract.py:166` |
 
 ## 7. Model IR
@@ -70,6 +70,7 @@
 | `mcp-format-model-mutates` | `format_model` помечен `mutates_project=True`: он двигает блоки и линии, поэтому ответ называет проект и повышает поколение снимков IR | code-confirmed | `tools/workflows.py`; `test_surface.py` |
 | `mcp-contract-checks` | `query_model(check_connections)` добавляет контракты: `fixed`/`nport`/`portnames` дают `evaluated`, неизмеренный контракт: `not_evaluated` с классом и причиной; `validate_invariants(contract_ports_match)` заменяет `not_evaluated` результатом реестра | code-confirmed | `contracts.py`; `tools/model_ir.py`; `test_contracts_tools.py` |
 | `mcp-contract-resource` | `simintech://blocks/contracts` отдаёт покрытие и образец unknown, `.../<класс>`: один контракт; полный дамп 2 МБ не выводится | code-confirmed | `resources.py`; `test_contracts_tools.py` |
+| `mcp-build-and-verify` | `build_and_verify` компилирует SystemSpec до COM, собирает ModelSpec и connect, читает фактический `.xprt` и возвращает `passed`/`partial`/`failed`; `partial` не маскируется; `contract_ports_match` подкрепляется реестром; `model_ref` не возвращается, потому что сборка помечает проект изменённым | code-confirmed | `tools/system_spec.py`; `test_build_and_verify.py` |
 
 ## 8. Чего контракт не обещает
 

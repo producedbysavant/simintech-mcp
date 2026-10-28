@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 _ENDPOINT_RE = re.compile(
@@ -231,4 +231,49 @@ def render_model_text(spec: ModelSpec, *,
     return ",\n".join(records)
 
 
+class SystemBlockSpec(BaseModel):
+    """Блок SystemSpec: класс, свойства, подсказки портов и субмодель.
+
+    `ports` - подсказки для проверки (`inputs`/`outputs`), а не команда
+    создать порты: фактические порты задаёт класс и свойства блока.
+    `portnames` - поле записи для порт-блоков и ячеек памяти; то же имя в
+    `props` переносится сюда до компиляции.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    name: str = Field(min_length=1)
+    class_name: str = Field(alias="class", min_length=1)
+    props: dict[str, Any] = Field(default_factory=dict)
+    ports: dict[str, list[str]] = Field(default_factory=dict)
+    portnames: str | list[str] | None = None
+    subsystem: Optional["SystemLevel"] = None
+
+
+class SystemLevel(BaseModel):
+    """Уровень сборки: блоки и провода между ними."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blocks: list[SystemBlockSpec] = []
+    wires: list[WireSpec] = []
+
+
+class SystemSpec(SystemLevel):
+    """Спецификация системы: требования, инварианты, assertions и профиль."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    schema_name: str = Field(default="system-spec/1", alias="schema")
+    name: str = ""
+    invariants: list[dict[str, Any]] = []
+    requirements: list[dict[str, Any]] = []
+    assertions: list[dict[str, Any]] = []
+    verification_profile: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+
+
+SystemBlockSpec.model_rebuild()
+SystemLevel.model_rebuild()
+SystemSpec.model_rebuild()
 ModelSpec.model_rebuild()

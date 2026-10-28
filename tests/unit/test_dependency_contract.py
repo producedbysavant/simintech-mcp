@@ -84,6 +84,10 @@ REQUIRED = [
     ("simintech_api.model_ir", "BlockContractRegistry"),
     ("simintech_api.model_ir", "load_default_contracts"),
     ("simintech_api.model_ir", "ModelQueryError"),
+    # SystemSpec и верификация (tools/system_spec.py).
+    ("simintech_api.model_ir", "compile_system_spec"),
+    ("simintech_api.model_ir", "verify_model"),
+    ("simintech_api.model_ir", "SystemSpecError"),
     ("simintech_api.model_ir", "ObjectKind"),
     ("simintech_api.model_ir", "PortDirection"),
     ("simintech_api.topology", "parse_topology"),

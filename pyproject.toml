@@ -93,7 +93,13 @@ dependencies = [
     # остаётся unknown с причиной; ports_for синтезирует входы по nport.
     # squash-коммит main 1f6354f, тег указывает на него.
     # sha: 1f6354f96addcdf2e37685ea43cb489211b673bc
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.17.0",
+    # v0.18.0: релизный тег simintech-code (библиотека 0.18.0): SystemSpec
+    # и верификация. compile_system_spec собирает все ошибки за проход,
+    # verify_model сверяет контейнеры, объекты, классы, порты, провода и
+    # инварианты, вердикт не выдаёт partial за passed. squash-коммит main
+    # 992f3bb, тег указывает на него.
+    # sha: 992f3bbdbda8945712a737d1606c994934975017
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.0",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.

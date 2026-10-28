@@ -81,7 +81,7 @@ _MUTATING_TOOLS = {
     "import_model_text", "set_page_script", "run_page_script",
     "inject_submodel_script", "set_signal", "set_calc_time",
     "set_project_config",
-    "build_model", "format_model",
+    "build_model", "build_and_verify", "format_model",
 }
 
 #: Чистые чтения — аннотация `readOnlyHint: True`: ни проект, ни сессия, ни
@@ -198,8 +198,9 @@ async def test_all_tools_registered():
         "inject_submodel_script",
         "get_block_script", "set_block_script",
         "save_screenshot", "fit_view", "set_block_center",
-        "doctor", "build_model", "inspect_model", "simulate",
-        "format_model", "load_model", "get_model_manifest", "query_model",
+        "doctor", "build_model", "build_and_verify", "inspect_model",
+        "simulate", "format_model", "load_model", "get_model_manifest",
+        "query_model",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "

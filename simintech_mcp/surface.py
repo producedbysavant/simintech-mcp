@@ -36,6 +36,7 @@ CORE_TOOLS = (
     "create_project",
     "open_project",
     "build_model",
+    "build_and_verify",
     "inspect_model",
     "load_model",
     "get_model_manifest",
@@ -56,6 +57,10 @@ SHORT_DESCRIPTIONS = {
     "build_model": (
         "Собрать модель из ModelSpec: блоки, субмодели, провода через "
         "connect, подгонка размеров, раскладка, проверка, снимок."
+    ),
+    "build_and_verify": (
+        "Собрать модель по SystemSpec, прочитать IR и вердикт; "
+        "partial не выдаётся за passed."
     ),
     "inspect_model": (
         "Кратко показать блоки, линии и параметры текущей страницы без "
@@ -120,6 +125,7 @@ _MODULE_TAGS = {
     "files": "results",
     "model_text": "text",
     "model_ir": "model",
+    "system_spec": "model",
     "annotations": "text",
     "page_script": "script",
     "block_script": "script",
