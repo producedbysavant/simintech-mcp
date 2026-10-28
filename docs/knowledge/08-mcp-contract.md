@@ -55,12 +55,21 @@
 | id | Факт | Статус | Источник |
 |---|---|---|---|
 | `mcp-every-tool-wrapped` | Каждый инструмент обёрнут `com_threaded` или `plain_tool` — иначе отказ уходит успехом и вызова нет в журнале | code-confirmed | `test_surface.py::test_all_tools_have_failure_contract` |
-| `mcp-plain-tools-exactly-eight` | `plain_tool` — ровно 8 инструментов без COM (список закреплён равенством) | code-confirmed | `test_surface.py:202-218` |
+| `mcp-plain-tools-exactly-ten` | `plain_tool`: ровно 10 инструментов без COM (список закреплён равенством) | code-confirmed | `test_surface.py:202-218` |
 | `mcp-tool-annotations-contract` | У каждого инструмента — `title` и `readOnlyHint`; `destructiveHint: True` — ровно семь; `save_screenshot` — `readOnlyHint: False` без мутирующей метки | code-confirmed | PR #160: `test_surface.py::test_tool_annotations_contract` |
-| `mcp-readme-counts-contract` | Число инструментов в README (59) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py:129-163` |
+| `mcp-readme-counts-contract` | Число инструментов в README (68) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py:129-163` |
 | `mcp-contour-core-single-entry` | Мост вызывается только через `page_script.run_contour` (исключение — `check_model.py`, отчётным протоколом) — архитектурный тест | code-confirmed | `test_dependency_contract.py:166` |
 
-## 7. Чего контракт не обещает
+## 7. Model IR
+
+| id | Факт | Статус | Источник |
+|---|---|---|---|
+| `mcp-model-ref-snapshot` | `model_ref`: opaque снимок в памяти (не более двух, LRU); вытесненная ссылка и устаревшая различаются, после правки проекта нужен новый `load_model` | code-confirmed | `model_store.py`; `test_model_store.py`; `test_model_ir_tools.py` |
+| `mcp-model-ir-no-xml` | `load_model` не возвращает XML, скрипты и полные значения свойств: только `model_ref`, хеши, счётчики, покрытие и первые расхождения | code-confirmed | `tools/model_ir.py`; `test_model_ir_tools.py` |
+| `mcp-model-ir-sources` | `.xprt` текущего проекта снимается SaveProjectXML без расчёта; `model_text` и `topology` идут контуром и сдвигают модельное время; файл в песочнице выбирает источник по расширению | code-confirmed | `tools/model_ir.py`; `test_model_ir_tools.py` |
+| `mcp-format-model-mutates` | `format_model` помечен `mutates_project=True`: он двигает блоки и линии, поэтому ответ называет проект и повышает поколение снимков IR | code-confirmed | `tools/workflows.py`; `test_surface.py` |
+
+## 8. Чего контракт не обещает
 
 - Частичная правка не откатывается: отказ в середине пачки оставляет
   сделанное (следующая сверка его назовёт) — инструменты проверяют параметры

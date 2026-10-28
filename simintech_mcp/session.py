@@ -311,6 +311,10 @@ def set_project(project: Optional[Project],
     # Флаг несохранённых правок — про текущий проект: смена проекта (и его
     # сброс) его снимает, как и линии: оба живут ровно столько же.
     _unsaved = False
+    # Снимки Model IR привязаны к проекту: смена проекта их обесценивает.
+    from . import model_store
+    model_store.invalidate_project()
+    model_store.bump_generation()
 
 
 def opened_from() -> Optional[str]:
@@ -372,6 +376,8 @@ def mark_mutated() -> None:
     """
     global _unsaved
     _unsaved = True
+    from . import model_store
+    model_store.bump_generation()
 
 
 def unsaved_changes() -> bool:
