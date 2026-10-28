@@ -44,6 +44,20 @@ UNKNOWN = """<Header><project><page>
 </page></project></Header>"""
 
 
+MEMORY = """<Header><project><page>
+  <object>
+    <name>`To`</name><class_name>`В память`</class_name><obj_type>`104`</obj_type>
+    <ports><port><name>`u`</name><mode>`0`</mode></port></ports>
+    <visual_props><data><name>`PortNames`</name><value>`VAR`</value></data></visual_props>
+  </object>
+  <object>
+    <name>`From`</name><class_name>`Из памяти`</class_name><obj_type>`105`</obj_type>
+    <ports><port><name>`y`</name><mode>`1`</mode></port></ports>
+    <visual_props><data><name>`PortNames`</name><value>`VAR`</value></data></visual_props>
+  </object>
+</page></project></Header>"""
+
+
 def setup_function():
     model_store.clear()
 
@@ -61,6 +75,14 @@ def test_contract_report_passes_and_fails():
     unknown = check_model_contracts(parse_xprt(UNKNOWN))
     assert unknown.status == "not_evaluated"
     assert unknown.items[0]["reason"] == "not_observed_in_corpus"
+
+
+def test_portnames_ports_are_instance_defined():
+    """Образец реестра у portnames не эталон: проверка не выдумывает счёт."""
+    report = check_model_contracts(parse_xprt(MEMORY))
+    assert report.status == "not_evaluated"
+    assert report.failed == 0
+    assert report.by_reason == {"portnames_instance_defined": 2}
 
 
 @pytest.mark.anyio

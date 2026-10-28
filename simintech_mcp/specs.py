@@ -5,9 +5,15 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 
 _ENDPOINT_RE = re.compile(
@@ -231,6 +237,43 @@ def render_model_text(spec: ModelSpec, *,
     return ",\n".join(records)
 
 
+class PortHints(BaseModel):
+    """Подсказки портов: только `inputs` и `outputs`, без опечаток.
+
+    Опечатка в ключе раньше молча выключала подсказки, и проверка шла по
+    образцу реестра. `extra="forbid"` превращает её в ошибку схемы.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inputs: list[str] = []
+    outputs: list[str] = []
+
+    @field_validator("inputs", "outputs")
+    @classmethod
+    def _non_empty(cls, values: list[str]) -> list[str]:
+        if any(not item.strip() for item in values):
+            raise ValueError("имя порта не может быть пустым")
+        return values
+
+
+class VerificationProfile(BaseModel):
+    """Профиль проверки: только поддержанные значения, иначе ошибка схемы.
+
+    Свободный словарь молча принимал `readback: null` и неизвестную
+    стратегию сборки; типизированный профиль называет невыполнимый запрос
+    до сборки.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    readback: Union[str, List[str]] = ["xprt"]
+    simulate: bool = False
+    tolerance: float = 1e-9
+    check_geometry: bool = False
+    build_strategy: Literal["auto"] = "auto"
+
+
 class SystemBlockSpec(BaseModel):
     """Блок SystemSpec: класс, свойства, подсказки портов и субмодель.
 
@@ -245,7 +288,7 @@ class SystemBlockSpec(BaseModel):
     name: str = Field(min_length=1)
     class_name: str = Field(alias="class", min_length=1)
     props: dict[str, Any] = Field(default_factory=dict)
-    ports: dict[str, list[str]] = Field(default_factory=dict)
+    ports: PortHints = Field(default_factory=PortHints)
     portnames: str | list[str] | None = None
     subsystem: Optional["SystemLevel"] = None
 
@@ -269,7 +312,8 @@ class SystemSpec(SystemLevel):
     invariants: list[dict[str, Any]] = []
     requirements: list[dict[str, Any]] = []
     assertions: list[dict[str, Any]] = []
-    verification_profile: dict[str, Any] = {}
+    verification_profile: VerificationProfile = Field(
+        default_factory=VerificationProfile)
     provenance: dict[str, Any] = {}
 
 

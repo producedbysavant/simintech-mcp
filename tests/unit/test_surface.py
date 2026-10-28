@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from simintech_mcp import runtime
+from simintech_mcp import runtime, surface
 from simintech_mcp.server import mcp
 
 import simintech_mcp
@@ -308,6 +308,8 @@ async def test_help_text_tool():
     assert "create_project" in text
     # Перечень инструментов живёт в tools/list, а не в справке.
     assert "tools/list" in text
+    for name in surface.CORE_TOOLS:
+        assert name in text, name
 
 
 @pytest.mark.anyio

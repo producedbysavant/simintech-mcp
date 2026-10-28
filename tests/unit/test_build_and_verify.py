@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from pydantic import ValidationError
 from simintech_api.model_ir import parse_xprt
 
 from simintech_mcp import model_store, session
 from simintech_mcp.server import mcp
+from simintech_mcp.specs import SystemSpec, render_model_text
 from simintech_mcp.tools import system_spec as tool
 
 from _support import _error, _text
@@ -310,6 +314,138 @@ async def test_portnames_prop_moves_to_record_field(monkeypatch):
     blocks = calls[0]["spec"].blocks
     assert [block.portnames for block in blocks] == ["VAR", "VAR"]
     assert all("PortNames" not in block.props for block in blocks)
+    assert 'portnames = "VAR"' in render_model_text(calls[0]["spec"])
+
+
+@pytest.mark.anyio
+async def test_portnames_without_hints_is_partial(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls,
+                 "Модель собрана.\n\nСоединено проводов: 0 из 0")
+    _patch_read(monkeypatch, MEMORY_XML)
+    spec = {
+        "schema": "system-spec/1",
+        "name": "memory-no-hints",
+        "blocks": [
+            {"name": "To", "class": "В память", "portnames": "VAR"},
+            {"name": "From", "class": "Из памяти", "portnames": "VAR"},
+        ],
+    }
+
+    text = _text(await mcp.call_tool("build_and_verify", {"spec": spec}))
+
+    assert "Вердикт: partial" in text, text
+    assert "port_unknown" in text, text
+    assert "port_mismatch" not in text, text
+
+
+@pytest.mark.anyio
+async def test_contract_ports_match_on_portnames_is_partial(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls,
+                 "Модель собрана.\n\nСоединено проводов: 0 из 0")
+    _patch_read(monkeypatch, MEMORY_XML)
+    spec = {
+        "schema": "system-spec/1",
+        "name": "memory-contracts",
+        "blocks": [
+            {"name": "To", "class": "В память",
+             "ports": {"inputs": ["u"]}, "props": {"PortNames": "VAR"}},
+            {"name": "From", "class": "Из памяти",
+             "ports": {"outputs": ["y"]}, "props": {"PortNames": "VAR"}},
+        ],
+        "invariants": [{"id": "ports", "kind": "contract_ports_match"}],
+    }
+
+    text = _text(await mcp.call_tool("build_and_verify", {"spec": spec}))
+
+    assert "Вердикт: partial" in text, text
+    assert "portnames_instance_defined" in text, text
+    assert "Вердикт: failed" not in text, text
+
+
+@pytest.mark.anyio
+async def test_portnames_on_plain_class_is_rejected(monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("сборка не должна начинаться")
+
+    monkeypatch.setattr(tool, "build_model", fail)
+    spec = {
+        "schema": "system-spec/1",
+        "blocks": [{"name": "K", "class": "Константа",
+                    "props": {"PortNames": "X"}}],
+    }
+
+    text = await _error("build_and_verify", {"spec": spec})
+
+    assert "unknown_prop" in text, text
+
+
+@pytest.mark.anyio
+async def test_bad_invariant_max_is_rejected_before_build(monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("сборка не должна начинаться")
+
+    monkeypatch.setattr(tool, "build_model", fail)
+    spec = dict(CHAIN_SPEC)
+    spec["invariants"] = [
+        {"id": "fan", "kind": "max_fanout", "max": "many"}]
+
+    text = await _error("build_and_verify", {"spec": spec})
+
+    assert "bad_max" in text, text
+
+
+@pytest.mark.anyio
+async def test_duplicate_invariant_ids_are_rejected(monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("сборка не должна начинаться")
+
+    monkeypatch.setattr(tool, "build_model", fail)
+    spec = dict(CHAIN_SPEC)
+    spec["invariants"] = [
+        {"id": "same", "kind": "contract_ports_match"},
+        {"id": "same", "kind": "unique_object_names"},
+    ]
+
+    text = await _error("build_and_verify", {"spec": spec})
+
+    assert "duplicate_invariant_id" in text, text
+
+
+@pytest.mark.anyio
+async def test_bad_name_is_collected_with_compile_errors(monkeypatch):
+    def fail(**kwargs):
+        raise AssertionError("сборка не должна начинаться")
+
+    monkeypatch.setattr(tool, "build_model", fail)
+    spec = {
+        "schema": "system-spec/1",
+        "blocks": [{"name": "Плохое имя", "class": "Нет класса"}],
+    }
+
+    text = await _error("build_and_verify", {"spec": spec})
+
+    assert "bad_name" in text and "unknown_class" in text, text
+
+
+def test_profile_and_port_hints_are_strict():
+    with pytest.raises(ValidationError):
+        SystemSpec.model_validate({
+            "schema": "system-spec/1",
+            "verification_profile": {"readback": None},
+        })
+    with pytest.raises(ValidationError):
+        SystemSpec.model_validate({
+            "schema": "system-spec/1",
+            "verification_profile": {"build_strategy": "text"},
+        })
+    with pytest.raises(ValidationError):
+        SystemSpec.model_validate({
+            "schema": "system-spec/1",
+            "blocks": [{"name": "A", "class": "Константа",
+                        "ports": {"ouputs": ["y"]}}],
+        })
 
 
 @pytest.mark.anyio
@@ -357,3 +493,55 @@ async def test_readback_failure_names_the_build(monkeypatch):
     text = await _error("build_and_verify", {"spec": CHAIN_SPEC})
     assert "модель собрана" in text.lower(), text
     assert "boom" in text
+
+
+@pytest.mark.anyio
+async def test_verification_failure_names_the_build(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls)
+    _patch_read(monkeypatch, CHAIN_XML)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(tool, "verify_model", fail)
+
+    text = await _error("build_and_verify", {"spec": CHAIN_SPEC})
+    assert "модель собрана" in text.lower(), text
+    assert "проверка не выполнена" in text, text
+    assert "boom" in text
+
+
+@pytest.mark.anyio
+async def test_layout_warning_does_not_claim_missing_wires(monkeypatch):
+    calls = []
+    _patch_build(
+        monkeypatch, calls,
+        "Модель собрана.\n\nСоединено проводов: 2 из 2\n\n"
+        "WARNING: раскладка не выполнена: контур не отработал")
+    _patch_read(monkeypatch, CHAIN_XML)
+
+    text = _text(await mcp.call_tool("build_and_verify", {"spec": CHAIN_SPEC}))
+
+    assert "Вердикт: passed" in text, text
+    assert "часть проводов не создана" not in text, text
+    assert "сборка завершилась с предупреждениями" in text, text
+
+
+@pytest.mark.anyio
+async def test_readback_uses_production_parser(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls)
+
+    class FakeProject:
+        id = 7
+
+        def save_xml(self, path: str) -> None:
+            Path(path).write_text(CHAIN_XML, encoding="utf-8")
+
+    monkeypatch.setattr(session, "ensure_project", lambda: FakeProject())
+
+    text = _text(await mcp.call_tool("build_and_verify", {"spec": CHAIN_SPEC}))
+
+    assert "Вердикт: passed" in text, text
+    assert "Покрытие: ok" in text, text

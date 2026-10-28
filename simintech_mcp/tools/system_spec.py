@@ -9,19 +9,24 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, cast
 
 from fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from simintech_api.model_ir import (
+    BlockContractRegistry,
     CompiledSpec,
+    ExpectedLevel,
+    ExpectedObject,
     ModelIR,
     SystemSpecError,
     compile_system_spec,
+    load_default_contracts,
     verify_model,
 )
 
-from .. import runtime
+from .. import runtime, session
 from ..app import mcp
 from ..contracts import ContractReport, check_model_contracts
 from ..specs import BlockSpec, ModelSpec, SystemSpec, WireSpec
@@ -29,7 +34,8 @@ from .model_ir import read_model
 from .workflows import build_model
 
 _CONNECTED_RE = re.compile(r"Соединено проводов:\s*(\d+)\s*из\s*(\d+)")
-_RESERVED_PROPS = frozenset({"type", "points", "portnames", "subsystem"})
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_PROPS = frozenset({"type", "points", "subsystem"})
 _STATUS_ORDER = {"failed": 0, "not_evaluated": 1, "unknown": 2, "passed": 3}
 
 
@@ -51,15 +57,21 @@ def _walk_blocks(level: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
             yield from _walk_blocks(cast(Dict[str, Any], subsystem))
 
 
-def _normalized(spec: SystemSpec) -> dict[str, Any]:
-    """Словарь для компилятора; `PortNames` из props переносится в поле.
+def _normalized(spec: SystemSpec,
+                registry: BlockContractRegistry) -> dict[str, Any]:
+    """Словарь для компилятора; `PortNames` переносится только у portnames.
 
-    `PortNames` - свойство записи порт-блока, а не свойство класса в
-    реестре. Компилятор проверяет props по реестру, поэтому имя, заданное
-    в props, переносится в `portnames` до проверки, а не отвергается.
+    У классов с портовой моделью `portnames` свойства `PortNames` нет в
+    реестре: порты задаются значением записи, поэтому оно переносится в
+    поле `portnames` до проверки свойств. У остальных классов `PortNames`
+    остаётся в props: неизвестное свойство должен отвергнуть компилятор, а
+    не обойти проверку.
     """
     raw = spec.model_dump(by_alias=True, exclude_none=True)
     for block in _walk_blocks(raw):
+        contract = registry.get(str(block.get("class", "")))
+        if contract is None or contract.ports.model != "portnames":
+            continue
         raw_props = block.get("props")
         if not isinstance(raw_props, dict):
             continue
@@ -86,8 +98,17 @@ def _validation_text(exc: ValidationError) -> str:
 def _block_spec(block: Mapping[str, Any], path: str) -> BlockSpec:
     name = str(block.get("name", ""))
     raw_props = block.get("props")
-    props = (cast(Dict[str, Any], raw_props)
-             if isinstance(raw_props, dict) else {})
+    props = dict(cast(Dict[str, Any], raw_props)
+                 if isinstance(raw_props, dict) else {})
+    portnames = block.get("portnames")
+    for key in ("PortNames", "portnames"):
+        if key not in props:
+            continue
+        if portnames is not None:
+            raise ToolError(
+                f"{path} ({name or '?'}): portnames задан и в props, "
+                f"и полем portnames")
+        portnames = props.pop(key)
     reserved = sorted(set(props) & _RESERVED_PROPS)
     if reserved:
         raise ToolError(
@@ -97,8 +118,8 @@ def _block_spec(block: Mapping[str, Any], path: str) -> BlockSpec:
     return BlockSpec(
         name=name,
         type=str(block.get("class", "")),
-        props=dict(props),
-        portnames=cast(Any, block.get("portnames")),
+        props=props,
+        portnames=portnames,
         subsystem=(_level_spec(cast(Dict[str, Any], subsystem),
                                path + ".subsystem")
                    if isinstance(subsystem, dict) else None),
@@ -134,17 +155,143 @@ def _model_spec(raw: Mapping[str, Any]) -> ModelSpec:
             + _validation_text(exc)) from exc
 
 
-def _compile(raw: Mapping[str, Any]) -> CompiledSpec:
+def _walk_with_paths(level: Mapping[str, Any],
+                     path: str) -> Iterator[tuple[dict[str, Any], str]]:
+    for pos, raw_block in enumerate(_list_of(level.get("blocks"))):
+        if not isinstance(raw_block, Mapping):
+            continue
+        block = cast(Dict[str, Any], raw_block)
+        block_path = f"{path}.blocks[{pos}]"
+        yield block, block_path
+        subsystem = block.get("subsystem")
+        if isinstance(subsystem, Mapping):
+            yield from _walk_with_paths(
+                cast(Dict[str, Any], subsystem), block_path + ".subsystem")
+
+
+def _spec_problems(raw: Mapping[str, Any]) -> List[dict[str, str]]:
+    """Ошибки, которых не видит `compile_system_spec`, но которые ломают сборку.
+
+    Имена блоков должны подходить для текста createmodel; `max` инварианта
+    обязан быть целым (иначе `validate_invariants` падает уже после
+    сборки); id инвариантов должны быть уникальны, иначе обогащение
+    контрактами затирает чужой статус по совпавшему id.
+    """
+    problems: List[dict[str, str]] = []
+    for block, path in _walk_with_paths(raw, "$"):
+        name = str(block.get("name", ""))
+        if name and _NAME_RE.fullmatch(name) is None:
+            problems.append({
+                "path": path + ".name", "code": "bad_name",
+                "message": (f"имя {name!r}: нужна латиница, цифры и "
+                            f"подчёркивание, первый символ не цифра"),
+            })
+    seen: Dict[str, int] = {}
+    for pos, raw_invariant in enumerate(_list_of(raw.get("invariants"))):
+        if not isinstance(raw_invariant, Mapping):
+            continue
+        invariant = cast(Mapping[str, Any], raw_invariant)
+        ident = str(invariant.get("id", invariant.get("kind", "")))
+        if ident in seen:
+            problems.append({
+                "path": f"$.invariants[{pos}].id",
+                "code": "duplicate_invariant_id",
+                "message": f"id {ident!r} уже был в invariants[{seen[ident]}]",
+            })
+        else:
+            seen[ident] = pos
+        kind = invariant.get("kind")
+        if kind not in ("max_fanout", "container_depth"):
+            continue
+        default = 1 if kind == "max_fanout" else 8
+        value = invariant.get("max", default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            problems.append({
+                "path": f"$.invariants[{pos}].max",
+                "code": "bad_max",
+                "message": f"max={value!r}: ожидается целое >= 1",
+            })
+    return problems
+
+
+def _spec_error(problems: List[dict[str, str]]) -> ToolError:
+    lines = [
+        f"  {item.get('path', '$')} [{item.get('code', 'error')}]: "
+        f"{item.get('message', '')}"
+        for item in problems
+    ]
+    return ToolError("SystemSpec не скомпилирована:\n" + "\n".join(lines))
+
+
+def _compile(raw: Mapping[str, Any],
+             registry: BlockContractRegistry) -> CompiledSpec:
+    problems = _spec_problems(raw)
     try:
-        return compile_system_spec(raw)
+        compiled = compile_system_spec(raw, registry)
     except SystemSpecError as exc:
-        lines = [
-            f"  {item.get('path', '$')} [{item.get('code', 'error')}]: "
-            f"{item.get('message', '')}"
-            for item in exc.problems
-        ]
-        raise ToolError(
-            "SystemSpec не скомпилирована:\n" + "\n".join(lines)) from exc
+        raise _spec_error(list(exc.problems) + problems) from exc
+    if problems:
+        raise _spec_error(problems)
+    return compiled
+
+
+def _hinted_names(level: Mapping[str, Any]) -> set[str]:
+    """Имена блоков уровня, у которых подсказки портов заданы явно."""
+    result: set[str] = set()
+    for raw_block in _list_of(level.get("blocks")):
+        if not isinstance(raw_block, Mapping):
+            continue
+        block = cast(Mapping[str, Any], raw_block)
+        hints = block.get("ports")
+        if not isinstance(hints, Mapping):
+            continue
+        ports = cast(Mapping[str, Any], hints)
+        if ports.get("inputs") or ports.get("outputs"):
+            result.add(str(block.get("name", "")).lower())
+    return result
+
+
+def _relax_level(level: ExpectedLevel, raw: Mapping[str, Any],
+                 registry: BlockContractRegistry) -> ExpectedLevel:
+    """Снять точные порты у portnames-классов без подсказок.
+
+    У таких классов порты задаются значением `PortNames` экземпляра, а
+    образец реестра - лишь наблюдение. Сверка по образцу даёт ложный
+    `failed` на корректной модели и ложный `passed` на блоке без порта;
+    вместо этого проверка честно остаётся `not_evaluated`.
+    """
+    hinted = _hinted_names(raw)
+    raw_by_name: Dict[str, Mapping[str, Any]] = {}
+    for raw_block in _list_of(raw.get("blocks")):
+        if isinstance(raw_block, Mapping):
+            block = cast(Mapping[str, Any], raw_block)
+            raw_by_name[str(block.get("name", "")).lower()] = block
+    objects: List[ExpectedObject] = []
+    for obj in level.objects:
+        parent = raw_by_name.get(obj.name.lower())
+        subsystem = parent.get("subsystem") if parent is not None else None
+        children = tuple(
+            _relax_level(
+                child,
+                cast(Mapping[str, Any], subsystem)
+                if isinstance(subsystem, Mapping) else {},
+                registry)
+            for child in obj.children)
+        contract = registry.get(obj.class_name)
+        relax = (contract is not None
+                 and contract.ports.model == "portnames"
+                 and obj.name.lower() not in hinted)
+        objects.append(replace(
+            obj,
+            ports_known=False if relax else obj.ports_known,
+            children=children))
+    return replace(level, objects=tuple(objects))
+
+
+def _relax_portnames(compiled: CompiledSpec, raw: Mapping[str, Any],
+                     registry: BlockContractRegistry) -> CompiledSpec:
+    level = _relax_level(compiled.expected.level, raw, registry)
+    return replace(compiled, expected=replace(compiled.expected, level=level))
 
 
 def _build_counts(text: str) -> tuple[Optional[int], Optional[int]]:
@@ -161,7 +308,8 @@ def _warnings(text: str) -> List[str]:
 
 def _enrich_contracts(
         items: List[dict[str, Any]], actual: ModelIR,
-        invariants: tuple[dict[str, Any], ...]) -> Optional[ContractReport]:
+        invariants: tuple[dict[str, Any], ...],
+        registry: BlockContractRegistry) -> Optional[ContractReport]:
     """Подкрепить `contract_ports_match` результатом реестра контрактов.
 
     `verify_model` кладёт инварианты с общим `kind="invariant"`, поэтому
@@ -174,10 +322,14 @@ def _enrich_contracts(
     }
     if not ids:
         return None
-    report = check_model_contracts(actual)
+    report = check_model_contracts(actual, registry)
     detail = (f"контракты: проверено {report.evaluated}, "
               f"ошибок {report.failed}, "
               f"не проверено {report.not_evaluated}")
+    if report.by_reason:
+        reasons = ", ".join(
+            f"{key}: {value}" for key, value in sorted(report.by_reason.items()))
+        detail += f"; причины: {reasons}"
     for item in items:
         if (item.get("kind") == "invariant"
                 and str(item.get("id")) in ids):
@@ -200,13 +352,22 @@ def _profile_items(profile: Mapping[str, Any]) -> List[dict[str, Any]]:
         values = [requested]
     elif isinstance(requested, (list, tuple)):
         values = [str(item) for item in cast(List[Any], requested)]
-    extra = [item for item in values if item != "xprt"]
-    if extra:
+    if not values or "xprt" not in values:
         items.append({
             "id": "profile:readback", "kind": "profile",
             "status": "not_evaluated",
-            "detail": f"readback {extra} не выполняется; сверка идёт по xprt",
+            "detail": f"readback {values} не включает xprt; "
+                      f"сверка всё равно идёт по xprt",
         })
+    else:
+        extra = [item for item in values if item != "xprt"]
+        if extra:
+            items.append({
+                "id": "profile:readback", "kind": "profile",
+                "status": "not_evaluated",
+                "detail": f"readback {extra} не выполняется; "
+                          f"сверка идёт по xprt",
+            })
     return items
 
 
@@ -293,10 +454,15 @@ def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
             "partial не равен passed.")
     if compiled.assertions or compiled.profile.get("simulate"):
         hints.append("assertions и расчётные испытания не исполнялись.")
-    if warnings:
+    if (connected is not None and expected is not None
+            and connected < expected):
         hints.append(
             "часть проводов не создана; расхождения показывают фактические "
             "связи.")
+    elif warnings:
+        hints.append(
+            "сборка завершилась с предупреждениями; проверка показывает "
+            "фактические связи.")
     hints.append(
         "снимок IR после сборки не выдаётся: сборка помечает проект "
         "изменённым; для запросов вызовите load_model.")
@@ -339,8 +505,10 @@ def build_and_verify(spec: SystemSpec,
     `model_ref` не возвращается: сборка помечает проект изменённым, и
     ссылка устарела бы сразу; для запросов вызовите `load_model`.
     """
-    raw = _normalized(spec)
-    compiled = _compile(raw)
+    registry = load_default_contracts()
+    raw = _normalized(spec, registry)
+    compiled = _compile(raw, registry)
+    compiled = _relax_portnames(compiled, raw, registry)
     model_spec = _model_spec(raw)
     try:
         build_log = build_model(
@@ -354,10 +522,20 @@ def build_and_verify(spec: SystemSpec,
     except Exception as exc:                                  # noqa: BLE001
         raise ToolError(
             f"модель собрана, но снимок .xprt не прочитан: {exc}") from exc
-    report = verify_model(actual, compiled)
-    items = [dict(item) for item in report.items]
-    contracts = _enrich_contracts(items, actual, compiled.invariants)
-    items.extend(_profile_items(compiled.profile))
-    counts = _counts(items)
-    return _render(compiled, actual, build_log, items, counts, contracts,
-                   max(1, min(int(max_items), 200)), len(model_spec.wires))
+    try:
+        report = verify_model(actual, compiled)
+        items = [dict(item) for item in report.items]
+        contracts = _enrich_contracts(
+            items, actual, compiled.invariants, registry)
+        items.extend(_profile_items(compiled.profile))
+        counts = _counts(items)
+        return _render(compiled, actual, build_log, items, counts, contracts,
+                       max(1, min(int(max_items), 200)),
+                       len(model_spec.wires))
+    except ToolError:
+        raise
+    except Exception as exc:                                  # noqa: BLE001
+        note = session.mutation_note()
+        raise ToolError(
+            f"модель собрана, но проверка не выполнена: {exc}{note}"
+        ) from exc
