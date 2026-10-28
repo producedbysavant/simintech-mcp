@@ -81,6 +81,11 @@ REQUIRED = [
     ("simintech_api.model_ir", "build_model_ir"),
     ("simintech_api.model_ir", "ModelIndex"),
     ("simintech_api.model_ir", "build_manifest"),
+    ("simintech_api.model_ir", "BlockContractRegistry"),
+    ("simintech_api.model_ir", "load_default_contracts"),
+    ("simintech_api.model_ir", "ModelQueryError"),
+    ("simintech_api.model_ir", "ObjectKind"),
+    ("simintech_api.model_ir", "PortDirection"),
     ("simintech_api.topology", "parse_topology"),
     ("simintech_api.core.topology", "read_topology"),
 ]
