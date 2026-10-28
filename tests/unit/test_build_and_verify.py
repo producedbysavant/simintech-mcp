@@ -449,6 +449,55 @@ def test_profile_and_port_hints_are_strict():
 
 
 @pytest.mark.anyio
+async def test_port_block_without_hints_is_partial(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls,
+                 "Модель собрана.\n\nСоединено проводов: 0 из 0")
+    xml = """<Header><project><page>
+      <object><name>`In`</name><class_name>`Порт входа`</class_name>
+        <obj_type>`103`</obj_type>
+        <ports><port><name>`x`</name><mode>`1`</mode></port></ports>
+      </object>
+    </page></project></Header>"""
+    _patch_read(monkeypatch, xml)
+    spec = {
+        "schema": "system-spec/1",
+        "blocks": [{"name": "In", "class": "Порт входа"}],
+    }
+
+    text = _text(await mcp.call_tool("build_and_verify", {"spec": spec}))
+
+    assert "Вердикт: partial" in text, text
+    assert "port_unknown" in text, text
+    assert "port_mismatch" not in text, text
+
+
+@pytest.mark.anyio
+async def test_max_items_limits_the_list(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls)
+    broken = CHAIN_XML.replace("`Усилитель`", "`Другой`").replace(
+        "`Временной график`", "`Третий`")
+    _patch_read(monkeypatch, broken)
+    text = _text(await mcp.call_tool(
+        "build_and_verify", {"spec": CHAIN_SPEC, "max_items": 1}))
+
+    assert "показано 1" in text, text
+
+
+@pytest.mark.anyio
+async def test_new_project_false_is_passed_to_build(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls)
+    _patch_read(monkeypatch, CHAIN_XML)
+
+    _text(await mcp.call_tool(
+        "build_and_verify", {"spec": CHAIN_SPEC, "new_project": False}))
+
+    assert calls[0]["new_project"] is False
+
+
+@pytest.mark.anyio
 async def test_subsystem_is_built_and_verified(monkeypatch):
     calls = []
     _patch_build(monkeypatch, calls,
