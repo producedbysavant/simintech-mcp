@@ -32,6 +32,10 @@ from ..app import mcp
 from .model_text import page_export_text
 
 MAX_MODEL_BYTES = 64 * 1024 * 1024
+#: Предел элементов в ответе query_model. Синхронен `_MAX_ITEMS` библиотеки
+#: v0.18.1: контракты добавляются после графа, и объединённый список тоже
+#: обязан остаться в контекстном бюджете.
+MAX_QUERY_ITEMS = 200
 _SOURCES = ("xprt", "model_text", "topology")
 
 
@@ -272,7 +276,9 @@ def query_model(model_ref: str, query: str,
     `descendants`, `find_path`, `find_cycles`, `check_connections`,
     `compare_models`, `validate_invariants`, `list_discrepancies`,
     `coverage`. Для `compare_models` в arguments нужен `other_ref`.
-    Ответ несёт evidence, покрытие, unknown и truncated.
+    Ответ несёт evidence, покрытие, unknown и truncated; `items` и
+    `unknown` ограничены 200 элементами. `check_connections` добавляет
+    контракты и режет объединённый список тем же пределом.
     """
     snapshot = model_store.get(model_ref)
     model_store.require_fresh(snapshot)
@@ -293,7 +299,15 @@ def query_model(model_ref: str, query: str,
         payload["evidence"]["contracts"] = report.summary()
         if report.failed:
             payload["evidence"]["status"] = "fail"
-        payload["items"].extend(report.items)
+        merged = list(payload["items"]) + list(report.items)
+        payload["items"] = merged[:MAX_QUERY_ITEMS]
+        payload["truncated"] = (
+            bool(payload.get("truncated"))
+            or len(merged) > MAX_QUERY_ITEMS)
+        graph_total = int(payload["evidence"].get(
+            "items_total", len(payload["items"])))
+        payload["evidence"]["items_total"] = graph_total + len(report.items)
+        payload["evidence"]["contract_items"] = len(report.items)
     elif query == "validate_invariants":
         result = snapshot.index.query(query, args)
         payload = result.to_dict()

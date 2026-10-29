@@ -111,7 +111,9 @@ def resource_model_ir_guide() -> str:
         "inspect_node, find_objects, trace_signal, ancestors, descendants,\n"
         "find_path, find_cycles, check_connections, compare_models,\n"
         "validate_invariants, list_discrepancies, coverage. Для\n"
-        "compare_models в arguments нужен other_ref.\n"
+        "compare_models в arguments нужен other_ref. items и unknown\n"
+        "ограничены 200 элементами, truncated называет усечение;\n"
+        "check_connections режет объединённый список после контрактов.\n"
         "\n"
         "Покрытие важнее ответа: source_status=partial, unresolved_ends,\n"
         "unknown и not_evaluated не означают пустое множество. Снимок живёт\n"
@@ -121,9 +123,10 @@ def resource_model_ir_guide() -> str:
         "\n"
         "build_and_verify(spec=SystemSpec) компилирует спецификацию до COM,\n"
         "собирает модель как ModelSpec, читает фактический .xprt и отдаёт\n"
-        "вердикт passed/partial/failed. Partial не маскируется. Снимок\n"
-        "model_ref не выдаётся: после сборки проект изменён; для запросов\n"
-        "нужен новый load_model.\n"
+        "вердикт passed/partial/failed. Partial не маскируется. Счётчики\n"
+        "полные, список пунктов ограничен 200 и называется в подсказке;\n"
+        "max_items зажимается 1..200. Снимок model_ref не выдаётся: после\n"
+        "сборки проект изменён; для запросов нужен новый load_model.\n"
     )
 
 

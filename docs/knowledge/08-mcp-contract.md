@@ -67,10 +67,13 @@
 | `mcp-model-ref-snapshot` | `model_ref`: opaque снимок в памяти (не более двух, LRU); вытесненная ссылка и устаревшая различаются, после правки проекта нужен новый `load_model` | code-confirmed | `model_store.py`; `test_model_store.py`; `test_model_ir_tools.py` |
 | `mcp-model-ir-no-xml` | `load_model` не возвращает XML, скрипты и полные значения свойств: только `model_ref`, хеши, счётчики, покрытие и первые расхождения | code-confirmed | `tools/model_ir.py`; `test_model_ir_tools.py` |
 | `mcp-model-ir-sources` | `.xprt` текущего проекта снимается SaveProjectXML без расчёта; `model_text` и `topology` идут контуром и сдвигают модельное время; файл в песочнице выбирает источник по расширению | code-confirmed | `tools/model_ir.py`; `test_model_ir_tools.py` |
+| `mcp-model-ir-query-caps` | `query_model` отдаёт не больше 200 `items` и `unknown` с `truncated`; `evidence` хранит `items_total`/`unknown_total`; `inspect_node` ограничивает вложенные `ports`/`wires` и несёт `*_total`; после контрактов объединённый список `check_connections` режется тем же пределом | code-confirmed | `tools/model_ir.py`; `test_model_ir_limits.py` |
+| `mcp-model-ir-cycles` | `find_cycles` на ациклической цепочке пуст, настоящий цикл и петля провода видны, цепочка 1200 объектов не падает `RecursionError` | code-confirmed | библиотека v0.18.1; `test_model_ir_limits.py` |
 | `mcp-format-model-mutates` | `format_model` помечен `mutates_project=True`: он двигает блоки и линии, поэтому ответ называет проект и повышает поколение снимков IR | code-confirmed | `tools/workflows.py`; `test_surface.py` |
 | `mcp-contract-checks` | `query_model(check_connections)` добавляет контракты: `fixed`/`nport` дают `evaluated`; `portnames` остаётся `not_evaluated` с причиной `portnames_instance_defined`, потому что порты задаёт PortNames экземпляра; неизмеренный контракт: `not_evaluated` с классом и причиной; `validate_invariants(contract_ports_match)` заменяет `not_evaluated` результатом реестра | code-confirmed | `contracts.py`; `tools/model_ir.py`; `test_contracts_tools.py` |
 | `mcp-contract-resource` | `simintech://blocks/contracts` отдаёт покрытие и образец unknown, `.../<класс>`: один контракт; полный дамп 2 МБ не выводится | code-confirmed | `resources.py`; `test_contracts_tools.py` |
-| `mcp-build-and-verify` | `build_and_verify` компилирует SystemSpec до COM, собирает ModelSpec и connect, читает фактический `.xprt` и возвращает `passed`/`partial`/`failed`; `partial` не маскируется; portnames без подсказок даёт `port_unknown` и `partial`; `max` и id инвариантов проверяются до сборки; `contract_ports_match` подкрепляется реестром, portnames в нём `not_evaluated`; `model_ref` не возвращается, потому что сборка помечает проект изменённым | code-confirmed | `tools/system_spec.py`; `contracts.py`; `test_build_and_verify.py`; `test_contracts_tools.py` |
+| `mcp-build-and-verify` | `build_and_verify` компилирует SystemSpec до COM, собирает ModelSpec и connect, читает фактический `.xprt` и возвращает `passed`/`partial`/`failed`; `partial` не маскируется; portnames без подсказок даёт `port_unknown` и `partial`; `max` и id инвариантов проверяются до сборки; `contract_ports_match` подкрепляется реестром, portnames в нём `not_evaluated`; счётчики полные при усечённом списке, усечение названо; `model_ref` не возвращается, потому что сборка помечает проект изменённым | code-confirmed | `tools/system_spec.py`; `contracts.py`; `test_build_and_verify.py`; `test_contracts_tools.py` |
+| `mcp-verify-report-truncated` | `build_and_verify` берёт счётчики из полного `VerificationReport.counts`, а не из усечённого `items`; `max_items` зажимается 1..200; при `report.truncated` отчёт называет усечение | code-confirmed | `tools/system_spec.py`; `test_build_and_verify.py` |
 
 ## 8. Чего контракт не обещает
 
@@ -85,3 +88,5 @@
   `filename` блока «В файл») — читаемость потом проверит `read_output_file`.
 - Ресурсы (`simintech://…`) не бросают исключений: причину отказа они
   возвращают текстом (в отличие от одноимённых инструментов).
+- Усечение ответа не означает пустоту: `truncated`, `items_total`,
+  `violations_total` и `counts` называют полные числа.

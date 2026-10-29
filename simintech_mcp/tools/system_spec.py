@@ -21,6 +21,7 @@ from simintech_api.model_ir import (
     ExpectedObject,
     ModelIR,
     SystemSpecError,
+    VerificationReport,
     compile_system_spec,
     load_default_contracts,
     verify_model,
@@ -30,7 +31,7 @@ from .. import runtime, session
 from ..app import mcp
 from ..contracts import ContractReport, check_model_contracts
 from ..specs import BlockSpec, ModelSpec, SystemSpec, WireSpec
-from .model_ir import read_model
+from .model_ir import MAX_QUERY_ITEMS, read_model
 from .workflows import build_model
 
 _CONNECTED_RE = re.compile(r"Соединено проводов:\s*(\d+)\s*из\s*(\d+)")
@@ -380,6 +381,33 @@ def _counts(items: List[dict[str, Any]]) -> Dict[str, int]:
     return result
 
 
+def _merged_counts(report: VerificationReport,
+                   contracts: Optional[ContractReport],
+                   invariants: tuple[dict[str, Any], ...],
+                   profile_items: List[dict[str, Any]]) -> Dict[str, int]:
+    """Полные счётчики отчёта с учётом контрактов и профиля.
+
+    `report.items` в v0.18.1 ограничен 200 пунктами, а `report.counts`
+    считает все проверки. Пересчёт по усечённому списку занизил бы итог.
+    Инвариант `contract_ports_match` в отчёте всегда `not_evaluated`;
+    его место занимает статус реестра.
+    """
+    counts = dict(report.counts)
+    if contracts is not None:
+        contract_count = sum(
+            1 for item in invariants
+            if item.get("kind") == "contract_ports_match")
+        if contract_count:
+            counts["not_evaluated"] = max(
+                0, counts.get("not_evaluated", 0) - contract_count)
+            status = contracts.status
+            if status in counts:
+                counts[status] += contract_count
+    for status, value in _counts(profile_items).items():
+        counts[status] = counts.get(status, 0) + value
+    return counts
+
+
 def _verdict(counts: Mapping[str, int]) -> str:
     if counts.get("failed"):
         return "failed"
@@ -400,7 +428,7 @@ def _limited(items: List[dict[str, Any]],
 def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
             items: List[dict[str, Any]], counts: Mapping[str, int],
             contracts: Optional[ContractReport], limit: int,
-            expected_wires: int) -> str:
+            expected_wires: int, verification_truncated: bool = False) -> str:
     verdict = _verdict(counts)
     connected, expected = _build_counts(build_log)
     warnings = _warnings(build_log)
@@ -432,7 +460,8 @@ def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
             f"Контракты: проверено {contracts.evaluated}, "
             f"ошибок {contracts.failed}, "
             f"не проверено {contracts.not_evaluated}")
-    shown, total = _limited(items, limit)
+    shown, _item_count = _limited(items, limit)
+    total = sum(counts.values())
     if shown:
         lines.append(
             f"Пункты проверки (всего {total}, показано {len(shown)}):")
@@ -467,6 +496,10 @@ def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
         hints.append(
             "сборка завершилась с предупреждениями; проверка показывает "
             "фактические связи.")
+    if verification_truncated:
+        hints.append(
+            "отчёт верификации усечён: items содержит не более 200 пунктов, "
+            "failed идёт первым, counts считает все; список неполон.")
     hints.append(
         "снимок IR после сборки не выдаётся: сборка помечает проект "
         "изменённым; для запросов вызовите load_model.")
@@ -508,6 +541,9 @@ def build_and_verify(spec: SystemSpec,
     несохранённых правках вызов отказывает, пока их не сохранить. Снимок
     `model_ref` не возвращается: сборка помечает проект изменённым, и
     ссылка устарела бы сразу; для запросов вызовите `load_model`.
+
+    Счётчики отчёта полные; список пунктов может быть усечён библиотекой
+    или `max_items` (1..200). Усечение называется в подсказке.
     """
     registry = load_default_contracts()
     raw = _normalized(spec, registry)
@@ -531,11 +567,15 @@ def build_and_verify(spec: SystemSpec,
         items = [dict(item) for item in report.items]
         contracts = _enrich_contracts(
             items, actual, compiled.invariants, registry)
-        items.extend(_profile_items(compiled.profile))
-        counts = _counts(items)
-        return _render(compiled, actual, build_log, items, counts, contracts,
-                       max(1, min(int(max_items), 200)),
-                       len(model_spec.wires))
+        profile_items = _profile_items(compiled.profile)
+        counts = _merged_counts(
+            report, contracts, compiled.invariants, profile_items)
+        items.extend(profile_items)
+        return _render(
+            compiled, actual, build_log, items, counts, contracts,
+            max(1, min(int(max_items), MAX_QUERY_ITEMS)),
+            len(model_spec.wires),
+            verification_truncated=report.truncated)
     except ToolError:
         raise
     except Exception as exc:                                  # noqa: BLE001

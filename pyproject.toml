@@ -99,7 +99,13 @@ dependencies = [
     # инварианты, вердикт не выдаёт partial за passed. squash-коммит main
     # 992f3bb, тег указывает на него.
     # sha: 992f3bbdbda8945712a737d1606c994934975017
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.0",
+    # v0.18.1: P5: контекст и полнота. Ответы запросов ограничены 200
+    # элементами с truncated и полными items_total/unknown_total,
+    # find_cycles не считает внутреннее ребро блока петлёй, Omitted
+    # паспорта резервирует место, VerificationReport несёт truncated при
+    # полных counts. squash-коммит main 52c335b, тег указывает на него.
+    # sha: 52c335bd7518d97b36264cbed2ba80c80600482d
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.1",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.
