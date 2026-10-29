@@ -304,6 +304,10 @@ def query_model(model_ref: str, query: str,
         payload["truncated"] = (
             bool(payload.get("truncated"))
             or len(merged) > MAX_QUERY_ITEMS)
+        graph_total = int(payload["evidence"].get(
+            "items_total", len(payload["items"])))
+        payload["evidence"]["items_total"] = graph_total + len(report.items)
+        payload["evidence"]["contract_items"] = len(report.items)
     elif query == "validate_invariants":
         result = snapshot.index.query(query, args)
         payload = result.to_dict()

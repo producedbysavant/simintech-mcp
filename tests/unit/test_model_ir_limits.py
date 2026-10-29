@@ -131,6 +131,8 @@ async def test_query_check_connections_caps_items_after_contracts(sandbox):
     assert result["truncated"] is True
     assert result["evidence"]["violations_total"] == 600
     assert result["evidence"]["contracts"]["not_evaluated"] == 300
+    assert result["evidence"]["contract_items"] == 10
+    assert result["evidence"]["items_total"] == 610
 
 
 @pytest.mark.anyio
