@@ -170,18 +170,31 @@ WIRE_TYPE_ELECTRICAL = 2
                        "idempotentHint": False, "openWorldHint": False})
 @runtime.com_threaded(mutates_project=True)
 def connect_ports(src: str, dst: str, src_port: int, dst_port: int,
-                  line_type: Optional[int] = None) -> str:
+                  line_type: Optional[int] = None,
+                  parent_wire: Optional[int] = None,
+                  directed: Optional[bool] = None) -> str:
     """Соединить произвольные порты двух блоков, включая ненаправленные.
 
     `connect` работает только с направленными портами (`get_out_port` и
     `get_in_port`). Электрические клеммы источника напряжения, инвертора и
     двигателя ненаправленные: в IR они адресуются сквозным `port:N`.
     Инструмент берёт порт по сквозному индексу (`Block.get_block_port`) и
-    создаёт линию `Page.create_wire` с нужным типом.
+    создаёт линию с нужным типом.
 
     `line_type`: 0 автоматика, 1 гидравлика, 2 электрика. Если не задан,
     берётся электрический тип при ненаправленном порте (mode 2), иначе
     автоматика.
+
+    **Ветвление.** `parent_wire` создаёт не новую линию от порта, а ветвь от
+    указанной линии к `dst_port` (`CreateWire` с `parent_line_id`,
+    `start_port=0`): так вендор соединяет `-A` и `-C` инвертора с общей шиной
+    в демо «Скорость АД». Несколько отдельных линий в один электрический узел
+    среда не принимает (`Node conflict` и AV в `AssignLinks`).
+
+    **Направленность.** У вендорских электрических проводов
+    `WireDirected=1`, у линий `CreateWire` по умолчанию `0`. Для
+    электрического типа инструмент выставляет `WireDirected=1`; `directed`
+    переопределяет это (`False` отключает).
 
     Args:
         src: имя/алиас блока-источника или его числовой id.
@@ -189,8 +202,12 @@ def connect_ports(src: str, dst: str, src_port: int, dst_port: int,
         src_port: сквозной индекс порта источника (0-based, как `port:N`).
         dst_port: сквозной индекс порта приёмника (0-based).
         line_type: тип линии `CreateWire`; `None`: по режиму портов.
+        parent_wire: id линии-родителя для ветви; `None` создаёт линию.
+        directed: `True`/`False` для `WireDirected`; `None`: включить для
+            электрических линий.
     """
-    page = session.ensure_project().get_main_page()
+    project = session.ensure_project()
+    page = project.get_main_page()
     b1 = resolve_block(page, src)
     b2 = resolve_block(page, dst)
     if b1 is None:
@@ -205,11 +222,26 @@ def connect_ports(src: str, dst: str, src_port: int, dst_port: int,
     if line_type is None:
         modes = (first.get_info().mode, second.get_info().mode)
         line_type = WIRE_TYPE_ELECTRICAL if 2 in modes else 0
-    wire = page.create_wire(first, second, wire_type=line_type)
+    if parent_wire is not None:
+        wire_id = int(project.client.call(
+            "CreateWire", project.id, 0, line_type,
+            int(parent_wire), 0, 0, second.id, 0))
+        if not wire_id:
+            raise ToolError(
+                f"Ветвь от линии {parent_wire} к {dst}[{dst_port}] не создана: "
+                f"среда вернула id=0. Проверьте id линии-родителя.")
+        wire = Wire(project, wire_id)
+        kind = "ветвь"
+    else:
+        wire = page.create_wire(first, second, wire_type=line_type)
+        kind = "линия"
+    is_electrical = line_type == WIRE_TYPE_ELECTRICAL
+    if is_electrical and directed is not False:
+        project.client.call("SetBlockProp", wire.id, "WireDirected", "1")
     return (
         f"Соединено {resolved_name(b1, src)}[{src_port}] -> "
         f"{resolved_name(b2, dst)}[{dst_port}] "
-        f"(wire={wire.id}, line_type={line_type})")
+        f"({kind}, wire={wire.id}, line_type={line_type})")
 
 
 def _disconnect_wire_body(src_id: int, out_index: int,

@@ -279,6 +279,19 @@ class _ConnectingBlock:
         return wire
 
 
+class _FakeClient:
+    """COM-клиент: записывает вызовы и отвечает на CreateWire/SetBlockProp."""
+
+    def __init__(self):
+        self.calls = []
+
+    def call(self, name, *args):
+        self.calls.append((name, args))
+        if name == "CreateWire":
+            return 777
+        return 0
+
+
 class _WireProject:
     """Проект с одной страницей — минимум для connect/layout_place.
 
@@ -293,6 +306,7 @@ class _WireProject:
         self._events = events
         self.repaints = 0
         self.id = project_id
+        self.client = _FakeClient()
 
     def get_main_page(self):
         return self.page

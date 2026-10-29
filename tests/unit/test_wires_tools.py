@@ -139,6 +139,53 @@ async def test_connect_ports_honours_explicit_line_type(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_connect_ports_marks_electrical_wire_directed(monkeypatch):
+    """Электрическая линия получает WireDirected=1, как у вендорских."""
+    src = _ConnectingBlock("udc", 1)
+    dst = _ConnectingBlock("inv", 2)
+    _install_wire_project(monkeypatch, {"udc": src, "inv": dst})
+
+    await mcp.call_tool("connect_ports", {
+        "src": "udc", "dst": "inv", "src_port": 1, "dst_port": 6})
+
+    calls = session._project.client.calls
+    assert ("SetBlockProp", (1, "WireDirected", "1")) in calls
+
+
+@pytest.mark.anyio
+async def test_connect_ports_creates_branch_with_parent(monkeypatch):
+    """parent_wire создаёт ветвь через CreateWire с id родительской линии."""
+    src = _ConnectingBlock("inv", 1)
+    dst = _ConnectingBlock("ad", 2)
+    _install_wire_project(monkeypatch, {"inv": src, "ad": dst})
+
+    text = _text(await mcp.call_tool("connect_ports", {
+        "src": "inv", "dst": "ad", "src_port": 5, "dst_port": 6,
+        "parent_wire": 42}))
+
+    assert "ветвь" in text and "wire=777" in text
+    calls = session._project.client.calls
+    create = next(args for name, args in calls if name == "CreateWire")
+    assert create[:4] == (7, 0, 2, 42), create
+    assert create[5:] == (0, "2:out:6", 0), create
+
+
+@pytest.mark.anyio
+async def test_connect_ports_can_skip_directed(monkeypatch):
+    """directed=False отключает WireDirected для электрической линии."""
+    src = _ConnectingBlock("udc", 1)
+    dst = _ConnectingBlock("inv", 2)
+    _install_wire_project(monkeypatch, {"udc": src, "inv": dst})
+
+    await mcp.call_tool("connect_ports", {
+        "src": "udc", "dst": "inv", "src_port": 1, "dst_port": 6,
+        "directed": False})
+
+    assert not any(name == "SetBlockProp"
+                   for name, _args in session._project.client.calls)
+
+
+@pytest.mark.anyio
 async def test_connect_refuses_zero_wire_id(monkeypatch):
     """Нулевой id линии — отказ, а не «Соединено … (wire=0)».
 
