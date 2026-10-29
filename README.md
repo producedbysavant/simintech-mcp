@@ -158,7 +158,9 @@ claude mcp add simintech -- simintech-mcp
 обращения к COM, собирает модель как `ModelSpec`, читает фактический `.xprt`
 и возвращает вердикт `passed`, `partial` или `failed`. `partial` означает
 `unknown` или `not_evaluated` и не выдаётся за успех; расчётные `assertions`
-без simulate остаются `not_evaluated`.
+без simulate остаются `not_evaluated`. Ответы `query_model` ограничены 200
+элементами с `truncated`, а `build_and_verify` считает полные счётчики даже
+при усечённом списке.
 
 **Размеры блоков с переменным числом входов (`nport`).** Импорт ставит такому
 блоку 32×32 при любом числе входов, и среда размер сама не пересчитывает.

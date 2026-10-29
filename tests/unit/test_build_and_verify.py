@@ -14,6 +14,7 @@ from simintech_mcp.specs import SystemSpec, render_model_text
 from simintech_mcp.tools import system_spec as tool
 
 from _support import _error, _text
+from _ir_synth import blocks_spec, wrong_ports
 
 
 CHAIN_XML = """<Header><project><page>
@@ -594,3 +595,38 @@ async def test_readback_uses_production_parser(monkeypatch):
 
     assert "Вердикт: passed" in text, text
     assert "Покрытие: ok" in text, text
+
+
+@pytest.mark.anyio
+async def test_report_truncation_names_full_counts(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls,
+                 "Модель собрана.\n\nСоединено проводов: 0 из 0")
+    _patch_read(monkeypatch, wrong_ports(300))
+
+    text = _text(await mcp.call_tool(
+        "build_and_verify", {"spec": blocks_spec(300)}))
+
+    assert "failed 300" in text, text
+    assert "всего 300" in text, text
+    assert "показано 50" in text, text
+    assert "отчёт верификации усечён" in text, text
+    assert "failed 200" not in text, text
+
+
+@pytest.mark.anyio
+async def test_max_items_is_clamped_to_one_and_two_hundred(monkeypatch):
+    calls = []
+    _patch_build(monkeypatch, calls,
+                 "Модель собрана.\n\nСоединено проводов: 0 из 0")
+    _patch_read(monkeypatch, wrong_ports(300))
+
+    low = _text(await mcp.call_tool(
+        "build_and_verify", {"spec": blocks_spec(300), "max_items": 0}))
+    high = _text(await mcp.call_tool(
+        "build_and_verify", {"spec": blocks_spec(300), "max_items": 1000}))
+
+    assert "показано 1" in low, low
+    assert "всего 300" in low, low
+    assert "показано 200" in high, high
+    assert "всего 300" in high, high
