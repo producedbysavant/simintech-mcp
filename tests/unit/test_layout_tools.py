@@ -480,9 +480,12 @@ async def test_layout_place_keeps_port_stack_over_alignment(monkeypatch):
     ports = [_PortIn("In_0", 2), _PortIn("In_1", 3), _PortIn("In_2", 4)]
     _install_wire_project(monkeypatch, {"k_0": src, "In_0": ports[0],
                                         "In_1": ports[1], "In_2": ports[2]})
+    # Три разных выхода: второй connect из того же выхода теперь отвергается,
+    # а проверяется здесь стопка порт-блоков, а не ветвление.
     for index in range(3):
         await mcp.call_tool("connect",
-                            {"src": "k_0", "dst": f"In_{index}"})
+                            {"src": "k_0", "dst": f"In_{index}",
+                             "out_index": index})
 
     text = _text(await mcp.call_tool("layout_place", {}))
 

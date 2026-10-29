@@ -53,6 +53,46 @@ async def test_connect_only_remembers_wire(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_connect_refuses_second_line_from_busy_output(monkeypatch):
+    """Второй провод из того же выхода: отказ с подсказкой connect_branch.
+
+    Среда `CreateWire` повторный вызов принимает и рисует две линии прямо из
+    порта. Принято ветвление от линии: владелец забраковал такой вид на
+    живом узле `Mem` (29.10.2026), поэтому второй `connect` отвергается.
+    """
+    src = _ConnectingBlock("ad", 1)
+    first = _ConnectingBlock("sum", 2)
+    second = _ConnectingBlock("scope", 3)
+    _install_wire_project(monkeypatch, {"ad": src, "sum": first,
+                                        "scope": second})
+
+    await mcp.call_tool("connect", {"src": "ad", "dst": "sum"})
+    text = await _error("connect", {"src": "ad", "dst": "scope"})
+
+    assert "connect_branch" in text
+    assert "уже соединён" in text
+    assert len(src.wires) == 1, "вторая линия из порта всё же создана"
+
+
+@pytest.mark.anyio
+async def test_connect_allows_another_output_of_the_same_block(monkeypatch):
+    """Другой выход того же блока: отдельная линия, отказа нет."""
+    src = _ConnectingBlock("ad", 1)
+    first = _ConnectingBlock("sum", 2)
+    second = _ConnectingBlock("scope", 3)
+    _install_wire_project(monkeypatch, {"ad": src, "sum": first,
+                                        "scope": second})
+
+    await mcp.call_tool("connect",
+                        {"src": "ad", "dst": "sum", "out_index": 0})
+    text = _text(await mcp.call_tool(
+        "connect", {"src": "ad", "dst": "scope", "out_index": 1}))
+
+    assert "Соединено" in text
+    assert len(src.wires) == 2
+
+
+@pytest.mark.anyio
 async def test_connect_refuses_zero_wire_id(monkeypatch):
     """Нулевой id линии — отказ, а не «Соединено … (wire=0)».
 
