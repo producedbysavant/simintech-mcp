@@ -94,7 +94,7 @@ async def test_connect_allows_another_output_of_the_same_block(monkeypatch):
 
 @pytest.mark.anyio
 async def test_connect_ports_selects_electrical_type_for_undirected(monkeypatch):
-    """Ненаправленные клеммы получают электрический тип линии (2)."""
+    """Ненаправленные клеммы получают электрический тип линии (3)."""
     src = _ConnectingBlock("udc", 1)
     dst = _ConnectingBlock("inv", 2)
     _install_wire_project(monkeypatch, {"udc": src, "inv": dst})
@@ -102,9 +102,9 @@ async def test_connect_ports_selects_electrical_type_for_undirected(monkeypatch)
     text = _text(await mcp.call_tool("connect_ports", {
         "src": "udc", "dst": "inv", "src_port": 1, "dst_port": 6}))
 
-    assert "line_type=2" in text
+    assert "line_type=3" in text
     created = session._project.page.created_wires[-1]
-    assert created[2] == 2, "клеммы соединены не электрической линией"
+    assert created[2] == 3, "клеммы соединены не электрической линией"
 
 
 @pytest.mark.anyio
@@ -166,7 +166,7 @@ async def test_connect_ports_creates_branch_with_parent(monkeypatch):
     assert "ветвь" in text and "wire=777" in text
     calls = session._project.client.calls
     create = next(args for name, args in calls if name == "CreateWire")
-    assert create[:4] == (7, 0, 2, 42), create
+    assert create[:4] == (7, 0, 3, 42), create
     assert create[5:] == (0, "2:out:6", 0), create
 
 
