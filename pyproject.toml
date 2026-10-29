@@ -114,7 +114,12 @@ dependencies = [
     # query называет недостающий аргумент через ModelQueryError.
     # squash-коммит main 47e8482, тег указывает на него.
     # sha: 47e8482c7745483487d9a7589d5d11909f24a6e1
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.3",
+    # v0.18.4: сверка проводов считает направленные номера только по OUT/IN;
+    # undirected порты двигателя (a-, a+, f-, f+) не сдвигают Tm и ω, как и
+    # в connect. Живой электропривод больше не даёт ложный wire_missing.
+    # squash-коммит main a134098, тег указывает на него.
+    # sha: a1340985f1ec44bf47384b4e289af713ec31ad4b
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.4",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.
