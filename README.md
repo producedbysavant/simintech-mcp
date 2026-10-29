@@ -127,7 +127,7 @@ claude mcp add simintech -- simintech-mcp
 | Проекты | `create_project`, `open_project`, `reload_project`, `save_project`, `close_project`, `set_calc_time` |
 | Пакет проектов | `create_pack`, `open_pack`, `close_pack`, `list_pack_projects`, `select_pack_project`, `pack_run`, `pack_step`, `pack_stop` |
 | Настройки проекта | `get_project_config`, `set_project_config` |
-| Блоки и связи | `add_block`, `remove_block`, `connect`, `connect_branch`, `disconnect_wire`, `list_blocks`, `list_wires` |
+| Блоки и связи | `add_block`, `remove_block`, `connect`, `connect_branch`, `connect_ports`, `disconnect_wire`, `list_blocks`, `list_wires` |
 | Параметры | `get_block_params`, `set_block_param`, `set_block_size`, `fit_port_blocks`, `fit_value_labels` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
@@ -142,9 +142,9 @@ claude mcp add simintech -- simintech-mcp
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 | Композиты | `doctor`, `build_model`, `build_and_verify`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 69. Видимое ядро в `tools/list`; полный каталог в
+Всего инструментов: 70. Видимое ядро в `tools/list`; полный каталог в
 `simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
-возвращает все 69.
+возвращает все 70.
 
 `build_model(spec=...)` принимает Pydantic `ModelSpec`: блоки и субмодели
 импортируются текстом, верхнеуровневые провода создаются `connect` по

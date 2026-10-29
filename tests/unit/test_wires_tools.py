@@ -93,6 +93,52 @@ async def test_connect_allows_another_output_of_the_same_block(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_connect_ports_selects_electrical_type_for_undirected(monkeypatch):
+    """Ненаправленные клеммы получают электрический тип линии (2)."""
+    src = _ConnectingBlock("udc", 1)
+    dst = _ConnectingBlock("inv", 2)
+    _install_wire_project(monkeypatch, {"udc": src, "inv": dst})
+
+    text = _text(await mcp.call_tool("connect_ports", {
+        "src": "udc", "dst": "inv", "src_port": 1, "dst_port": 6}))
+
+    assert "line_type=2" in text
+    created = session._project.page.created_wires[-1]
+    assert created[2] == 2, "клеммы соединены не электрической линией"
+
+
+@pytest.mark.anyio
+async def test_connect_ports_uses_automatics_for_directed_ports(monkeypatch):
+    """Направленные порты без явного типа остаются автоматикой (0)."""
+    src = _ConnectingBlock("k_0", 1)
+    dst = _ConnectingBlock("Integrator_0", 2)
+    src.port_mode = 1
+    dst.port_mode = 0
+    _install_wire_project(monkeypatch, {"k_0": src, "Integrator_0": dst})
+
+    text = _text(await mcp.call_tool("connect_ports", {
+        "src": "k_0", "dst": "Integrator_0",
+        "src_port": 0, "dst_port": 0}))
+
+    assert "line_type=0" in text
+
+
+@pytest.mark.anyio
+async def test_connect_ports_honours_explicit_line_type(monkeypatch):
+    """Явный тип линии не переопределяется режимом портов."""
+    src = _ConnectingBlock("udc", 1)
+    dst = _ConnectingBlock("inv", 2)
+    _install_wire_project(monkeypatch, {"udc": src, "inv": dst})
+
+    text = _text(await mcp.call_tool("connect_ports", {
+        "src": "udc", "dst": "inv", "src_port": 1, "dst_port": 6,
+        "line_type": 1}))
+
+    assert "line_type=1" in text
+    assert session._project.page.created_wires[-1][2] == 1
+
+
+@pytest.mark.anyio
 async def test_connect_refuses_zero_wire_id(monkeypatch):
     """Нулевой id линии — отказ, а не «Соединено … (wire=0)».
 

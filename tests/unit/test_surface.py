@@ -73,7 +73,7 @@ def _denied_names(text: str) -> set[str]:
 #: пропавший флаг вернёт слепые ответы (issue #18 — импорт ушёл не в тот
 #: проект), лишний — соврёт о правке у инструмента чтения.
 _MUTATING_TOOLS = {
-    "add_block", "remove_block", "connect", "connect_branch",
+    "add_block", "remove_block", "connect", "connect_branch", "connect_ports",
     "disconnect_wire",
     "set_block_param", "fit_port_blocks", "fit_value_labels",
     "set_block_size", "set_block_script", "layout_place", "fit_view",
@@ -185,6 +185,7 @@ async def test_all_tools_registered():
         "select_pack_project", "pack_run", "pack_step", "pack_stop",
         "get_project_config", "set_project_config",
         "add_block", "remove_block", "connect", "connect_branch",
+        "connect_ports",
         "disconnect_wire", "list_blocks", "list_wires",
         "get_block_params", "set_block_param", "set_block_size",
         "fit_port_blocks", "fit_value_labels",

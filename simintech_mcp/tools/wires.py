@@ -159,6 +159,59 @@ def connect(src: str, dst: str,
     return f"Соединено {src_name} -> {dst_name} (wire={wire.id})"
 
 
+#: Тип линии «Электрика» для `CreateWire`. В библиотеке объявлены только
+#: автоматика (0) и гидравлика (1); электрический тип проверяется живым
+#: замером на трёхфазной цепи инвертора и двигателя.
+WIRE_TYPE_ELECTRICAL = 2
+
+
+@mcp.tool(title="Соединить порты, включая электрические",
+          annotations={"readOnlyHint": False, "destructiveHint": False,
+                       "idempotentHint": False, "openWorldHint": False})
+@runtime.com_threaded(mutates_project=True)
+def connect_ports(src: str, dst: str, src_port: int, dst_port: int,
+                  line_type: Optional[int] = None) -> str:
+    """Соединить произвольные порты двух блоков, включая ненаправленные.
+
+    `connect` работает только с направленными портами (`get_out_port` и
+    `get_in_port`). Электрические клеммы источника напряжения, инвертора и
+    двигателя ненаправленные: в IR они адресуются сквозным `port:N`.
+    Инструмент берёт порт по сквозному индексу (`Block.get_block_port`) и
+    создаёт линию `Page.create_wire` с нужным типом.
+
+    `line_type`: 0 автоматика, 1 гидравлика, 2 электрика. Если не задан,
+    берётся электрический тип при ненаправленном порте (mode 2), иначе
+    автоматика.
+
+    Args:
+        src: имя/алиас блока-источника или его числовой id.
+        dst: имя/алиас блока-приёмника или его числовой id.
+        src_port: сквозной индекс порта источника (0-based, как `port:N`).
+        dst_port: сквозной индекс порта приёмника (0-based).
+        line_type: тип линии `CreateWire`; `None`: по режиму портов.
+    """
+    page = session.ensure_project().get_main_page()
+    b1 = resolve_block(page, src)
+    b2 = resolve_block(page, dst)
+    if b1 is None:
+        return missing_block(src)
+    if b2 is None:
+        return missing_block(dst)
+    try:
+        first = b1.get_block_port(src_port)
+        second = b2.get_block_port(dst_port)
+    except PortError as exc:
+        raise ToolError(str(exc)) from exc
+    if line_type is None:
+        modes = (first.get_info().mode, second.get_info().mode)
+        line_type = WIRE_TYPE_ELECTRICAL if 2 in modes else 0
+    wire = page.create_wire(first, second, wire_type=line_type)
+    return (
+        f"Соединено {resolved_name(b1, src)}[{src_port}] -> "
+        f"{resolved_name(b2, dst)}[{dst_port}] "
+        f"(wire={wire.id}, line_type={line_type})")
+
+
 def _disconnect_wire_body(src_id: int, out_index: int,
                           dst_id: int, in_index: int) -> str:
     """Тело снятия линии для контура — форма, проверенная живым прогоном.
