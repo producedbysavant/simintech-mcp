@@ -498,8 +498,8 @@ def _render(compiled: CompiledSpec, actual: ModelIR, build_log: str,
             "фактические связи.")
     if verification_truncated:
         hints.append(
-            "отчёт верификации усечён: items содержит первые 200 пунктов, "
-            "counts считает все; список неполон.")
+            "отчёт верификации усечён: items содержит не более 200 пунктов, "
+            "failed идёт первым, counts считает все; список неполон.")
     hints.append(
         "снимок IR после сборки не выдаётся: сборка помечает проект "
         "изменённым; для запросов вызовите load_model.")
