@@ -73,7 +73,7 @@ CHAIN_SPEC = {
     ],
     "wires": [
         {"src": "Step:out:0", "dst": "Gain:in:0"},
-        {"src": "Gain:out:1", "dst": "Graph:in:0"},
+        {"src": "Gain:out:0", "dst": "Graph:in:0"},
     ],
 }
 
@@ -151,7 +151,7 @@ SUBMODEL_SPEC = {
             ],
             "wires": [
                 {"src": "In:out:0", "dst": "K:in:0"},
-                {"src": "K:out:1", "dst": "Out:in:0"},
+                {"src": "K:out:0", "dst": "Out:in:0"},
             ],
         },
     }],
@@ -212,14 +212,14 @@ async def test_missing_wire_fails_and_warning_is_kept(monkeypatch):
     _patch_build(
         monkeypatch, calls,
         "Модель собрана.\n\nСоединено проводов: 1 из 2\n\n"
-        "WARNING: провод Gain:out:1 -> Graph:in:0: порт занят")
+        "WARNING: провод Gain:out:0 -> Graph:in:0: порт занят")
     _patch_read(monkeypatch, CHAIN_XML.replace(W2_XML, ""))
 
     text = _text(await mcp.call_tool("build_and_verify", {"spec": CHAIN_SPEC}))
 
     assert "Вердикт: failed" in text, text
     assert "wire_missing" in text, text
-    assert "WARNING: провод Gain:out:1 -> Graph:in:0: порт занят" in text
+    assert "WARNING: провод Gain:out:0 -> Graph:in:0: порт занят" in text
 
 
 @pytest.mark.anyio
