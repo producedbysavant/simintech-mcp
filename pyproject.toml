@@ -109,7 +109,12 @@ dependencies = [
     # как у connect; verify_model переводит сквозной port.index IR в этот
     # номер. squash-коммит main f4171c3, тег указывает на него.
     # sha: f4171c3d3b4552a6757e9f643d540f81a6240a63
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.2",
+    # v0.18.3: живая приёмка P5/C4. Секция Contracts паспорта берёт реестр
+    # C4 вместо заглушки; trace_signal both объединяет проходы без дублей;
+    # query называет недостающий аргумент через ModelQueryError.
+    # squash-коммит main 47e8482, тег указывает на него.
+    # sha: 47e8482c7745483487d9a7589d5d11909f24a6e1
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.3",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.
