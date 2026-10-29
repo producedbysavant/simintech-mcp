@@ -54,11 +54,24 @@ def _source_from_path(path: str) -> str:
 
 @runtime.com_threaded
 def _project_xprt_path() -> str:
-    """Выгрузить текущий проект в `.xprt`; расчёт не запускается."""
+    """Выгрузить текущий проект в `.xprt`; расчёт не запускается.
+
+    Перед `SaveProjectXML` нужны те же два шага, что у `save_project`:
+    чтение состояния и показ формы. Без них живой прогон 29.10.2026 терял
+    COM на пустом и на открытом проекте: mmain не отвечал, сессия
+    сбрасывалась. Файловый путь `load_model(path=...)` работал.
+    """
     project = session.ensure_project()
     root = tempfile.mkdtemp(prefix="simintech-ir-")
     path = Path(root) / "project.xprt"
     try:
+        state = project.simulation().get_state()
+        if state != 0:
+            raise ToolError(
+                f"снимок IR отложен: проект не в остановленном состоянии "
+                f"(состояние {state}). Остановите расчёт (`stop`) и "
+                f"повторите; файл не создан.")
+        project.show_form()
         project.save_xml(str(path))
     except Exception:
         shutil.rmtree(root, ignore_errors=True)
