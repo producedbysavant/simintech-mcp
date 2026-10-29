@@ -26,6 +26,8 @@ mcp = FastMCP(
         "Управление SimInTech через COM API (Windows, mmain.exe /regserver). "
         "Начните с doctor. Сборка: build_model(spec=...) с ModelSpec; "
         "верхнеуровневые провода создаются connect, не текстом. "
+        "Один выход и одна линия: второй приёмник от того же выхода "
+        "подключается connect_branch, повторный connect отвергается. "
         "Обзор: inspect_model; расчёт: simulate; оформление: format_model. "
         "Полная сборка с проверкой: build_and_verify(spec=SystemSpec); "
         "ответ несёт вердикт, partial не маскируется. "
