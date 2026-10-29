@@ -53,6 +53,18 @@ def _source_from_path(path: str) -> str:
 
 
 @runtime.com_threaded
+def _current_project_id() -> int:
+    """Id текущего проекта; COM-проверка только в COM-потоке.
+
+    `_models` раньше звал `session.ensure_project()` прямо в workflow-потоке.
+    Живой прогон 29.10.2026 показал, что пробный COM-вызов оттуда терял
+    сессию ещё до снимка: ошибка «mmain.exe не отвечает» приходила из
+    `ensure_project`, а не из `SaveProjectXML`.
+    """
+    return session.ensure_project().id
+
+
+@runtime.com_threaded
 def _project_xprt_path() -> str:
     """Выгрузить текущий проект в `.xprt`; расчёт не запускается.
 
@@ -140,7 +152,7 @@ def read_model(path: str, sources: List[str],
                                         source_name=name),
                 strict=strict)
         return built, False, None
-    project = session.ensure_project()
+    project_id = _current_project_id()
     xprt: Optional[ModelIR] = None
     text: Optional[ModelIR] = None
     topology: Optional[ModelIR] = None
@@ -156,7 +168,7 @@ def read_model(path: str, sources: List[str],
         topology = topology_to_ir(_topology_source(), source_name="topology")
     built = build_model_ir(xprt=xprt, text=text, topology=topology,
                            strict=strict)
-    return built, True, project.id
+    return built, True, project_id
 
 
 def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
