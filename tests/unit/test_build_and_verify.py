@@ -288,6 +288,7 @@ async def test_contract_ports_match_uses_registry(monkeypatch):
     text = _text(await mcp.call_tool("build_and_verify", {"spec": spec}))
 
     assert "Вердикт: passed" in text, text
+    assert "Проверки: passed 1, failed 0, not_evaluated 0, unknown 0" in text
     assert "Контракты: проверено 1, ошибок 0, не проверено 0" in text, text
     assert "[passed] ports (invariant)" in text, text
 
@@ -527,6 +528,7 @@ async def test_unsupported_profile_is_not_passed(monkeypatch):
     text = _text(await mcp.call_tool("build_and_verify", {"spec": spec}))
 
     assert "Вердикт: partial" in text, text
+    assert "not_evaluated 2" in text, text
     assert "model_text" in text and "simulate" in text, text
 
 
