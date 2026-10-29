@@ -49,8 +49,19 @@ conn\tK\t0\tG\t0
 """
 
 
+class _FakeSimulation:
+    def get_state(self) -> int:
+        return 0
+
+
 class _FakeProject:
     id = 7
+
+    def simulation(self) -> _FakeSimulation:
+        return _FakeSimulation()
+
+    def show_form(self) -> None:
+        return None
 
     def save_xml(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as handle:
@@ -116,6 +127,48 @@ async def test_current_project_becomes_stale_after_mutation(monkeypatch):
                         {"model_ref": ref, "query": "coverage"})
     assert "устарел" in text
     session.clear_unsaved()
+
+
+@pytest.mark.anyio
+async def test_current_project_snapshot_shows_form_before_save(monkeypatch):
+    calls = []
+
+    class Simulation:
+        def get_state(self) -> int:
+            calls.append("state")
+            return 0
+
+    class Project(_FakeProject):
+        def simulation(self) -> Simulation:
+            return Simulation()
+
+        def show_form(self) -> None:
+            calls.append("show")
+
+        def save_xml(self, path: str) -> None:
+            calls.append("save")
+            super().save_xml(path)
+
+    monkeypatch.setattr(session, "ensure_project", lambda: Project())
+    _text(await mcp.call_tool(
+        "load_model", {"path": "", "sources": ["xprt"]}))
+
+    assert calls == ["state", "show", "save"]
+
+
+@pytest.mark.anyio
+async def test_current_project_snapshot_refuses_running(monkeypatch):
+    class Simulation:
+        def get_state(self) -> int:
+            return 3
+
+    class Project(_FakeProject):
+        def simulation(self) -> Simulation:
+            return Simulation()
+
+    monkeypatch.setattr(session, "ensure_project", lambda: Project())
+    text = await _error("load_model", {"path": "", "sources": ["xprt"]})
+    assert "не в остановленном состоянии" in text
 
 
 @pytest.mark.anyio

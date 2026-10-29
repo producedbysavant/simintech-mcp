@@ -585,8 +585,18 @@ async def test_readback_uses_production_parser(monkeypatch):
     calls = []
     _patch_build(monkeypatch, calls)
 
+    class FakeSimulation:
+        def get_state(self) -> int:
+            return 0
+
     class FakeProject:
         id = 7
+
+        def simulation(self) -> FakeSimulation:
+            return FakeSimulation()
+
+        def show_form(self) -> None:
+            return None
 
         def save_xml(self, path: str) -> None:
             Path(path).write_text(CHAIN_XML, encoding="utf-8")
