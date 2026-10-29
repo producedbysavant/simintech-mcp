@@ -6,6 +6,7 @@ import io
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 from fastmcp.exceptions import ToolError
@@ -193,13 +194,25 @@ class _FakeWire:
         return self
 
 
+class _FakePortInfo(NamedTuple):
+    """Часть `PortInfo`: для выбора типа линии нужен режим порта."""
+
+    mode: int
+
+
 class _FakePort:
     """Порт с координатами: по ним считается выравнивание блоков."""
 
-    def __init__(self, block, is_output, index):
+    def __init__(self, block, is_output, index, mode=None):
         self._block = block
         self._is_output = is_output
         self._index = index
+        #: 0 вход, 1 выход, 2 ненаправленный (электрическая клемма).
+        self.mode = (1 if is_output else 0) if mode is None else mode
+        self.id = f"{block.id}:{'out' if is_output else 'in'}:{index}"
+
+    def get_info(self):
+        return _FakePortInfo(mode=self.mode)
 
     def get_coords(self):
         cx, cy = self._block.center or (0.0, 0.0)
@@ -231,6 +244,12 @@ class _ConnectingBlock:
 
     def get_in_port(self, index=0):
         return _FakePort(self, False, index)
+
+    #: Режим порта для `get_block_port`: 2 это электрическая клемма.
+    port_mode = 2
+
+    def get_block_port(self, index=0):
+        return _FakePort(self, True, index, mode=self.port_mode)
 
     @property
     def id(self):
@@ -362,6 +381,8 @@ class _FakePage:
         #: Сколько раз страницу делали текущей (`SetCurrentPage`): по счётчику
         #: проверяется, что обход субмоделей возвращает активной главную.
         self.activations = 0
+        #: Вызовы `Page.create_wire`: (старт, финиш, тип линии, линия).
+        self.created_wires = []
 
     def activate(self):
         """Сделать страницу текущей — подделка считает вызовы."""
@@ -386,6 +407,12 @@ class _FakePage:
         block = _RenamingBlock(class_name)
         self._created.append(block)
         return block
+
+    def create_wire(self, start_port, end_port, points=None, *,
+                    wire_type=0, layer_no=0):
+        wire = _FakeWire(len(self.created_wires) + 1)
+        self.created_wires.append((start_port, end_port, wire_type, wire))
+        return wire
 
 
 class _RenamingBlock:

@@ -23,7 +23,7 @@ async def test_visible_surface_is_core_plus_search():
 @pytest.mark.anyio
 async def test_catalog_still_has_all_tools():
     tools = await surface.catalog_tools(mcp)
-    assert len(tools) == 69
+    assert len(tools) == 70
 
 
 @pytest.mark.anyio
