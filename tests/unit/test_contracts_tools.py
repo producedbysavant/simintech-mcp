@@ -121,3 +121,89 @@ def test_contract_resources_are_compact():
     assert "constraint nport-input-count" in contract
     assert "property nport" in contract
     assert len(contract) < 4000
+
+
+SUM = """<Header><project><page>
+  <object>
+    <name>`S`</name>
+    <class_name>`Сумматор`</class_name>
+    <obj_type>`100`</obj_type>
+    <custom_props>
+      <data><name>`a`</name><value>`[1 , -1]`</value></data>
+    </custom_props>
+    <ports>
+      <port><name>` `</name><mode>`1`</mode></port>
+      <port><name>`+`</name><mode>`0`</mode></port>
+      <port><name>`−`</name><mode>`0`</mode></port>
+    </ports>
+  </object>
+</page></project></Header>"""
+
+DELAY = """<Header><project><page>
+  <object>
+    <name>`D`</name>
+    <class_name>`Задержка по включению`</class_name>
+    <obj_type>`100`</obj_type>
+    <custom_props>
+      <data><name>`addport`</name><value>`1`</value></data>
+    </custom_props>
+    <ports>
+      <port><name>`outport`</name><mode>`1`</mode></port>
+      <port><name>`inport`</name><mode>`0`</mode></port>
+      <port><name>`T1`</name><mode>`0`</mode></port>
+    </ports>
+  </object>
+</page></project></Header>"""
+
+INVERTER = """<Header><project><page>
+  <object>
+    <name>`N`</name>
+    <class_name>`Оператор НЕ`</class_name>
+    <obj_type>`100`</obj_type>
+    <ports>
+      <port><name>`outport`</name><mode>`1`</mode></port>
+      <port><name>`U`</name><mode>`0`</mode></port>
+    </ports>
+  </object>
+</page></project></Header>"""
+
+
+def test_contracts_sum_weights_drive_names():
+    """Имена входов «Сумматора» считаются по весам, а не по образцу реестра."""
+    report = check_model_contracts(parse_xprt(SUM))
+    assert report.status == "passed"
+
+    broken = check_model_contracts(parse_xprt(
+        SUM.replace("[1 , -1]", "[1 , 1]")))
+    assert broken.status == "failed"
+    assert "имя '−' против '+'" in broken.items[0]["detail"]
+
+
+def test_contracts_optional_port_follows_addport():
+    """T1 у задержки ожидается только при включённом addport."""
+    assert check_model_contracts(parse_xprt(DELAY)).status == "passed"
+
+    # addport нет, а второй вход есть: счётчик расходится с контрактом
+    without = DELAY.replace("<value>`1`</value>", "<value>`0`</value>")
+    report = check_model_contracts(parse_xprt(without))
+    assert report.status == "failed"
+    assert "входов 2 против 1" in report.items[0]["detail"]
+
+
+def test_contracts_skip_instance_defined_names():
+    """Имя порта, заданное экземпляром, не повод для отказа.
+
+    Реестр знает `inport`, живая модель 29.10.2026 дала `U`
+    (simintech-code#89): классы с `name_status: instance_defined` сверяются
+    по счётчикам и направлениям, а имена пропускаются.
+    """
+    report = check_model_contracts(parse_xprt(INVERTER))
+    assert report.status == "passed"
+    assert report.passed == 1
+
+    from simintech_api.model_ir import load_default_contracts
+    from simintech_mcp.contracts import _compare
+
+    model = parse_xprt(INVERTER)
+    item = _compare(model.objects[0], load_default_contracts())
+    assert "имена задаёт экземпляр" in item["detail"]

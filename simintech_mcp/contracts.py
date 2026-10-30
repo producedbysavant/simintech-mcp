@@ -1,8 +1,10 @@
 """Контрактные проверки Model IR: порты класса против реестра.
 
 Проверка не подменяет `unknown` на `passed`: неизмеренный контракт даёт
-`not_evaluated` с классом и причиной. Для `fixed` проверяются счётчики,
-направления и имена; для `nport` и `portnames` — счётчики направлений.
+`not_evaluated` с классом и причиной. Для `fixed` и `weights` проверяются
+счётчики, направления и имена (у `name_status: instance_defined` имена
+пропускаются: их задаёт экземпляр); для `nport` и `portnames` — счётчики
+направлений.
 """
 
 from __future__ import annotations
@@ -111,10 +113,15 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
             "contract_ports_mismatch", "failed", obj,
             f"входов {len(actual_in)} против {len(expected_in)}, "
             f"выходов {len(actual_out)} против {len(expected_out)}")
-    if expected.model == "fixed":
+    if expected.model in ("fixed", "weights"):
+        # Имена проверяются, только когда контракт их обещает: у классов с
+        # `name_status: instance_defined` имя задаёт сам экземпляр (в корпусе
+        # `inport`, в живой модели `U`), и корпусное имя не эталон
+        # (simintech-code#89).
+        check_names = expected.name_status != "instance_defined"
         for actual, wanted in zip(actual_in + actual_out,
                                   expected_in + expected_out):
-            if (wanted.name and actual.name
+            if (check_names and wanted.name and actual.name
                     and actual.name != wanted.name):
                 return _item(
                     "contract_ports_mismatch", "failed", obj,
@@ -125,8 +132,10 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
                     "contract_ports_mismatch", "failed", obj,
                     f"порт {actual.index}: направление "
                     f"{actual.direction.value} против {wanted.direction.value}")
-    return _item("contract_ports_match", "passed", obj,
-                 f"портов: {len(actual_in)} входов, {len(actual_out)} выходов")
+    detail = (f"портов: {len(actual_in)} входов, {len(actual_out)} выходов")
+    if expected.name_status == "instance_defined":
+        detail += "; имена задаёт экземпляр"
+    return _item("contract_ports_match", "passed", obj, detail)
 
 
 def check_model_contracts(
