@@ -179,21 +179,41 @@ def _root_container(model: ModelIR) -> Container:
 
 
 def _read_prt(path: str) -> Tuple[ModelIR, List[str]]:
-    """Открыть `.prt` средой, снять XML и вернуть IR; проект закрыть.
+    """Открыть `.prt` средой, снять XML и вернуть IR.
 
-    Текущий проект сессии не меняется: файл открывается отдельным
-    `Project` и закрывается здесь же. Активная страница прежнего проекта
-    восстанавливается (`SetCurrentPage`), иначе среда осталась бы на
-    странице закрытого проекта.
+    Среда держит один проект за раз: `OpenProject` заменяет текущий, и
+    после чтения прежний проект переоткрывается из своего файла (id
+    меняется, снимок IR устаревает). Поэтому:
+
+    * при несохранённых правках инструмент отказывает **до** COM -
+      переоткрытие отбросило бы их;
+    * проект, созданный из шаблона, не имеет файла для переоткрытия -
+      отказ до COM;
+    * если среда оставила прежний проект живым, он не переоткрывается:
+      возвращается его активная страница (`SetCurrentPage`).
+
+    Оба исхода названы в `warnings`: о потере снимка IR нельзя молчать.
     """
-    client = session.ensure_client()
     previous = session.current_project()
+    previous_path = session.opened_from()
     previous_page: Optional[Any] = None
     if previous is not None:
+        if session.unsaved_changes():
+            raise ToolError(
+                "в текущем проекте есть несохранённые правки: просмотр "
+                "`.prt` открывает другой проект, и правки были бы "
+                "отброшены. Сохраните проект (`save_project`) или "
+                "откатите их (`reload_project`) и повторите.")
+        if not previous_path:
+            raise ToolError(
+                "текущий проект создан из шаблона и не имеет файла: "
+                "после просмотра `.prt` вернуть его было бы нечем. "
+                "Сохраните проект (`save_project`) и откройте из файла.")
         try:
             previous_page = previous.get_current_page()
         except Exception:                                      # noqa: BLE001
             previous_page = None
+    client = session.ensure_client()
     root = tempfile.mkdtemp(prefix="simintech-submodel-")
     xml = os.path.join(root, "submodel.xprt")
     opened: Optional[Project] = None
@@ -211,14 +231,46 @@ def _read_prt(path: str) -> Tuple[ModelIR, List[str]]:
                 warnings.append(
                     f"открытый для просмотра проект закрыть не удалось "
                     f"({type(exc).__name__}: {exc})")
-        if previous_page is not None and previous_page.id:
-            try:
-                previous_page.activate()
-            except Exception as exc:                           # noqa: BLE001
-                warnings.append(
-                    f"вернуть страницу текущего проекта не удалось "
-                    f"({type(exc).__name__}: {exc})")
+        if previous is not None:
+            if _project_alive(previous):
+                if previous_page is not None and previous_page.id:
+                    try:
+                        previous_page.activate()
+                    except Exception as exc:                   # noqa: BLE001
+                        warnings.append(
+                            f"вернуть страницу текущего проекта не удалось "
+                            f"({type(exc).__name__}: {exc})")
+            elif previous_path:
+                try:
+                    restored = Project.open(client, previous_path)
+                except Exception as exc:                       # noqa: BLE001
+                    session.set_project(None)
+                    warnings.append(
+                        f"текущий проект закрыт средой и восстановить его "
+                        f"из «{os.path.basename(previous_path)}» не удалось "
+                        f"({type(exc).__name__}: {exc}); откройте проект "
+                        f"заново (`open_project`), снимок IR недействителен")
+                else:
+                    session.set_project(restored, previous_path)
+                    warnings.append(
+                        f"текущий проект переоткрыт из "
+                        f"«{os.path.basename(previous_path)}»: id сменился, "
+                        f"снимок IR устарел - загрузите модель снова "
+                        f"(`load_model`)")
     return model, warnings
+
+
+def _project_alive(project: Project) -> bool:
+    """Отвечает ли проект среды после открытия другого файла.
+
+    `GetCurentPage` - самый дешёвый вызов проекта: закрытый проект
+    отвечает ошибкой COM, живой - id страницы (0, если страницы нет).
+    """
+    try:
+        project.get_current_page()
+    except Exception:                                          # noqa: BLE001
+        return False
+    return True
 
 
 def _read_file(path: str) -> Tuple[ModelIR, List[str]]:

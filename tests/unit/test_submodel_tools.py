@@ -187,3 +187,49 @@ async def test_inspect_file_requires_absolute_path(tmp_path):
     with pytest.raises(Exception) as exc:
         await mcp.call_tool("inspect_submodel", {"path": "sub.xprt"})
     assert "абсолютный" in str(exc.value)
+
+
+def _external_with_file(tmp_path, monkeypatch):
+    """Внешняя субмодель, чей файл существует в подставной поставке."""
+    target = tmp_path / "bin" / "include_mvtu" / "ecd" / "ist" / "x.prt"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"prt")
+    monkeypatch.setenv("SIMINTECH_PATH", str(tmp_path))
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "m.xprt").write_text(EXTERNAL, encoding="utf-8")
+
+
+@pytest.mark.anyio
+async def test_library_view_refuses_when_unsaved(monkeypatch, tmp_path):
+    """Несохранённые правки: отказ до COM, переоткрытие их не отбросит."""
+    from simintech_mcp import session
+
+    _external_with_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(session, "current_project", lambda: object())
+    monkeypatch.setattr(session, "unsaved_changes", lambda: True)
+    loaded = json.loads(_text(await mcp.call_tool(
+        "load_model", {"path": "m.xprt"})))
+    with pytest.raises(Exception) as exc:
+        await mcp.call_tool(
+            "inspect_submodel",
+            {"model_ref": loaded["model_ref"], "address": "main::U"})
+    assert "несохранённые правки" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_library_view_refuses_for_template_project(
+        monkeypatch, tmp_path):
+    """Проект из шаблона не из файла: вернуть его после просмотра нечем."""
+    from simintech_mcp import session
+
+    _external_with_file(tmp_path, monkeypatch)
+    monkeypatch.setattr(session, "current_project", lambda: object())
+    monkeypatch.setattr(session, "unsaved_changes", lambda: False)
+    monkeypatch.setattr(session, "opened_from", lambda: None)
+    loaded = json.loads(_text(await mcp.call_tool(
+        "load_model", {"path": "m.xprt"})))
+    with pytest.raises(Exception) as exc:
+        await mcp.call_tool(
+            "inspect_submodel",
+            {"model_ref": loaded["model_ref"], "address": "main::U"})
+    assert "из шаблона" in str(exc.value)
