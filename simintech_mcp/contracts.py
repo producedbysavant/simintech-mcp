@@ -66,6 +66,19 @@ def _directions(obj: ModelObject) -> tuple[list[Any], list[Any]]:
     )
 
 
+def _same_port_name(actual: str, wanted: str) -> bool:
+    """Имена портов равны с точностью до записи минуса.
+
+    Живые замеры 30.10.2026: у «Сумматора» с весом -1 порт называется то
+    «−» (U+2212: импорт текста в свежем проекте), то «-» (ASCII: субмодель
+    преобразователя координат из библиотеки). Оба написания значат один
+    минус, и различать их отказом было бы ложным провалом.
+    """
+    if actual == wanted:
+        return True
+    return actual.replace("−", "-") == wanted.replace("−", "-")
+
+
 def _item(code: str, status: str, obj: ModelObject,
           detail: str, reason: str = "") -> dict[str, Any]:
     item = {
@@ -122,7 +135,7 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
         for actual, wanted in zip(actual_in + actual_out,
                                   expected_in + expected_out):
             if (check_names and wanted.name and actual.name
-                    and actual.name != wanted.name):
+                    and not _same_port_name(actual.name, wanted.name)):
                 return _item(
                     "contract_ports_mismatch", "failed", obj,
                     f"порт {actual.index}: имя {actual.name!r} против "

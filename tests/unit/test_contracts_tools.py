@@ -207,3 +207,18 @@ def test_contracts_skip_instance_defined_names():
     model = parse_xprt(INVERTER)
     item = _compare(model.objects[0], load_default_contracts())
     assert "имена задаёт экземпляр" in item["detail"]
+
+
+def test_contracts_accept_ascii_minus_in_port_name():
+    """Минус в имени порта: U+2212 и ASCII равнозначны.
+
+    Живые замеры 30.10.2026: свежий «Сумматор» с `a = [1 , -1]` даёт порт
+    «−» (U+2212), а субмодель преобразователя координат из библиотеки при
+    том же весе даёт «-» (ASCII). Отказ на этом был бы ложным.
+    """
+    report = check_model_contracts(parse_xprt(SUM.replace("`−`", "`-`")))
+    assert report.status == "passed"
+
+    # разный знак по-прежнему расхождение
+    broken = check_model_contracts(parse_xprt(SUM.replace("`−`", "`+`")))
+    assert broken.status == "failed"
