@@ -797,9 +797,9 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
     return result
 
 
-def _fit_value_labels_page(page: Page, where: str,
-                           lines: List[str],
-                           text: Optional[str] = None) -> int:
+def fit_value_labels_page(page: Page, where: str,
+                          lines: List[str],
+                          text: Optional[str] = None) -> int:
     """Подтянуть подписи значений одной страницы к их блокам.
 
     Выгрузка идёт **текущей страницей** (контур ставит скрипт туда), поэтому
@@ -905,7 +905,7 @@ def fit_value_labels() -> str:
     pages = _walk_pages(project, main, lines)
     moved, deferred, walked, tail = _run_fits_over_pages(
         pages,
-        lambda page, where: _fit_value_labels_page(page, where, lines),
+        lambda page, where: fit_value_labels_page(page, where, lines),
         "fit_value_labels", main, lines)
     if not moved:
         # «На месте» не должно звучать как «всё обойдено», если часть

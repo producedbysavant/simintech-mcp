@@ -696,7 +696,7 @@ def _place_imported_value_labels(model_text: str) -> str:
         return ""
     # Локальный импорт: `fits` сам импортирует этот модуль, и модульный
     # импорт дал бы цикл.
-    from .fits import _fit_value_labels_page
+    from .fits import fit_value_labels_page
 
     lines: List[str] = []
     try:
@@ -704,7 +704,7 @@ def _place_imported_value_labels(model_text: str) -> str:
         # и подписи заводятся там же; отчёт об изменениях считает ту же
         # страницу (`object_names`).
         page = session.ensure_project().get_current_page()
-        moved = _fit_value_labels_page(page, "импорт", lines)
+        moved = fit_value_labels_page(page, "импорт", lines)
     except Exception as exc:                                  # noqa: BLE001
         # Подписи: оформление, их сбой не отменяет собранную модель, но и
         # молчать о нём нельзя: иначе «куча» останется незамеченной.

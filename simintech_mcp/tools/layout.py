@@ -447,9 +447,9 @@ def _place_value_labels_after_layout(page: Page,
         return 0
     # Локальный импорт: `fits` импортирует `layout` (first_point,
     # overlap_report), и модульный импорт дал бы цикл.
-    from .fits import _fit_value_labels_page
+    from .fits import fit_value_labels_page
 
-    return _fit_value_labels_page(page, "раскладка", lines, text=text or None)
+    return fit_value_labels_page(page, "раскладка", lines, text=text or None)
 
 
 @mcp.tool(title="Расставить блоки и трассировать", annotations={"readOnlyHint": False})
