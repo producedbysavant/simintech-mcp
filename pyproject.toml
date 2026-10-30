@@ -130,7 +130,13 @@ dependencies = [
     # и `outport`; сверка больше не выдаёт ложный failed на живых моделях.
     # squash-коммит main 6f70759, тег указывает на него.
     # sha: 6f7075911d8a6e71653682c9ef2c076b09892891
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.6",
+    # v0.18.7: контракты пополнены живой выгрузкой привода. «Временной график»
+    # считает входы по InPortCount, «Демультиплексор» выходы по весам `a`,
+    # подписи «только имена» дают instance_defined, PL помечен
+    # script_defined_ports, библиотечные субмодели получили модель submodel.
+    # squash-коммит main f6c82a9, тег указывает на него.
+    # sha: f6c82a925d324d65bfb459a5ef807f6bca8b7fb0
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.7",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.

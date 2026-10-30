@@ -280,3 +280,38 @@ async def test_query_model_keeps_contract_failure_under_item_cap(
     codes = [item.get("code") for item in check["items"]]
     assert "contract_ports_mismatch" in codes
     assert check["evidence"]["contracts"]["failed"] == 1
+
+
+PORT_IN = """<Header><project><page>
+  <object>
+    <name>`P`</name>
+    <class_name>`Порт входа`</class_name>
+    <obj_type>`103`</obj_type>
+    <ports><port><name>`in1`</name><mode>`0`</mode></port></ports>
+    <visual_props>
+      <data><name>`PortNames`</name><value>`in1`</value></data>
+    </visual_props>
+  </object>
+</page></project></Header>"""
+
+
+def test_port_block_checked_against_portnames():
+    """Порт-блок сверяется по PortNames, а не отделывается «не проверено».
+
+    Живой замер 30.10.2026: у «Порта входа» одна строка PortNames и один
+    порт с этим именем. Раньше такие блоки всегда были `not_evaluated`, и
+    на модели привода их набиралось 41.
+    """
+    report = check_model_contracts(parse_xprt(PORT_IN))
+    assert report.status == "passed"
+    assert report.passed == 1
+
+    broken = check_model_contracts(parse_xprt(
+        PORT_IN.replace("`in1`</value>", "`in2`</value>")))
+    assert broken.status == "failed"
+    assert "из PortNames" in broken.items[0]["detail"]
+
+    missing = check_model_contracts(parse_xprt(
+        PORT_IN.replace("`in1`</value>", "` `</value>")))
+    assert missing.status == "not_evaluated"
+    assert missing.by_reason == {"portnames_missing": 1}

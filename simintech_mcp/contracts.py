@@ -73,6 +73,53 @@ def _directions(obj: ModelObject) -> tuple[list[Any], list[Any]]:
     )
 
 
+#: Классы порт-блоков: их порт назван значением PortNames.
+_PORT_BLOCK_CLASSES = ("Порт входа", "Порт выхода")
+
+
+def _portnames(obj: ModelObject) -> "list[str]":
+    """Строки PortNames экземпляра: имена сигналов (порт-блок, ячейка памяти)."""
+    prop = obj.visual_props.get("PortNames") or obj.props.get("PortNames")
+    text = (prop.value if prop is not None else "").replace("\r", "")
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
+def _compare_portnames(obj: ModelObject) -> dict[str, Any]:
+    """Порт-блок: его единственный порт назван значением PortNames.
+
+    Живой замер 30.10.2026: у «Порта входа» и «Порта выхода» одна строка
+    PortNames и один порт с этим именем, направление задаёт класс. У ячеек
+    памяти (`В память`, `Из памяти`) то же свойство задаёт имя переменной,
+    а не порт, поэтому для них образец реестра по-прежнему не эталон.
+    """
+    if obj.class_name not in _PORT_BLOCK_CLASSES:
+        return _item(
+            "contract_ports_unknown", "not_evaluated", obj,
+            "порты задаются PortNames; образец реестра не эталон",
+            "portnames_instance_defined")
+    names = _portnames(obj)
+    if not names:
+        return _item(
+            "contract_ports_unknown", "not_evaluated", obj,
+            "PortNames пуст: имя порта не задано", "portnames_missing")
+    # Направление порта задаёт не класс, а взгляд контейнера: внутри
+    # субмодели «Порт входа» отдаёт сигнал наружу (порт `out`), «Порт
+    # выхода» принимает его (`in`). Поэтому сверяются имена и счётчик.
+    actual = list(obj.ports)
+    if len(actual) != len(names):
+        return _item(
+            "contract_ports_mismatch", "failed", obj,
+            f"портов {len(actual)} против {len(names)} в PortNames")
+    for port, wanted in zip(actual, names):
+        if not _same_port_name(port.name, wanted):
+            return _item(
+                "contract_ports_mismatch", "failed", obj,
+                f"порт {port.index}: имя {port.name!r} против {wanted!r} "
+                f"из PortNames")
+    return _item("contract_ports_match", "passed", obj,
+                 f"порт {names[0]!r} по PortNames")
+
+
 def _same_port_name(actual: str, wanted: str) -> bool:
     """Имена портов равны с точностью до записи минуса.
 
@@ -120,10 +167,7 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
             "contract_unknown", "not_evaluated", obj,
             reason, expected.reason or expected.model)
     if expected.model == "portnames":
-        return _item(
-            "contract_ports_unknown", "not_evaluated", obj,
-            "порты задаются PortNames; образец реестра не эталон",
-            "portnames_instance_defined")
+        return _compare_portnames(obj)
     actual_in, actual_out = _directions(obj)
     expected_in = list(expected.inputs)
     expected_out = list(expected.outputs)
