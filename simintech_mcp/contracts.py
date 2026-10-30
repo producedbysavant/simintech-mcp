@@ -4,7 +4,9 @@
 `not_evaluated` с классом и причиной. Для `fixed` и `weights` проверяются
 счётчики, направления и имена (у `name_status: instance_defined` имена
 пропускаются: их задаёт экземпляр); для `nport` и `portnames` — счётчики
-направлений.
+направлений. Субмодель сверяется не с реестром, а со своей страницей:
+внешние порты против внутренних порт-блоков по именам; внешняя субмодель
+без страницы остаётся `not_evaluated`.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Any, Dict, Mapping, Optional
 
 from simintech_api.model_ir import (
     BlockContractRegistry,
+    Container,
     ModelIR,
     ModelObject,
     ModelQueryError,
@@ -147,7 +150,78 @@ def _item(code: str, status: str, obj: ModelObject,
     return item
 
 
-def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any]:
+def _submodel_container(model: ModelIR,
+                        obj: ModelObject) -> Optional[Container]:
+    """Страница субмодели: контейнер, для которого объект - родитель."""
+    return next((item for item in model.containers
+                 if item.parent_object_id == obj.id), None)
+
+
+def _compare_submodel(obj: ModelObject, model: ModelIR) -> dict[str, Any]:
+    """Субмодель: внешние порты сверяются с порт-блоками внутри.
+
+    Образец реестра для классов-субмоделей не эталон: порты задаются
+    порт-блоками на странице экземпляра, а корпус видит лишь часть
+    (undirected-порты электрических субмоделей в него не попадают).
+    Проверка повторяет правило класса `submodel-port-match-by-name`:
+    каждый внешний порт имеет ровно один внутренний порт-блок с тем же
+    именем. Живой замер 30.10.2026: у 10 субмоделей привода 41 порт,
+    41 порт-блок и 41 разрешённая граница; у внешней библиотечной
+    субмодели страницы в проекте нет.
+    """
+    container = _submodel_container(model, obj)
+    if container is None:
+        where = f" ({obj.filename})" if obj.filename else ""
+        return _item(
+            "contract_ports_unknown", "not_evaluated", obj,
+            f"внешняя субмодель{where}: внутренней страницы нет, "
+            f"сверять порты не с чем", "external_submodel")
+    boundaries = [item for item in model.boundaries
+                  if item.submodel_object_id == obj.id]
+    if len(boundaries) != len(obj.ports):
+        # Границы строит только xprt-парсер; в text/topology-моделях их
+        # нет, и считать каждый порт-блок лишним было бы ложным отказом.
+        return _item(
+            "contract_ports_unknown", "not_evaluated", obj,
+            f"границы субмодели не построены: портов {len(obj.ports)}, "
+            f"границ {len(boundaries)}", "boundaries_unavailable")
+    unresolved = [item for item in boundaries if not item.resolved]
+    if unresolved:
+        first = unresolved[0]
+        why = ("порт-блок не найден" if first.reason == "not_found"
+               else "порт-блок выбран неоднозначно")
+        return _item(
+            "contract_ports_mismatch", "failed", obj,
+            f"порт {first.external_port_name!r}: {why}")
+    blocks = [item for item in model.objects
+              if item.container_id == container.id
+              and item.kind is ObjectKind.PORT_BLOCK]
+    used: dict[str, int] = {}
+    for item in boundaries:
+        used[item.internal_object_id] = used.get(
+            item.internal_object_id, 0) + 1
+    shared = [key for key, count in used.items() if count > 1]
+    if shared:
+        address = next((item.address for item in blocks
+                        if item.id == shared[0]), shared[0])
+        return _item(
+            "contract_ports_mismatch", "failed", obj,
+            f"порт-блок {address} соответствует нескольким "
+            f"внешним портам: имя повторяется")
+    extra = [item for item in blocks if item.id not in used]
+    if extra:
+        return _item(
+            "contract_ports_mismatch", "failed", obj,
+            f"порт-блоков {len(blocks)} против внешних портов "
+            f"{len(boundaries)}: лишний {extra[0].address}")
+    return _item(
+        "contract_ports_match", "passed", obj,
+        f"внешних портов {len(boundaries)}, порт-блоков {len(blocks)}: "
+        f"имена сходятся")
+
+
+def _compare(obj: ModelObject, registry: BlockContractRegistry,
+             model: ModelIR) -> dict[str, Any]:
     contract = registry.get(obj.class_name)
     if contract is None:
         return _item(
@@ -159,6 +233,8 @@ def _compare(obj: ModelObject, registry: BlockContractRegistry) -> dict[str, Any
         return _item(
             "contract_unknown", "not_evaluated", obj,
             str(exc), "invalid_contract_property")
+    if expected.model == "submodel" and obj.kind is ObjectKind.SUBMODEL:
+        return _compare_submodel(obj, model)
     if expected.model in ("unknown", "submodel"):
         reason = expected.reason or ("внешние порты задаются экземпляром"
                                      if expected.model == "submodel"
@@ -213,7 +289,7 @@ def check_model_contracts(
     for obj in model.objects:
         if obj.kind in (ObjectKind.ANNOTATION, ObjectKind.DECORATION):
             continue
-        item = _compare(obj, registry)
+        item = _compare(obj, registry, model)
         status = item["status"]
         if status == "passed":
             passed += 1
