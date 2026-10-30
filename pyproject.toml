@@ -125,7 +125,12 @@ dependencies = [
     # именем помечены `instance_defined`.
     # squash-коммит main c9671fd, тег указывает на него.
     # sha: c9671fd45f60b42bfd06dd85d185ea9ea89399ff
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.5",
+    # v0.18.6: «Интегратор» с именем порта от экземпляра. Корпус дал `Port_0`
+    # и `Port_1` (блоки, созданные языком), живой COM и импорт дают `inport`
+    # и `outport`; сверка больше не выдаёт ложный failed на живых моделях.
+    # squash-коммит main 6f70759, тег указывает на него.
+    # sha: 6f7075911d8a6e71653682c9ef2c076b09892891
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.18.6",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.

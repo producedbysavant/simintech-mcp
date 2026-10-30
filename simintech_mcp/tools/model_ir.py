@@ -324,7 +324,10 @@ def query_model(model_ref: str, query: str,
         payload["evidence"]["contracts"] = report.summary()
         if report.failed:
             payload["evidence"]["status"] = "fail"
-        merged = list(payload["items"]) + list(report.items)
+        # Пункты контрактов идут первыми: у большой модели графических
+        # предупреждений больше предела в 200, и отказы сверки вытеснялись
+        # срезом: статус fail приходил без единого отказа в списке.
+        merged = list(report.items) + list(payload["items"])
         payload["items"] = merged[:MAX_QUERY_ITEMS]
         payload["truncated"] = (
             bool(payload.get("truncated"))
