@@ -32,9 +32,12 @@
 образец `unknown`; `simintech://blocks/contracts/<класс>`: свойства,
 порты, создание и ограничения одного класса. Полный дамп не выводится.
 `query_model(check_connections)` добавляет контрактную проверку:
-`fixed`/`nport` получают `evaluated`; `portnames` не оценивается по образцу
-реестра и остаётся `not_evaluated` с причиной `portnames_instance_defined`;
-неизмеренный контракт: `not_evaluated` с причиной.
+`fixed`/`nport`/`weights` получают `evaluated`; `portnames` не оценивается
+по образцу реестра и остаётся `not_evaluated` с причиной
+`portnames_instance_defined`; субмодель с внутренней страницей сверяется
+с порт-блоками по именам, внешняя библиотечная субмодель остаётся
+`not_evaluated` с причиной `external_submodel`; неизмеренный контракт:
+`not_evaluated` с причиной.
 
 ## Сборка модели
 

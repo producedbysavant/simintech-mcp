@@ -205,7 +205,7 @@ def test_contracts_skip_instance_defined_names():
     from simintech_mcp.contracts import _compare
 
     model = parse_xprt(INVERTER)
-    item = _compare(model.objects[0], load_default_contracts())
+    item = _compare(model.objects[0], load_default_contracts(), model)
     assert "имена задаёт экземпляр" in item["detail"]
 
 
@@ -280,6 +280,161 @@ async def test_query_model_keeps_contract_failure_under_item_cap(
     codes = [item.get("code") for item in check["items"]]
     assert "contract_ports_mismatch" in codes
     assert check["evidence"]["contracts"]["failed"] == 1
+
+
+SUBMODEL_IN_BLOCK = """      <object>
+        <name>`PI`</name>
+        <class_name>`Порт входа`</class_name>
+        <obj_type>`103`</obj_type>
+        <ports><port><name>`PWM`</name><mode>`0`</mode></port></ports>
+        <visual_props>
+          <data><name>`PortNames`</name><value>`PWM`</value></data>
+        </visual_props>
+      </object>
+"""
+
+SUBMODEL_OUT_BLOCK = """      <object>
+        <name>`PO`</name>
+        <class_name>`Порт выхода`</class_name>
+        <obj_type>`103`</obj_type>
+        <ports><port><name>`A`</name><mode>`1`</mode></port></ports>
+        <visual_props>
+          <data><name>`PortNames`</name><value>`A`</value></data>
+        </visual_props>
+      </object>
+"""
+
+SUBMODEL = """<Header><project><page>
+  <object>
+    <name>`SM`</name>
+    <class_name>`ЭП - ИНВ - Инвертор`</class_name>
+    <obj_type>`102`</obj_type>
+    <ports>
+      <port><name>`PWM`</name><mode>`0`</mode></port>
+      <port><name>`A`</name><mode>`2`</mode></port>
+    </ports>
+    <page>
+""" + SUBMODEL_IN_BLOCK + SUBMODEL_OUT_BLOCK + """    </page>
+  </object>
+</page></project></Header>"""
+
+
+def test_submodel_ports_match_inner_port_blocks():
+    """Субмодель: внешние порты сверяются с порт-блоками её страницы.
+
+    Живой замер 30.10.2026 на приводе 480 кВт: у 10 субмоделей с
+    внутренней страницей внешних портов, порт-блоков и границ ровно
+    поровну (41 граница, все разрешены), у внешней библиотечной
+    субмодели страницы нет. Образец реестра для таких классов неполон
+    (undirected-порты электрических субмоделей в корпус не попадают),
+    поэтому эталон - порт-блоки экземпляра.
+    """
+    model = parse_xprt(SUBMODEL)
+    report = check_model_contracts(model)
+    assert report.status == "passed"
+    # субмодель и два её порт-блока сверяются независимо
+    assert report.passed == 3
+
+    from simintech_api.model_ir import load_default_contracts
+    from simintech_mcp.contracts import _compare
+
+    item = _compare(model.object_by_address("main::SM"),
+                    load_default_contracts(), model)
+    assert item["code"] == "contract_ports_match"
+    assert "порт-блоков 2" in item["detail"]
+
+
+def test_submodel_port_without_inner_block_fails():
+    """Внешний порт без порт-блока внутри: граница не разрешена."""
+    report = check_model_contracts(parse_xprt(
+        SUBMODEL.replace(SUBMODEL_IN_BLOCK, "")))
+    assert report.status == "failed"
+    assert "порт 'PWM'" in report.items[0]["detail"]
+    assert "не найден" in report.items[0]["detail"]
+
+
+def test_submodel_extra_inner_block_fails():
+    """Порт-блок без внешнего порта: лишний, его вход некуда подать."""
+    extra = SUBMODEL_OUT_BLOCK.replace(
+        "`PO`</name>", "`PX`</name>").replace("`A`", "`X`")
+    report = check_model_contracts(parse_xprt(
+        SUBMODEL.replace(SUBMODEL_OUT_BLOCK, extra + SUBMODEL_OUT_BLOCK)))
+    assert report.status == "failed"
+    assert "лишний main/SM::PX" in report.items[0]["detail"]
+
+
+def test_submodel_inner_block_class_follows_direction():
+    """Направлению `out` отвечает «Порт выхода», а не «Порт входа».
+
+    У электрических субмоделей внешний порт бывает `undirected` (живой
+    инвертор: A, B, C, +), и тогда годится любой класс. Строгое
+    направление класса не допускает.
+    """
+    wrong = (SUBMODEL.replace(
+        "<port><name>`A`</name><mode>`2`</mode></port>",
+        "<port><name>`A`</name><mode>`1`</mode></port>")
+        .replace("<class_name>`Порт выхода`</class_name>",
+                 "<class_name>`Порт входа`</class_name>"))
+    report = check_model_contracts(parse_xprt(wrong))
+    assert report.status == "failed"
+    assert "порт 'A'" in report.items[0]["detail"]
+
+
+def test_submodel_without_ports_passes():
+    """Субмодель без интерфейса: сверять нечего, но страница есть."""
+    empty = SUBMODEL.replace(SUBMODEL_IN_BLOCK, "").replace(
+        SUBMODEL_OUT_BLOCK, "").replace(
+        "<ports>\n      <port><name>`PWM`</name><mode>`0`</mode></port>\n"
+        "      <port><name>`A`</name><mode>`2`</mode></port>\n    </ports>",
+        "")
+    model = parse_xprt(empty)
+    report = check_model_contracts(model)
+    assert report.status == "passed"
+    assert model.object_by_address("main::SM") is not None
+
+
+def test_submodel_without_boundaries_stays_not_evaluated():
+    """Границы строит только xprt-источник: без них сверка была бы ложной.
+
+    `parse_model_text` создаёт контейнеры субмоделей, но не строит
+    `boundaries` (они появляются при разборе `.xprt`). Считать каждый
+    порт-блок лишним на такой модели - ложный отказ.
+    """
+    from dataclasses import replace as dc_replace
+
+    model = parse_xprt(SUBMODEL)
+    stripped = dc_replace(model, boundaries=())
+    report = check_model_contracts(stripped)
+    assert report.status == "not_evaluated"
+    assert report.by_reason["boundaries_unavailable"] == 1
+    assert report.failed == 0
+
+
+def test_submodel_shared_inner_block_fails():
+    """Два внешних порта с одним именем делят один порт-блок: это ошибка."""
+    shared = (SUBMODEL.replace(SUBMODEL_OUT_BLOCK, "")
+              .replace("<port><name>`A`</name><mode>`2`</mode></port>",
+                       "<port><name>`PWM`</name><mode>`0`</mode></port>"))
+    report = check_model_contracts(parse_xprt(shared))
+    assert report.status == "failed"
+    assert "нескольким" in report.items[0]["detail"]
+
+
+def test_external_submodel_stays_not_evaluated():
+    """Внешняя библиотечная субмодель: страницы в проекте нет, сверять не с чем."""
+    external = """<Header><project><page>
+  <object>
+    <name>`U`</name>
+    <class_name>`ЭЦД2 - Источник напряжения`</class_name>
+    <obj_type>`102`</obj_type>
+    <filename>`ecd/ist/x.prt`</filename>
+    <ports><port><name>`us`</name><mode>`0`</mode></port></ports>
+  </object>
+</page></project></Header>"""
+    report = check_model_contracts(parse_xprt(external))
+    assert report.status == "not_evaluated"
+    assert report.by_reason == {"external_submodel": 1}
+    assert "ecd/ist/x.prt" in report.items[0]["detail"]
 
 
 PORT_IN = """<Header><project><page>
