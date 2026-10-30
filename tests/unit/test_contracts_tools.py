@@ -222,3 +222,61 @@ def test_contracts_accept_ascii_minus_in_port_name():
     # разный знак по-прежнему расхождение
     broken = check_model_contracts(parse_xprt(SUM.replace("`−`", "`+`")))
     assert broken.status == "failed"
+
+
+def test_contract_summary_puts_failures_first():
+    """Отказы видны в `samples`, даже если «не проверено» много.
+
+    Пункты собираются в порядке объектов: на живой модели привода статус
+    failed пришёл с samples из одних `not_evaluated`, и отказ пришлось
+    искать по сохранённому .xprt (живой прогон 30.10.2026).
+    """
+    from simintech_mcp.contracts import ContractReport
+
+    report = ContractReport(
+        evaluated=2, passed=1, failed=1, not_evaluated=12,
+        items=tuple(
+            [{"status": "not_evaluated", "code": "x"} for _ in range(12)]
+            + [{"status": "failed", "code": "contract_ports_mismatch"}]))
+    samples = report.summary()["samples"]
+    assert samples[0]["status"] == "failed"
+    assert len(samples) == 10
+
+
+BAD_CONST = """<Header><project><page>
+  <object>
+    <name>`I`</name>
+    <class_name>`Интегратор`</class_name>
+    <obj_type>`100`</obj_type>
+    <ports>
+      <port><name>`outport`</name><mode>`1`</mode></port>
+      <port><name>`inport`</name><mode>`0`</mode></port>
+      <port><name>`extra`</name><mode>`0`</mode></port>
+    </ports>
+  </object>
+</page></project></Header>"""
+
+
+@pytest.mark.anyio
+async def test_query_model_keeps_contract_failure_under_item_cap(
+        monkeypatch, tmp_path):
+    """Отказ сверки виден в списке, даже когда графических пунктов больше предела.
+
+    На живой модели привода статус fail приходил без единого отказа: список
+    режется до 200, а контрактные пункты стояли после графических.
+    """
+    from simintech_mcp.tools import model_ir as model_ir_tools
+
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(model_ir_tools, "MAX_QUERY_ITEMS", 1)
+    (tmp_path / "bad.xprt").write_text(BAD_CONST, encoding="utf-8")
+    loaded = json.loads(_text(await mcp.call_tool(
+        "load_model", {"path": "bad.xprt"})))
+
+    check = json.loads(_text(await mcp.call_tool(
+        "query_model",
+        {"model_ref": loaded["model_ref"], "query": "check_connections"})))
+
+    codes = [item.get("code") for item in check["items"]]
+    assert "contract_ports_mismatch" in codes
+    assert check["evidence"]["contracts"]["failed"] == 1

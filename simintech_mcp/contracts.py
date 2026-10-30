@@ -42,6 +42,13 @@ class ContractReport:
         return "passed"
 
     def summary(self) -> dict[str, Any]:
+        # Отказы идут первыми: `items` собирается в порядке объектов, и при
+        # десяти «не проверено» отказ мог не попасть в срез: живой прогон
+        # 30.10.2026 показал статус failed без единого отказа в samples.
+        failed = [item for item in self.items
+                  if item.get("status") == "failed"]
+        others = [item for item in self.items
+                  if item.get("status") != "failed"]
         return {
             "status": self.status,
             "evaluated": self.evaluated,
@@ -49,7 +56,7 @@ class ContractReport:
             "failed": self.failed,
             "not_evaluated": self.not_evaluated,
             "by_reason": dict(self.by_reason),
-            "samples": list(self.items[:10]),
+            "samples": list((failed + others)[:10]),
         }
 
 
