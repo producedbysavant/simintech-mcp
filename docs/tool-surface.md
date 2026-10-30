@@ -4,7 +4,8 @@
 
 `doctor`, `create_project`, `open_project`, `build_model`,
 `build_and_verify`, `inspect_model`, `load_model`, `get_model_manifest`,
-`query_model`, `simulate`, `format_model`, `read_output_file`, `help_text`.
+`query_model`, `inspect_submodel`, `simulate`, `format_model`,
+`read_output_file`, `help_text`.
 
 Плюс `search_tools` и `call_tool`.
 
@@ -25,6 +26,16 @@
 `items_total`/`unknown_total`. Вложенные `ports`/`wires` в `inspect_node`
 тоже ограничены и несут `ports_total`/`wires_total`. После правки проекта
 снимок устаревает.
+
+`inspect_submodel` показывает содержимое субмодели: объекты с портами,
+провода (`from`/`to`), границы вложенных субмоделей, покрытие и
+расхождения. Внутренняя субмодель отдаётся из снимка без COM. Внешняя
+библиотечная (`filename` вида `ecd\ist\...prt`) находится в
+`<корень>/bin/include_mvtu` (или `ParamSet_mvtu`), открывается средой как
+отдельный проект, снимается `SaveProjectXML`, и проект закрывается:
+текущий проект сессии не меняется, его страница возвращается. Режим
+`path` читает `.xprt` напрямую, а `.prt` тем же способом через среду
+(`.prt` - бинарный zlib-поток, не XML).
 
 ## Контракты блоков
 

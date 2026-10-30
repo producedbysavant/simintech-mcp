@@ -41,6 +41,7 @@ CORE_TOOLS = (
     "load_model",
     "get_model_manifest",
     "query_model",
+    "inspect_submodel",
     "simulate",
     "format_model",
     "read_output_file",
@@ -66,8 +67,7 @@ SHORT_DESCRIPTIONS = {
         "запуска расчёта."
     ),
     "load_model": (
-        "Загрузить текущий проект или файл в Model IR; вернуть model_ref, "
-        "счётчики, покрытие и первые расхождения без XML."
+        "Загрузить проект или файл в Model IR: model_ref, счётчики, покрытие."
     ),
     "get_model_manifest": (
         "Компактный паспорт снимка IR в бюджете 2000..5000 токенов."
@@ -75,6 +75,9 @@ SHORT_DESCRIPTIONS = {
     "query_model": (
         "Точный запрос к полному графу IR: trace, пути, циклы, проверки, "
         "сравнение моделей."
+    ),
+    "inspect_submodel": (
+        "Содержимое субмодели: объекты, порты, провода; и из файла поставки."
     ),
     "simulate": (
         "Задать время, запустить расчёт или шаги, прочитать и свести "
@@ -85,8 +88,7 @@ SHORT_DESCRIPTIONS = {
         "кадр."
     ),
     "set_block_param": (
-        "Записать параметр блока; nport пересобирает пины, ставит высоту "
-        "16 px на вход и нормализует линии."
+        "Записать параметр блока; nport пересобирает пины и нормализует линии."
     ),
     "fit_port_blocks": (
         "Подогнать высоту блоков по числу входов и ширину порт-блоков по "
@@ -101,8 +103,7 @@ SHORT_DESCRIPTIONS = {
         "проводов."
     ),
     "list_annotations": (
-        "Текст подписей TextLabel/Комментарий и имена ячеек памяти из снимка "
-        "проекта без запуска расчёта."
+        "Подписи TextLabel/Комментарий и имена ячеек памяти из снимка."
     ),
     "connect": "Соединить выход блока src с входом dst по фактическим портам.",
     "connect_ports": (
@@ -128,6 +129,7 @@ _MODULE_TAGS = {
     "files": "results",
     "model_text": "text",
     "model_ir": "model",
+    "submodel": "model",
     "system_spec": "model",
     "annotations": "text",
     "page_script": "script",
@@ -148,7 +150,7 @@ IDEMPOTENT_TOOLS = frozenset({
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function", "doctor", "inspect_model",
-    "get_model_manifest", "query_model",
+    "get_model_manifest", "query_model", "inspect_submodel",
     "set_block_param", "set_calc_time", "set_project_config",
     "layout_place", "fit_view", "set_block_center", "save_project",
     "format_model",
