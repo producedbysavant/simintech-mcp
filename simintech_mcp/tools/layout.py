@@ -434,6 +434,9 @@ def _place_value_labels_after_layout(page: Page,
     карта `parentblock` читается из неё, и второй контурный прогон не нужен.
     Если подписей на странице нет, выгрузка не снимается вовсе: проверка
     идёт по классам уже собранных блоков.
+
+    Сбой подгонки не роняет раскладку: подписи - оформление, а блоки уже
+    расставлены. Причина называется строкой в ответе, а не молчанием.
     """
     has_labels = False
     for block in available.values():
@@ -449,7 +452,13 @@ def _place_value_labels_after_layout(page: Page,
     # overlap_report), и модульный импорт дал бы цикл.
     from .fits import fit_value_labels_page
 
-    return fit_value_labels_page(page, "раскладка", lines, text=text or None)
+    try:
+        return fit_value_labels_page(page, "раскладка", lines,
+                                     text=text or None)
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"раскладка: подписи значений не поправлены "
+                     f"({type(exc).__name__}: {exc}).")
+        return 0
 
 
 @mcp.tool(title="Расставить блоки и трассировать", annotations={"readOnlyHint": False})
@@ -919,6 +928,7 @@ def layout_place(block_ids: str = "", connections: str = "",
     if moved_labels:
         project.repaint()
         routes += (f"\nПодписи значений подтянуты к блокам: {moved_labels}.")
+    if label_lines:
         routes += "\n" + "\n".join(label_lines)
     if bare_call and not links:
         routes += ("\nСвязи: ни одной пары не известно (реестр `connect` пуст)"

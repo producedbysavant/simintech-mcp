@@ -889,3 +889,26 @@ async def test_layout_place_moves_value_labels_with_blocks(monkeypatch):
     assert abs(got[0] - (want[0] + 30.0)) < 0.5
     assert abs(got[1] - (want[1] + 20.0)) < 0.5
     assert "Подписи значений подтянуты к блокам: 1" in text
+
+
+@pytest.mark.anyio
+async def test_layout_place_survives_label_fit_failure(monkeypatch):
+    """Сбой подгонки подписей не роняет раскладку.
+
+    Выгрузка ради карты `parentblock` может не сняться (нет COM, модель
+    занята): блоки к этому моменту уже расставлены, и отменять раскладку
+    из-за оформления нельзя. Причина называется строкой в ответе.
+    """
+    from simintech_mcp.tools import fits as fits_tools
+
+    block = _PlacedBlock("k_0", 1)
+    label = _PlacedBlock("TextLabel3", 2, class_name="constLabel")
+    _install_wire_project(monkeypatch, {"k_0": block, "TextLabel3": label})
+    monkeypatch.setattr(
+        fits_tools, "page_export_text",
+        lambda: (_ for _ in ()).throw(RuntimeError("нет COM")))
+
+    text = _text(await mcp.call_tool("layout_place", {}))
+
+    assert "Расставлено блоков: 1" in text
+    assert "подписи значений не поправлены" in text
