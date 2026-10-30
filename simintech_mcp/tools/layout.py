@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
@@ -420,6 +420,47 @@ def normalize_page_wires(page: Page) -> str:
             "пустые нормализация дописывает в данные")
 
 
+def _place_value_labels_after_layout(page: Page,
+                                     available: "Dict[str, Block]",
+                                     text: str,
+                                     lines: "List[str]") -> int:
+    """Вернуть подписи значений к их блокам после сдвига блоков.
+
+    Раскладка подписи не двигает (они не блоки, см. `layout_place`), поэтому
+    после расстановки подпись остаётся на прежней точке, а её блок уехал.
+    Здесь она ставится к родителю тем же правилом, что у `fit_value_labels`.
+
+    `text` - уже снятая выгрузка страницы (её берёт граф открытого проекта):
+    карта `parentblock` читается из неё, и второй контурный прогон не нужен.
+    Если подписей на странице нет, выгрузка не снимается вовсе: проверка
+    идёт по классам уже собранных блоков.
+
+    Сбой подгонки не роняет раскладку: подписи - оформление, а блоки уже
+    расставлены. Причина называется строкой в ответе, а не молчанием.
+    """
+    has_labels = False
+    for block in available.values():
+        try:
+            if block.class_name == "constLabel":
+                has_labels = True
+                break
+        except Exception:                                     # noqa: BLE001
+            continue
+    if not has_labels:
+        return 0
+    # Локальный импорт: `fits` импортирует `layout` (first_point,
+    # overlap_report), и модульный импорт дал бы цикл.
+    from .fits import fit_value_labels_page
+
+    try:
+        return fit_value_labels_page(page, "раскладка", lines,
+                                     text=text or None)
+    except Exception as exc:                                  # noqa: BLE001
+        lines.append(f"раскладка: подписи значений не поправлены "
+                     f"({type(exc).__name__}: {exc}).")
+        return 0
+
+
 @mcp.tool(title="Расставить блоки и трассировать", annotations={"readOnlyHint": False})
 @runtime.com_threaded(mutates_project=True)
 def layout_place(block_ids: str = "", connections: str = "",
@@ -498,11 +539,18 @@ def layout_place(block_ids: str = "", connections: str = "",
     остальные блоки расставятся без наложений, порты останутся на своих
     местах.
 
-    **Подписи не расставляются.** Объекты оформления (`constLabel`, `TextLabel`,
-    «Комментарий» и прочий `NON_BLOCK_CLASSES` библиотеки) — не блоки: их
-    `Points` — якорь текста, `size` — типовая карточка, и «расставленная»
-    подпись уезжает от своего блока (живой случай 02.10.2026). Они
-    исключаются из расстановки и, как следствие, из метрики наложений.
+    **Подписи не расставляются, но едут за своими блоками.** Объекты
+    оформления (`constLabel`, `TextLabel`, «Комментарий» и прочий
+    `NON_BLOCK_CLASSES` библиотеки) не блоки: их `Points` - якорь текста,
+    `size` - типовая карточка, и «расставленная» подпись уезжает от своего
+    блока (живой случай 02.10.2026). Они исключаются из расстановки и, как
+    следствие, из метрики наложений. Но после сдвига блоков подпись
+    возвращается к своему родителю (`constLabel` по карте `parentblock`):
+    иначе у импортированных моделей подписи остаются в одной точке
+    `createmodel` (248, 192) и сходятся «кучей». Карта читается выгрузкой
+    страницы: если её уже снимали для графа, второй прогон не платится, а
+    на странице без подписей выгрузка не снимается вовсе. Режим
+    `normalize_only` блоки не двигает, поэтому подписи в нём не трогаются.
 
     Размеры блоков не задаются: `set_center` сохраняет родной размер каждого
     блока (он задан правилами разработки SimInTech, и подменять его нельзя), а
@@ -625,6 +673,10 @@ def layout_place(block_ids: str = "", connections: str = "",
     #: пуст): ими выравнивание приёмников по источникам распространяется и на
     #: чужие линии, концы которых COM не отдаёт (issue #33).
     exported_pairs: "list[tuple[str, int, str, int]]" = []
+    #: Выгрузка страницы, снятая ради графа открытого проекта. После
+    #: расстановки она же отдаётся подгонке подписей: карта `parentblock`
+    #: живёт в том же тексте, и второй контурный прогон ни к чему.
+    graph_text = ""
     if bare_call:
         # «Все связи сессии»: концы чужих линий через COM не читаются, поэтому
         # честный максимум — реестр `connect`. Пары, чьи блоки не попали в
@@ -864,6 +916,20 @@ def layout_place(block_ids: str = "", connections: str = "",
     if shifted:
         project.repaint()
     routes = normalize_page_wires(page)
+    # Подписи значений едут вместе со своими блоками. Раскладка их не
+    # расставляет (см. докстринг), но после сдвига блока подпись остаётся на
+    # прежней точке: у импортированных моделей все они стоят в одной точке
+    # `createmodel` (248, 192) и сходятся «кучей», а после любой расстановки
+    # куча переезжает вместе с моделью. Возврат к родителям: то же правило,
+    # что у `fit_value_labels` (якорь на 18 px выше левого верхнего угла).
+    label_lines: List[str] = []
+    moved_labels = _place_value_labels_after_layout(page, available,
+                                                    graph_text, label_lines)
+    if moved_labels:
+        project.repaint()
+        routes += (f"\nПодписи значений подтянуты к блокам: {moved_labels}.")
+    if label_lines:
+        routes += "\n" + "\n".join(label_lines)
     if bare_call and not links:
         routes += ("\nСвязи: ни одной пары не известно (реестр `connect` пуст)"
                    " — связи не учтены, блоки встали одной колонкой; концы"

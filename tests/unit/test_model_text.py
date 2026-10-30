@@ -29,7 +29,14 @@ from simintech_mcp.tools import page_script
 from simintech_mcp.tools.model_text import MODEL_TEXT_FILE
 from simintech_mcp.tools.page_script import RESULT_FILE
 
-from _support import _error, _text
+from _support import (
+    _AnchorBlock,
+    _ValueLabelBlock,
+    _error,
+    _install_export,
+    _text,
+)
+from _support import _FakeProject as _SupportProject
 
 
 class _FakeClient:
@@ -783,3 +790,61 @@ def test_parse_page_pairs_keeps_direct_pairs_with_port_indexes():
     )
 
     assert parse_page_pairs(text) == [("n_dc", 0, "ad_1", 2)]
+
+
+class _BothPagesProject(_SupportProject):
+    """Подделка с обеими страницами: отчёт читает текущую, подписи - главную."""
+
+    def get_current_page(self):
+        return self.get_main_page()
+
+
+@pytest.mark.anyio
+async def test_import_model_text_moves_value_labels_to_parents(
+        monkeypatch, tmp_path):
+    """Подписи значений после импорта встают к своим блокам.
+
+    `createmodel` кладёт `constLabel` не туда, где записано в тексте, а в
+    фиксированные точки (живой замер 30.10.2026: подпись усилителя с
+    `points=[(600, 382)]` встала в (248, 192), подпись константы с
+    `points=[(200, 82)]` - в (88, 94)). В модели, собранной импортом,
+    подписи разных блоков сходятся «кучей», и на живом приводе 480 кВт так
+    сошлись «0.1», «29.8» и «6.28319». Импорт возвращает их родителям тем
+    же правилом, что `fit_value_labels`.
+    """
+    parent = _AnchorBlock()                 # центр (456, 72), размер 32x16
+    label = _ValueLabelBlock()              # якорь (248, 192) - точка импорта
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    monkeypatch.setattr(session, "_project",
+                        _BothPagesProject({"k_0": parent,
+                                           "TextLabel3": label}))
+    _install_export(monkeypatch,
+                    '(\n  TextLabel3: (\n    type = "constLabel",\n'
+                    '    points=[(248 , 192)],\n'
+                    '    parentblock = "k_0"\n  )\n)')
+
+    result = _text(await mcp.call_tool("import_model_text", {
+        "model_text": ('k_0: (type = "Константа"),\n'
+                       'TextLabel3: (type = "constLabel", '
+                       'parentblock = "k_0")')}))
+
+    # Цель якоря (440, 46) = (456-16, 72-8-18); set_center - центром карточки.
+    assert label.centers == [(470.0, 66.0)], "подпись осталась в точке импорта"
+    assert "Подписи значений подтянуты к блокам: 1" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_skips_label_fit_without_constlabels(
+        monkeypatch, tmp_path):
+    """Текст без подписей не платит за выгрузку: карта parentblock не нужна."""
+    from simintech_mcp.tools import fits as fits_tools
+
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    exports = []
+    monkeypatch.setattr(fits_tools, "page_export_text",
+                        lambda: exports.append(1) or ("", False, None, None))
+
+    await mcp.call_tool("import_model_text",
+                        {"model_text": 'k0: (type = "Константа")'})
+
+    assert exports == [], "выгрузка снята ради подписей, которых нет"

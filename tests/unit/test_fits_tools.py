@@ -14,13 +14,16 @@ from simintech_mcp import session
 from simintech_mcp.server import mcp
 
 from _support import (
+    _AnchorBlock,
     _FakePage,
     _FakeProject,
     _PortBlock,
     _SizeBlock,
     _UnreadableNamesPort,
+    _ValueLabelBlock,
     _error,
     _install_contour,
+    _install_export,
     _tool_text,
 )
 
@@ -716,41 +719,6 @@ async def test_fit_port_blocks_defers_pages_over_budget(monkeypatch, tmp_path):
     assert "отложено" not in text
     assert session.fit_resume("fit_port_blocks") is None, (
         "курсор не сброшен после полного прохода")
-
-
-class _AnchorBlock(_SizeBlock):
-    """Блок с читаемой точкой центра (как у настоящего блока)."""
-
-    def __init__(self, name="k_0", center=(456.0, 72.0), size=(32.0, 16.0)):
-        super().__init__(name=name, size=size)
-        self._center = center
-
-    def get_points(self):
-        return f"[({self._center[0]:g} , {self._center[1]:g})]"
-
-
-class _ValueLabelBlock(_SizeBlock):
-    """Подпись значения: якорь — левый верх карточки 60×40 (живой замер)."""
-
-    def __init__(self, name="TextLabel3", anchor=(248.0, 192.0)):
-        super().__init__(name=name, size=(60.0, 40.0))
-        self.class_name = "constLabel"
-        self._anchor = list(anchor)
-        self.centers = []
-
-    def get_points(self):
-        return f"[({self._anchor[0]:g} , {self._anchor[1]:g})]"
-
-    def set_center(self, cx, cy):
-        self.centers.append((cx, cy))
-        self._anchor = [cx - 30.0, cy - 20.0]
-        return self
-
-
-def _install_export(monkeypatch, text):
-    from simintech_mcp.tools import fits as fits_tools
-    monkeypatch.setattr(fits_tools, "page_export_text",
-                        lambda: (text, False, None, None))
 
 
 def test_constlabel_parents_reads_pairs():
