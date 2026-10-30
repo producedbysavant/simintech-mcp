@@ -201,7 +201,7 @@ async def test_all_tools_registered():
         "save_screenshot", "fit_view", "set_block_center",
         "doctor", "build_model", "build_and_verify", "inspect_model",
         "simulate", "format_model", "load_model", "get_model_manifest",
-        "query_model",
+        "query_model", "inspect_submodel",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "

@@ -133,7 +133,7 @@ claude mcp add simintech -- simintech-mcp
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
 | Результаты | `read_output_file`, `summarize_output_file` |
 | Текст модели | `export_model_text`, `import_model_text`, `list_annotations` |
-| Model IR | `load_model`, `get_model_manifest`, `query_model` |
+| Model IR | `load_model`, `get_model_manifest`, `query_model`, `inspect_submodel` |
 | SystemSpec | `build_and_verify` |
 | Языковой слой | `get_page_script`, `set_page_script`, `get_block_script`, `set_block_script`, `run_page_script`, `inject_submodel_script` |
 | Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role`, `read_output_file`, `summarize_output_file`, `help_text`, `search_language_functions`, `get_language_function`, `create_pack` |
@@ -142,9 +142,9 @@ claude mcp add simintech -- simintech-mcp
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 | Композиты | `doctor`, `build_model`, `build_and_verify`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 70. Видимое ядро в `tools/list`; полный каталог в
+Всего инструментов: 71. Видимое ядро в `tools/list`; полный каталог в
 `simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
-возвращает все 70.
+возвращает все 71.
 
 `build_model(spec=...)` принимает Pydantic `ModelSpec`: блоки и субмодели
 импортируются текстом, верхнеуровневые провода создаются `connect` по
