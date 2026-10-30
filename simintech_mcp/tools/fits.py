@@ -798,7 +798,8 @@ def _constlabel_parents(text: str) -> Dict[str, str]:
 
 
 def _fit_value_labels_page(page: Page, where: str,
-                           lines: List[str]) -> int:
+                           lines: List[str],
+                           text: Optional[str] = None) -> int:
     """Подтянуть подписи значений одной страницы к их блокам.
 
     Выгрузка идёт **текущей страницей** (контур ставит скрипт туда), поэтому
@@ -810,14 +811,18 @@ def _fit_value_labels_page(page: Page, where: str,
     `set_center` у подписи ставит её карточку (60×40) центром — поэтому к
     цели добавляется полуразмер карточки (живой замер 06.10.2026: центру
     (100, 100) отвечает якорь (70, 80)).
+
+    `text` - уже снятая выгрузка той же страницы: раскладка берёт её для
+    графа и отдаёт сюда, чтобы не платить вторым контурным прогоном.
     """
     page.activate()
-    try:
-        text, _truncated, _outcome, _path = page_export_text()
-    except ToolError as exc:
-        lines.append(f"{where}: выгрузка для чтения parentblock не удалась "
-                     f"({exc}) — подписи не тронуты.")
-        return 0
+    if text is None:
+        try:
+            text, _truncated, _outcome, _path = page_export_text()
+        except ToolError as exc:
+            lines.append(f"{where}: выгрузка для чтения parentblock не удалась "
+                         f"({exc}): подписи не тронуты.")
+            return 0
     pairs = _constlabel_parents(text)
     moved = 0
     for label_name, parent_name in pairs.items():

@@ -814,6 +814,57 @@ class _SizeBlock:
         self._size = [float(width.group(1)), float(height.group(1))]
 
 
+class _AnchorBlock(_SizeBlock):
+    """Блок с читаемой точкой центра (как у настоящего блока).
+
+    `set_center` двигает блок по-настоящему: `get_points` отдаёт новую точку,
+    как у среды после `layout_place`: иначе подпись подтягивалась бы к
+    старому месту, и тест раскладки зеленел бы на неправильной цели.
+    """
+
+    def __init__(self, name="k_0", center=(456.0, 72.0), size=(32.0, 16.0)):
+        super().__init__(name=name, size=size)
+        self._center = center
+        self.center = None
+
+    def get_points(self):
+        cx, cy = self.center if self.center is not None else self._center
+        return f"[({cx:g} , {cy:g})]"
+
+    def set_center(self, cx, cy):
+        self.center = (cx, cy)
+        return self
+
+
+class _ValueLabelBlock(_SizeBlock):
+    """Подпись значения: якорь - левый верх карточки 60×40 (живой замер)."""
+
+    def __init__(self, name="TextLabel3", anchor=(248.0, 192.0)):
+        super().__init__(name=name, size=(60.0, 40.0))
+        self.class_name = "constLabel"
+        self._anchor = list(anchor)
+        self.centers = []
+
+    def get_points(self):
+        return f"[({self._anchor[0]:g} , {self._anchor[1]:g})]"
+
+    def set_center(self, cx, cy):
+        self.centers.append((cx, cy))
+        self._anchor = [cx - 30.0, cy - 20.0]
+        return self
+
+
+def _install_export(monkeypatch, text):
+    """Подменить выгрузку страницы у `fits`: карта `parentblock` в тестах.
+
+    Подменяется именно `fits.page_export_text`: модуль импортировал имя к
+    себе, и подмена `model_text.page_export_text` до него не доходит.
+    """
+    from simintech_mcp.tools import fits as fits_tools
+    monkeypatch.setattr(fits_tools, "page_export_text",
+                        lambda: (text, False, None, None))
+
+
 class _PortBlock(_SizeBlock):
     """Порт-блок: класс «Порт входа», список сигналов читается из PortNames.
 

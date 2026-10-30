@@ -15,10 +15,13 @@ from simintech_mcp.server import mcp
 from simintech_mcp import session
 
 from _support import (
+    _AnchorBlock,
     _ConnectingBlock,
     _FakeWire,
     _PlacedBlock,
+    _ValueLabelBlock,
     _error,
+    _install_export,
     _install_fake_project,
     _install_wire_project,
     _text,
@@ -852,3 +855,37 @@ def test_fit_geometry_uses_given_canvas_height():
 
     assert abs(256.0 * scale + view_x - 513.0) < 1e-6
     assert abs(32.0 * scale + view_y - 659.0 / 2.0) < 1e-6
+
+
+@pytest.mark.anyio
+async def test_layout_place_moves_value_labels_with_blocks(monkeypatch):
+    """Подпись значения едет за своим блоком после расстановки.
+
+    Раскладка подписи не расставляет (они не блоки, см. докстринг), но после
+    сдвига блока подпись осталась бы на прежней точке: у модели, собранной
+    импортом, все они стоят в одной точке `createmodel` (248, 192) и сходятся
+    «кучей». Возврат к родителю - то же правило, что у `fit_value_labels`.
+    """
+    parent = _AnchorBlock()                 # центр (456, 72), размер 32x16
+    label = _ValueLabelBlock()              # якорь (248, 192)
+    parent.id = 31
+    label.id = 32
+    _install_fake_project(monkeypatch, {"k_0": parent, "TextLabel3": label})
+    _install_export(monkeypatch,
+                    '(\n  TextLabel3: (\n    type = "constLabel",\n'
+                    '    points=[(248 , 192)],\n'
+                    '    parentblock = "k_0"\n  )\n)')
+
+    text = _text(await mcp.call_tool(
+        "layout_place", {"block_ids": "k_0", "connections": ""}))
+
+    assert parent.center is not None, "блок не расставлен"
+    assert label.centers, "подпись осталась на прежней точке"
+    width, height = parent.get_size()
+    cx, cy = parent.center
+    want = (cx - width / 2.0, cy - height / 2.0 - 18.0)
+    got = label.centers[-1]
+    # set_center ставит центр карточки 60x40, поэтому к якорю - полуразмер.
+    assert abs(got[0] - (want[0] + 30.0)) < 0.5
+    assert abs(got[1] - (want[1] + 20.0)) < 0.5
+    assert "Подписи значений подтянуты к блокам: 1" in text
