@@ -401,7 +401,7 @@ def query_model(model_ref: str, query: str,
         if "error" in coverage:
             raise ToolError(
                 f"semantic_coverage: {coverage['error']}")
-        payload: Dict[str, Any] = {
+        coverage_payload: Dict[str, Any] = {
             "query": "semantic_coverage",
             "scope": "full_model",
             "model_hash": snapshot.model.meta.structure_hash,
@@ -410,6 +410,7 @@ def query_model(model_ref: str, query: str,
             "truncated": False,
             "evidence": {},
         }
+        payload = coverage_payload
     else:
         result = snapshot.index.query(query, args)
         payload = result.to_dict()
