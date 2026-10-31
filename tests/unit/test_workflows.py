@@ -8,6 +8,8 @@ from fastmcp.exceptions import ToolError
 from simintech_mcp.specs import BlockSpec, ModelSpec, WireSpec
 from simintech_mcp.tools import workflows
 
+from _support import timing
+
 
 def _patch(monkeypatch, calls, name, result):
     def fake(*args, **kwargs):
@@ -300,3 +302,15 @@ def test_build_model_fit_sizes_false_skips_fit(monkeypatch):
     )
 
     assert not [call for call in calls if call[0] == "fit_port_blocks"]
+
+
+def test_simulate_reports_absolute_timing(monkeypatch):
+    calls = []
+    _patch(monkeypatch, calls, "run", "расчёт завершён")
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    text = workflows.simulate(to_time=1.0)
+    data = timing(text)
+
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] == data["t_end"] - data["t_start"]

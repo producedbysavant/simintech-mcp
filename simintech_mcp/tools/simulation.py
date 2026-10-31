@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import time
 from typing import TYPE_CHECKING, Optional
 
 from fastmcp.exceptions import ToolError
@@ -56,6 +58,23 @@ CALC_WAIT_MARGIN_SECONDS = 1.0
 MAX_STEP_COUNT = 1000
 
 
+def with_timing(text: str, started_ms: int) -> str:
+    """Дописать абсолютные метки сервера вокруг handler-вызова.
+
+    Метки в миллисекундах unix time: `t_start` снят до работы handler,
+    `t_end` - после. Паузы клиента между вызовами в `elapsed_ms` не входят.
+    """
+    ended_ms = time.time_ns() // 1_000_000
+    payload = {
+        "t_start": started_ms,
+        "t_end": ended_ms,
+        "elapsed_ms": ended_ms - started_ms,
+    }
+    return (text + "\ntiming: "
+            + json.dumps(payload, ensure_ascii=False,
+                         separators=(",", ":")))
+
+
 @mcp.tool(title="Запустить расчёт", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def run(to_time: Optional[float] = None,
@@ -85,6 +104,7 @@ def run(to_time: Optional[float] = None,
         stall_seconds: сколько секунд неизменного времени считать признаком
             остановившегося расчёта (после этого ждать не имеет смысла).
     """
+    started_ms = time.time_ns() // 1_000_000
     if wait_timeout <= 0 or stall_seconds <= 0:
         raise ToolError(
             "wait_timeout и stall_seconds должны быть положительными")
@@ -123,8 +143,9 @@ def run(to_time: Optional[float] = None,
     sim.start()
     if to_time is None:
         sim.run()
-        return ("Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
-                "через `get_time`)")
+        return with_timing(
+            "Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
+            "через `get_time`)", started_ms)
     reached = sim.run_to(to_time, timeout=wait_timeout, stall=stall_seconds)
     actual = sim.get_time()
     if not reached:
@@ -142,7 +163,8 @@ def run(to_time: Optional[float] = None,
             f"`set_calc_time`. Проверьте соединения, скрипт страницы "
             f"и `list_blocks`."
         )
-    return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
+    return with_timing(
+        f"Расчёт до {to_time} с завершён (время={actual:.3f})", started_ms)
 
 
 @mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})

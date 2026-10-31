@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import sys
 from pathlib import Path
@@ -35,6 +36,13 @@ def _text(result) -> str:
 
 #: Синоним: исторически в тестах жили две копии одного помощника.
 _tool_text = _text
+
+
+def timing(text: str) -> dict:
+    """Разобрать последнюю строку `timing: {...}` из ответа инструмента."""
+    line = text.strip().splitlines()[-1]
+    assert line.startswith("timing: "), line
+    return json.loads(line[len("timing: "):])
 
 
 async def all_tools():
