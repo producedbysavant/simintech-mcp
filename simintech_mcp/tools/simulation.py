@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Optional
 
 from fastmcp.exceptions import ToolError
 
 from .. import runtime, sandbox, session
 from ..app import mcp
+from ..solver_diagnostics import read_diagnostics_result
 
 if TYPE_CHECKING:
     # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
@@ -152,45 +154,100 @@ def run(to_time: Optional[float] = None,
 
 @mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})
 @runtime.com_threaded
-def step(count: int = 1) -> str:
+def step(count: int = 1, diagnostics_path: str = "") -> str:
     """Выполнить указанное число шагов расчёта.
 
     Проверяется **фактический** рост модельного времени, а не только код
     возврата: `ProjectStep` сообщает об успехе и на проекте без расчётного
-    слоя, и при неподключённом входе блока — время при этом стоит. Раньше
+    слоя, и при неподключённом входе блока - время при этом стоит. Раньше
     инструмент безусловно отвечал «Выполнено шагов: N». Если время не
-    сдвинулось, инструмент отказывает: шаги, которых не было, — не успех.
+    сдвинулось, инструмент отказывает: шаги, которых не было, - не успех.
+
+    `diagnostics_path` - необязательный журнал JSON Lines диагностики шага
+    внешнего решателя в каталоге результатов (схема
+    `solver-step-diagnostics/1`). MCP читает хвост журнала и берёт последний
+    исход `accepted`/`rejected`; записи `call`/`entry` - вход в `im_run`,
+    они не выдаются за исход. Без `diagnostics_path` диагностика не
+    запрашивается. Журнал принимается только от процесса mmain текущей
+    сессии и только обновлённый этим прогоном; иначе ответ несёт `WARNING`,
+    а значения не показываются.
+
+    `count` - число вызовов `ProjectStep`, а не число входов в `im_run`:
+    часть итераций сервера может не дойти до модуля, расхождение видно по
+    строкам `call` и исходов в журнале. В idle-режиме `step(1)` может
+    пересоздавать решатель с `t=0`, поэтому `Δt=0` не означает отказ
+    решателя; при `diagnostics_path` причина берётся из журнала.
 
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
+        diagnostics_path: журнал диагностики шага; пусто - не читать.
     """
     if count <= 0:
         raise ToolError("count должен быть положительным")
     if count > MAX_STEP_COUNT:
         raise ToolError(
             f"count={count} больше предела {MAX_STEP_COUNT} шагов за вызов: "
-            f"каждый шаг — отдельный COM-вызов, и такой вызов надолго занял бы "
+            f"каждый шаг - отдельный COM-вызов, и такой вызов надолго занял бы "
             f"выделенный поток. Разбейте на несколько вызовов `step` или "
             f"продвигайте время через `run(to_time=…)`."
         )
     sim = session.ensure_project().simulation()
-    sim.start()
-    before = sim.get_time()
-    for _ in range(count):
-        sim.step()
-    after = sim.get_time()
+    run_started = time.time()
+    before = 0.0
+    after = 0.0
+    try:
+        sim.start()
+        before = sim.get_time()
+        after = before
+        for _ in range(count):
+            sim.step()
+        after = sim.get_time()
+    except Exception as exc:
+        if not diagnostics_path:
+            raise
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        raise ToolError(f"{exc}\n\n{diagnostics.text}") from exc
     if after <= before:
-        # Отказ, а не текст: время не сдвинулось — это неудача; клиент,
+        # Отказ, а не текст: время не сдвинулось - это неудача; клиент,
         # доверяющий `isError`, иначе счёл бы шаги выполненными.
-        raise ToolError(
-            f"Время не сдвинулось после {count} шагов (осталось "
-            f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
-            f"у какого-то блока не соединён вход, у проекта нет "
-            f"расчётного слоя (создайте его через `create_project`) "
-            f"либо скрипт страницы не скомпилировался — среда об этом "
-            f"молчит."
+        head = (f"Время не сдвинулось после {count} шагов (осталось "
+                f"{after:.3f} с).")
+        causes = (
+            "Частые причины: у какого-то блока не соединён вход, у проекта "
+            "нет расчётного слоя (создайте его через `create_project`) либо "
+            "скрипт страницы не скомпилировался - среда об этом молчит."
         )
-    return f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
+        if not diagnostics_path:
+            raise ToolError(
+                f"{head} Точная причина не установлена: журнал решателя не "
+                f"запрошен (`diagnostics_path` не задан). {causes}")
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        if diagnostics.status == "accepted":
+            message = (
+                f"{head} Журнал решателя показывает принятый шаг: это не "
+                f"отказ решателя. В idle-режиме step(1) может пересоздавать "
+                f"решатель с t=0; проверьте режим расчёта и синхронизацию."
+            )
+        elif diagnostics.status == "rejected":
+            message = (
+                f"{head} Журнал решателя: отказ шага, причина в строке "
+                f"solver."
+            )
+        elif diagnostics.status in ("call", "entry"):
+            message = (
+                f"{head} Журнал решателя: вход в im_run без исхода; шаг не "
+                f"завершён."
+            )
+        else:
+            message = (
+                f"{head} Точная причина не установлена, журнал решателя "
+                f"недоступен. {causes}")
+        raise ToolError(f"{message}\n\n{diagnostics.text}")
+    result = f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
+    if diagnostics_path:
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        result = f"{result}\n\n{diagnostics.text}"
+    return result
 
 
 @mcp.tool(title="Остановить расчёт", annotations={"readOnlyHint": False})

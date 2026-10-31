@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import sys
+import time
 from importlib.metadata import PackageNotFoundError, version
 from typing import Dict, List, Literal, Optional
 
@@ -18,6 +19,7 @@ from fastmcp.exceptions import ToolError
 
 from .. import __version__, runtime, sandbox, session, skills, surface
 from ..app import mcp
+from ..solver_diagnostics import read_diagnostics_result
 from ..specs import ModelSpec, render_model_text
 from .blocks import get_block_params, list_blocks
 from .check_model import audit_routing, check_model_layout
@@ -324,25 +326,62 @@ def simulate(to_time: Optional[float] = None,
              end_time: Optional[float] = None,
              step_count: Optional[int] = None,
              output_path: str = "",
-             summary: bool = True) -> str:
+             summary: bool = True,
+             diagnostics_path: str = "") -> str:
     """Задать время, запустить расчёт или шаги, прочитать результат.
+
+    `diagnostics_path` - необязательный журнал JSON Lines диагностики шага
+    внешнего решателя в каталоге результатов (схема
+    `solver-step-diagnostics/1`). MCP читает хвост и берёт последний исход
+    `accepted`/`rejected`; записи `call`/`entry` - вход в `im_run`, не
+    исход. Журнал читается и при успехе, и при отказе расчёта; значения
+    показываются только если он принадлежит процессу mmain текущей сессии
+    и обновлён этим прогоном. Иначе ответ несёт `WARNING` без подстановки
+    догадки. Для диагностики шага задавайте `to_time` или `step_count`: при
+    неблокирующем запуске (без `to_time`) ответ может прийти до первого
+    шага.
 
     Ответ оканчивается одной машинной строкой
     `timing: {"t_start":...,"t_end":...,"elapsed_ms":...}` для всего
-    workflow. Вложенный `run` свой хвост не оставляет.
+    workflow. Вложенный `run` свой хвост не оставляет. При
+    `diagnostics_path` перед ней стоит строка `solver: {...}`.
     """
     parts: List[str] = []
     if end_time is not None:
         parts.append(set_calc_time(end_time))
-    if step_count is not None:
-        parts.append(step(step_count))
-    else:
-        parts.append(runtime.strip_timing(run(to_time=to_time)))
+    run_started = time.time()
+    try:
+        if step_count is not None:
+            parts.append(step(step_count))
+        else:
+            parts.append(runtime.strip_timing(run(to_time=to_time)))
+    except Exception as exc:
+        if not diagnostics_path:
+            raise
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        message = runtime.strip_timing(str(exc))
+        if diagnostics.status == "accepted":
+            message += (
+                "\n\nЖурнал решателя: принятый шаг; модельное время не "
+                "сдвинулось. Это не отказ решателя.")
+        elif diagnostics.status == "rejected":
+            message += "\n\nЖурнал решателя: отказ шага."
+        elif diagnostics.status in ("call", "entry"):
+            message += "\n\nЖурнал решателя: вход в im_run без исхода."
+        raise ToolError(f"{message}\n\n{diagnostics.text}") from exc
     parts.append(f"Модельное время: {get_time():g} с")
+    if diagnostics_path:
+        parts.append(read_diagnostics_result(diagnostics_path, run_started).text)
     if output_path:
-        parts.append(read_output_file(output_path))
-        if summary:
-            parts.append(summarize_output_file(output_path))
+        try:
+            parts.append(read_output_file(output_path))
+            if summary:
+                parts.append(summarize_output_file(output_path))
+        except ToolError as exc:
+            if not diagnostics_path:
+                raise
+            context = "\n\n".join(parts)
+            raise ToolError(f"{exc}\n\n{context}") from exc
     return "\n\n".join(parts)
 
 

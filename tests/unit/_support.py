@@ -613,6 +613,26 @@ def _install_fake_simulation(monkeypatch, times):
     return sim
 
 
+def write_diagnostics(path, **overrides) -> Path:
+    """Записать файл диагностики шага для фейка решателя."""
+    from simintech_mcp.solver_diagnostics import SCHEMA
+
+    data = {
+        "schema": SCHEMA,
+        "pid": 4242,
+        "t": 1.25,
+        "h": 1e-05,
+        "status": "accepted",
+        "reason": "",
+        "Nbad": 2,
+        "Ngood": 100,
+    }
+    data.update(overrides)
+    target = Path(path)
+    target.write_text(json.dumps(data), encoding="utf-8")
+    return target
+
+
 class _TemplateProject:
     id = 5
 

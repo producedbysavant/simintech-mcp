@@ -107,3 +107,17 @@ handler; паузы клиента между вызовами не входят
 | id | Факт | Статус | Источник |
 |---|---|---|---|
 | `mcp-run-simulate-timing` | `run` и `simulate` дают абсолютные `t_start`/`t_end` и монотонный `elapsed_ms`; у `simulate` один хвост, у отказа тоже есть строка | code-confirmed | `runtime.py`; `tools/simulation.py`; `tools/workflows.py`; `test_simulation_tools.py`; `test_workflows.py` |
+
+## 10. Диагностика шага внешнего решателя
+
+`simulate` и `step` принимают необязательный `diagnostics_path`: журнал
+JSON Lines схемы `solver-step-diagnostics/1` в каталоге результатов. MCP
+читает хвост, проверяет `pid` (процесс mmain сессии) и свежесть по mtime,
+берёт последний исход `accepted`/`rejected`; записи `call`/`entry` -
+вход в `im_run`, не исход. При сомнении отдаёт `WARNING` и не показывает
+значения. Успешная проверка добавляет строку `solver: {...}` перед
+`timing:` (у `step` timing нет).
+
+| id | Факт | Статус | Источник |
+|---|---|---|---|
+| `mcp-solver-step-diagnostics` | `simulate` и `step` читают хвост журнала только по `diagnostics_path`; для исхода обязательны `schema`, `pid`, `t`, `h`, `status`, `Nbad`, `Ngood`, у отказа - `reason` или `code`; `call`/`entry` - якорь входа без обязательных счётчиков; чужой PID, старый mtime, битый JSON, только входы без исхода и отказ без причины дают `WARNING` без значений | code-confirmed | `solver_diagnostics.py`; `tools/simulation.py`; `tools/workflows.py`; `test_solver_diagnostics.py`; `test_simulation_tools.py`; `test_workflows.py` |

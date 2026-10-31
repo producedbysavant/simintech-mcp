@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from simintech_mcp import runtime, session
+from simintech_mcp import runtime, sandbox, session
 from simintech_mcp.server import mcp
 from simintech_mcp.tools import simulation as simulation_tools
 
-from _support import _error, _install_fake_simulation, _text, timing
+from _support import (
+    _error,
+    _install_fake_simulation,
+    _text,
+    timing,
+    write_diagnostics,
+)
 
 
 @pytest.mark.anyio
@@ -523,3 +531,145 @@ async def test_run_error_has_timing(monkeypatch):
 
     assert data["t_start"] > 1_000_000_000_000
     assert data["elapsed_ms"] >= 0
+
+
+@pytest.fixture
+def diagnostics_env(monkeypatch, tmp_path):
+    monkeypatch.setenv(sandbox.OUTPUT_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(
+        session, "current_client",
+        lambda: SimpleNamespace(session_pid=4242))
+    return tmp_path
+
+
+def _step_writes(sim, path, **overrides):
+    """Шаг фейка пишет файл диагностики, как это делал бы решатель."""
+    original = sim.step
+
+    def step_and_write():
+        original()
+        write_diagnostics(path, **overrides)
+
+    sim.step = step_and_write
+    return sim
+
+
+@pytest.mark.anyio
+async def test_step_reads_diagnostics(monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.001])
+    _step_writes(sim, diagnostics_env / "diag.json",
+                 status="rejected", reason="ner>0", Nbad=3)
+
+    text = _text(await mcp.call_tool(
+        "step", {"count": 1, "diagnostics_path": "diag.json"}))
+
+    assert '"status":"rejected"' in text
+    assert '"reason":"ner>0"' in text
+    assert '"Nbad":3' in text
+
+
+@pytest.mark.anyio
+async def test_step_keeps_diagnostics_on_stalled_time(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    _step_writes(sim, diagnostics_env / "diag.json",
+                 status="rejected", reason="err>1")
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.json"})
+
+    assert "не сдвинулось" in text
+    assert '"status":"rejected"' in text
+    assert '"reason":"err>1"' in text
+
+
+@pytest.mark.anyio
+async def test_step_explains_accepted_log_on_stalled_time(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    _step_writes(sim, diagnostics_env / "diag.jsonl",
+                 status="accepted", reason="accepted")
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "принятый шаг" in text
+    assert "не отказ решателя" in text
+    assert '"status":"accepted"' in text
+    assert "не соединён вход" not in text
+
+
+@pytest.mark.anyio
+async def test_step_entry_without_outcome_is_not_a_guess(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    _step_writes(sim, diagnostics_env / "diag.jsonl",
+                 status="call", reason="call")
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "вход в im_run без исхода" in text
+    assert "solver: " not in text
+
+
+@pytest.mark.anyio
+async def test_step_keeps_diagnostics_on_start_failure(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    def fail_start():
+        write_diagnostics(diagnostics_env / "diag.jsonl",
+                          status="rejected", reason="ner>0")
+        raise RuntimeError("нет старта")
+
+    sim.start = fail_start
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "нет старта" in text
+    assert '"status":"rejected"' in text
+
+
+@pytest.mark.anyio
+async def test_step_keeps_diagnostics_on_exception(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    def fail():
+        write_diagnostics(diagnostics_env / "diag.json",
+                          status="rejected", reason="ner>0")
+        raise RuntimeError("сбой решателя")
+
+    sim.step = fail
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.json"})
+
+    assert "сбой решателя" in text
+    assert '"status":"rejected"' in text
+
+
+@pytest.mark.anyio
+async def test_step_reports_missing_diagnostics(monkeypatch, diagnostics_env):
+    _install_fake_simulation(monkeypatch, [0.0, 0.001])
+
+    text = _text(await mcp.call_tool(
+        "step", {"count": 1, "diagnostics_path": "absent.json"}))
+
+    assert "WARNING: диагностика шага" in text
+    assert "файла нет" in text
+    assert "solver: " not in text
+
+
+@pytest.mark.anyio
+async def test_step_rejects_foreign_diagnostics(monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.001])
+    _step_writes(sim, diagnostics_env / "diag.json", pid=1)
+
+    text = _text(await mcp.call_tool(
+        "step", {"count": 1, "diagnostics_path": "diag.json"}))
+
+    assert "другого процесса" in text
+    assert "solver: " not in text
