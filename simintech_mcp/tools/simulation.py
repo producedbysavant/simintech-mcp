@@ -7,12 +7,14 @@
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Optional
 
 from fastmcp.exceptions import ToolError
 
 from .. import runtime, sandbox, session
 from ..app import mcp
+from ..solver_diagnostics import read_diagnostics
 
 if TYPE_CHECKING:
     # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
@@ -152,45 +154,69 @@ def run(to_time: Optional[float] = None,
 
 @mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})
 @runtime.com_threaded
-def step(count: int = 1) -> str:
+def step(count: int = 1, diagnostics_path: str = "") -> str:
     """Выполнить указанное число шагов расчёта.
 
     Проверяется **фактический** рост модельного времени, а не только код
     возврата: `ProjectStep` сообщает об успехе и на проекте без расчётного
-    слоя, и при неподключённом входе блока — время при этом стоит. Раньше
+    слоя, и при неподключённом входе блока - время при этом стоит. Раньше
     инструмент безусловно отвечал «Выполнено шагов: N». Если время не
-    сдвинулось, инструмент отказывает: шаги, которых не было, — не успех.
+    сдвинулось, инструмент отказывает: шаги, которых не было, - не успех.
+
+    `diagnostics_path` - необязательный файл JSON-диагностики шага внешнего
+    решателя в каталоге результатов (схема `solver-step-diagnostics/1`,
+    поля `pid`, `t`, `h`, `status`, `reason`, `Nbad`, `Ngood`). Без него
+    диагностика не запрашивается. Файл принимается только от процесса mmain
+    текущей сессии и только обновлённый этим прогоном; иначе ответ несёт
+    `WARNING`, а значения не показываются.
 
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
+        diagnostics_path: файл диагностики шага; пусто - не читать.
     """
     if count <= 0:
         raise ToolError("count должен быть положительным")
     if count > MAX_STEP_COUNT:
         raise ToolError(
             f"count={count} больше предела {MAX_STEP_COUNT} шагов за вызов: "
-            f"каждый шаг — отдельный COM-вызов, и такой вызов надолго занял бы "
+            f"каждый шаг - отдельный COM-вызов, и такой вызов надолго занял бы "
             f"выделенный поток. Разбейте на несколько вызовов `step` или "
             f"продвигайте время через `run(to_time=…)`."
         )
     sim = session.ensure_project().simulation()
+    run_started = time.time()
     sim.start()
     before = sim.get_time()
-    for _ in range(count):
-        sim.step()
-    after = sim.get_time()
+    after = before
+    try:
+        for _ in range(count):
+            sim.step()
+        after = sim.get_time()
+    except Exception as exc:
+        if not diagnostics_path:
+            raise
+        message = f"{exc}\n\n{read_diagnostics(diagnostics_path, run_started)}"
+        raise ToolError(message) from exc
     if after <= before:
-        # Отказ, а не текст: время не сдвинулось — это неудача; клиент,
+        # Отказ, а не текст: время не сдвинулось - это неудача; клиент,
         # доверяющий `isError`, иначе счёл бы шаги выполненными.
-        raise ToolError(
+        message = (
             f"Время не сдвинулось после {count} шагов (осталось "
             f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
             f"у какого-то блока не соединён вход, у проекта нет "
             f"расчётного слоя (создайте его через `create_project`) "
-            f"либо скрипт страницы не скомпилировался — среда об этом "
+            f"либо скрипт страницы не скомпилировался - среда об этом "
             f"молчит."
         )
-    return f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
+        if diagnostics_path:
+            message = (f"{message}\n\n"
+                       f"{read_diagnostics(diagnostics_path, run_started)}")
+        raise ToolError(message)
+    result = f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
+    if diagnostics_path:
+        result = (f"{result}\n\n"
+                  f"{read_diagnostics(diagnostics_path, run_started)}")
+    return result
 
 
 @mcp.tool(title="Остановить расчёт", annotations={"readOnlyHint": False})

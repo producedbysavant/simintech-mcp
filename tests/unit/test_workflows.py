@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastmcp.exceptions import ToolError
 
+from simintech_mcp import session
 from simintech_mcp.specs import BlockSpec, ModelSpec, WireSpec
 from simintech_mcp.tools import workflows
 
-from _support import timing
+from _support import timing, write_diagnostics
 
 
 def _patch(monkeypatch, calls, name, result):
@@ -330,3 +333,104 @@ def test_simulate_error_has_one_timing(monkeypatch):
     message = str(excinfo.value)
     assert message.count("timing: ") == 1
     assert timing(message)["elapsed_ms"] >= 0
+
+
+def _diag_session(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        session, "current_client",
+        lambda: SimpleNamespace(session_pid=4242))
+
+
+def test_simulate_reads_step_diagnostics(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fake_run(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.json", status="rejected",
+                          reason="ner>0", Nbad=4)
+        return "расчёт завершён"
+
+    monkeypatch.setattr(workflows, "run", fake_run)
+    calls = []
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    text = workflows.simulate(to_time=1.0, diagnostics_path="diag.json")
+
+    assert '"status":"rejected"' in text
+    assert '"reason":"ner>0"' in text
+    assert '"Nbad":4' in text
+    assert text.count("timing: ") == 1
+    assert timing(text)
+
+
+def test_simulate_reads_diagnostics_after_steps(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fake_step(count):
+        write_diagnostics(tmp_path / "diag.json", status="rejected",
+                          reason="ner>0")
+        return f"шаги: {count}"
+
+    monkeypatch.setattr(workflows, "step", fake_step)
+    calls = []
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    text = workflows.simulate(step_count=2, diagnostics_path="diag.json")
+
+    assert "шаги: 2" in text
+    assert '"status":"rejected"' in text
+    assert timing(text)
+
+
+def test_simulate_keeps_diagnostics_on_failed_run(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fail(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.json", status="rejected",
+                          reason="err>1")
+        raise ToolError(
+            "расчёт не дошёл\n"
+            'timing: {"t_start":1,"t_end":2,"elapsed_ms":1}')
+
+    monkeypatch.setattr(workflows, "run", fail)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0, diagnostics_path="diag.json")
+
+    message = str(excinfo.value)
+    assert "не дошёл" in message
+    assert '"status":"rejected"' in message
+    assert '"reason":"err>1"' in message
+    assert message.count("timing: ") == 1
+
+
+def test_simulate_keeps_diagnostics_on_raw_error(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fail(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.json", status="rejected",
+                          reason="ner>0")
+        raise RuntimeError("сбой решателя")
+
+    monkeypatch.setattr(workflows, "run", fail)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0, diagnostics_path="diag.json")
+
+    message = str(excinfo.value)
+    assert "сбой решателя" in message
+    assert '"status":"rejected"' in message
+    assert message.count("timing: ") == 1
+
+
+def test_simulate_reports_missing_diagnostics(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+    calls = []
+    _patch(monkeypatch, calls, "run", "расчёт завершён")
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    text = workflows.simulate(to_time=1.0, diagnostics_path="absent.json")
+
+    assert "WARNING: диагностика шага" in text
+    assert "файла нет" in text
+    assert "solver: " not in text
