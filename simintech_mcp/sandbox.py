@@ -131,6 +131,30 @@ MISSING_PROJECT_FILE = ("ERROR: файла нет: {path}. Сохраните п
                         "`save_project` в каталог результатов.")
 
 
+def read_tail_bounded(resolved: str, max_bytes: int) -> Tuple[bytes, bool, float]:
+    """Прочитать хвост файла не больше `max_bytes` байт.
+
+    Растущий журнал (JSON Lines) держит последнюю запись в конце, а не в
+    начале. Второй элемент ответа говорит, попал ли первый байт в середину
+    строки: тогда читатель обязан отбросить неполную первую строку, иначе
+    разбор начнётся с обрывка JSON. Третий элемент - mtime, снятый с того же
+    открытого дескриптора: время и содержимое описывают одну версию файла,
+    даже если его заменили между вызовами.
+
+    Разрешение пути и проверка каталога остаются за вызывающим: эта функция
+    читает уже разрешённый файл, как и `read_bounded`.
+    """
+    with open(resolved, "rb") as fh:
+        stat = os.fstat(fh.fileno())
+        size = stat.st_size
+        if size > max_bytes:
+            offset = size - max_bytes
+            fh.seek(offset - 1)
+            before = fh.read(1)
+            return fh.read(max_bytes), before != b"\n", stat.st_mtime
+        return fh.read(), False, stat.st_mtime
+
+
 def load_result_file(path: str, max_bytes: int,
                      missing: str) -> Tuple[bytes, bool, str]:
     """Разрешить путь в песочнице и прочитать файл не больше `max_bytes`.
@@ -160,6 +184,25 @@ def load_result_file(path: str, max_bytes: int,
     except OSError as exc:
         return b"", False, f"ERROR: {exc}"
     return data, truncated, ""
+
+
+def load_result_tail(path: str, max_bytes: int,
+                     missing: str) -> Tuple[bytes, bool, float, str]:
+    """Разрешить путь, прочитать хвост и вернуть mtime того же файла.
+
+    Returns:
+        `(data, partial, mtime, error)`: `error` непуст, если читать нечего;
+        `partial` - хвост начался с середины строки; `mtime` снят с того же
+        открытого дескриптора, что и `data`.
+    """
+    resolved = resolve_output_path(path)
+    if not os.path.isfile(resolved):
+        return b"", False, 0.0, missing.format(path=path)
+    try:
+        data, partial, mtime = read_tail_bounded(resolved, max_bytes)
+    except OSError as exc:
+        return b"", False, 0.0, str(exc)
+    return data, partial, mtime, ""
 
 
 def resolve_output_path(path: str) -> str:

@@ -404,6 +404,53 @@ def test_simulate_keeps_diagnostics_on_failed_run(monkeypatch, tmp_path):
     assert message.count("timing: ") == 1
 
 
+def test_simulate_keeps_diagnostics_when_output_read_fails(
+        monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fake_run(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.jsonl", status="rejected",
+                          reason="ner>0")
+        return "расчёт завершён"
+
+    monkeypatch.setattr(workflows, "run", fake_run)
+    calls = []
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    def fail_output(path):
+        raise ToolError("нет out.txt")
+
+    monkeypatch.setattr(workflows, "read_output_file", fail_output)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0, diagnostics_path="diag.jsonl",
+                           output_path="out.txt")
+
+    message = str(excinfo.value)
+    assert "нет out.txt" in message
+    assert '"status":"rejected"' in message
+    assert message.count("timing: ") == 1
+
+
+def test_simulate_explains_accepted_log_on_failed_run(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fail(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.jsonl", status="accepted",
+                          reason="accepted")
+        raise ToolError("расчёт не дошёл")
+
+    monkeypatch.setattr(workflows, "run", fail)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0, diagnostics_path="diag.jsonl")
+
+    message = str(excinfo.value)
+    assert "Журнал решателя: принятый шаг" in message
+    assert '"status":"accepted"' in message
+    assert message.count("timing: ") == 1
+
+
 def test_simulate_keeps_diagnostics_on_raw_error(monkeypatch, tmp_path):
     _diag_session(monkeypatch, tmp_path)
 

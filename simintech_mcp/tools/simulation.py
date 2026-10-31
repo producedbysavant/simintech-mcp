@@ -14,7 +14,7 @@ from fastmcp.exceptions import ToolError
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..solver_diagnostics import read_diagnostics
+from ..solver_diagnostics import read_diagnostics_result
 
 if TYPE_CHECKING:
     # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
@@ -163,16 +163,24 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
     инструмент безусловно отвечал «Выполнено шагов: N». Если время не
     сдвинулось, инструмент отказывает: шаги, которых не было, - не успех.
 
-    `diagnostics_path` - необязательный файл JSON-диагностики шага внешнего
-    решателя в каталоге результатов (схема `solver-step-diagnostics/1`,
-    поля `pid`, `t`, `h`, `status`, `reason`, `Nbad`, `Ngood`). Без него
-    диагностика не запрашивается. Файл принимается только от процесса mmain
-    текущей сессии и только обновлённый этим прогоном; иначе ответ несёт
-    `WARNING`, а значения не показываются.
+    `diagnostics_path` - необязательный журнал JSON Lines диагностики шага
+    внешнего решателя в каталоге результатов (схема
+    `solver-step-diagnostics/1`). MCP читает хвост журнала и берёт последний
+    исход `accepted`/`rejected`; записи `call`/`entry` - вход в `im_run`,
+    они не выдаются за исход. Без `diagnostics_path` диагностика не
+    запрашивается. Журнал принимается только от процесса mmain текущей
+    сессии и только обновлённый этим прогоном; иначе ответ несёт `WARNING`,
+    а значения не показываются.
+
+    `count` - число вызовов `ProjectStep`, а не число входов в `im_run`:
+    часть итераций сервера может не дойти до модуля, расхождение видно по
+    строкам `call` и исходов в журнале. В idle-режиме `step(1)` может
+    пересоздавать решатель с `t=0`, поэтому `Δt=0` не означает отказ
+    решателя; при `diagnostics_path` причина берётся из журнала.
 
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
-        diagnostics_path: файл диагностики шага; пусто - не читать.
+        diagnostics_path: журнал диагностики шага; пусто - не читать.
     """
     if count <= 0:
         raise ToolError("count должен быть положительным")
@@ -185,37 +193,60 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
         )
     sim = session.ensure_project().simulation()
     run_started = time.time()
-    sim.start()
-    before = sim.get_time()
-    after = before
+    before = 0.0
+    after = 0.0
     try:
+        sim.start()
+        before = sim.get_time()
+        after = before
         for _ in range(count):
             sim.step()
         after = sim.get_time()
     except Exception as exc:
         if not diagnostics_path:
             raise
-        message = f"{exc}\n\n{read_diagnostics(diagnostics_path, run_started)}"
-        raise ToolError(message) from exc
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        raise ToolError(f"{exc}\n\n{diagnostics.text}") from exc
     if after <= before:
         # Отказ, а не текст: время не сдвинулось - это неудача; клиент,
         # доверяющий `isError`, иначе счёл бы шаги выполненными.
-        message = (
-            f"Время не сдвинулось после {count} шагов (осталось "
-            f"{after:.3f} с). Обычно это значит, что расчёт не идёт: "
-            f"у какого-то блока не соединён вход, у проекта нет "
-            f"расчётного слоя (создайте его через `create_project`) "
-            f"либо скрипт страницы не скомпилировался - среда об этом "
-            f"молчит."
+        head = (f"Время не сдвинулось после {count} шагов (осталось "
+                f"{after:.3f} с).")
+        causes = (
+            "Частые причины: у какого-то блока не соединён вход, у проекта "
+            "нет расчётного слоя (создайте его через `create_project`) либо "
+            "скрипт страницы не скомпилировался - среда об этом молчит."
         )
-        if diagnostics_path:
-            message = (f"{message}\n\n"
-                       f"{read_diagnostics(diagnostics_path, run_started)}")
-        raise ToolError(message)
+        if not diagnostics_path:
+            raise ToolError(
+                f"{head} Точная причина не установлена: журнал решателя не "
+                f"запрошен (`diagnostics_path` не задан). {causes}")
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        if diagnostics.status == "accepted":
+            message = (
+                f"{head} Журнал решателя показывает принятый шаг: это не "
+                f"отказ решателя. В idle-режиме step(1) может пересоздавать "
+                f"решатель с t=0; проверьте режим расчёта и синхронизацию."
+            )
+        elif diagnostics.status == "rejected":
+            message = (
+                f"{head} Журнал решателя: отказ шага, причина в строке "
+                f"solver."
+            )
+        elif diagnostics.status in ("call", "entry"):
+            message = (
+                f"{head} Журнал решателя: вход в im_run без исхода; шаг не "
+                f"завершён."
+            )
+        else:
+            message = (
+                f"{head} Точная причина не установлена, журнал решателя "
+                f"недоступен. {causes}")
+        raise ToolError(f"{message}\n\n{diagnostics.text}")
     result = f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
     if diagnostics_path:
-        result = (f"{result}\n\n"
-                  f"{read_diagnostics(diagnostics_path, run_started)}")
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        result = f"{result}\n\n{diagnostics.text}"
     return result
 
 

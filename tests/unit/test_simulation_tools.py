@@ -584,6 +584,55 @@ async def test_step_keeps_diagnostics_on_stalled_time(
 
 
 @pytest.mark.anyio
+async def test_step_explains_accepted_log_on_stalled_time(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    _step_writes(sim, diagnostics_env / "diag.jsonl",
+                 status="accepted", reason="accepted")
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "принятый шаг" in text
+    assert "не отказ решателя" in text
+    assert '"status":"accepted"' in text
+    assert "не соединён вход" not in text
+
+
+@pytest.mark.anyio
+async def test_step_entry_without_outcome_is_not_a_guess(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    _step_writes(sim, diagnostics_env / "diag.jsonl",
+                 status="call", reason="call")
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "вход в im_run без исхода" in text
+    assert "solver: " not in text
+
+
+@pytest.mark.anyio
+async def test_step_keeps_diagnostics_on_start_failure(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+
+    def fail_start():
+        write_diagnostics(diagnostics_env / "diag.jsonl",
+                          status="rejected", reason="ner>0")
+        raise RuntimeError("нет старта")
+
+    sim.start = fail_start
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "нет старта" in text
+    assert '"status":"rejected"' in text
+
+
+@pytest.mark.anyio
 async def test_step_keeps_diagnostics_on_exception(
         monkeypatch, diagnostics_env):
     sim = _install_fake_simulation(monkeypatch, [0.0])

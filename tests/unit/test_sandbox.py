@@ -74,6 +74,64 @@ def test_read_bounded_reads_no_more_than_limit(tmp_path):
     assert len(data) == 100, "прочитано должно быть ровно 100 байт"
 
 
+def test_read_tail_bounded_keeps_last_bytes(tmp_path):
+    """Хвост журнала берётся с конца: последняя строка не теряется."""
+    path = tmp_path / "log.jsonl"
+    lines = [b'{"n":%d}\n' % i for i in range(100)]
+    path.write_bytes(b"".join(lines))
+
+    data, partial, mtime = sandbox.read_tail_bounded(str(path), 40)
+
+    assert partial is True
+    assert len(data) == 40
+    assert data.endswith(b'{"n":99}\n')
+    assert mtime > 0
+
+
+def test_read_tail_bounded_marks_line_boundary_as_complete(tmp_path):
+    """Смещение ровно на начале строки не требует отбрасывать первую."""
+    path = tmp_path / "log.jsonl"
+    path.write_bytes(b"one\ntwo\nthree\n")
+
+    data, partial, mtime = sandbox.read_tail_bounded(str(path), 6)
+
+    assert partial is False
+    assert data == b"three\n"
+    assert mtime > 0
+
+
+def test_read_tail_bounded_marks_mid_line_as_partial(tmp_path):
+    """Смещение внутрь строки помечает первую строку неполной."""
+    path = tmp_path / "log.jsonl"
+    path.write_bytes(b"one\ntwo\nthree\n")
+
+    data, partial, mtime = sandbox.read_tail_bounded(str(path), 5)
+
+    assert partial is True
+    assert data == b"hree\n"
+    assert mtime > 0
+
+
+def test_load_result_tail_returns_mtime_and_missing(tmp_path, monkeypatch):
+    """Общий помощник отдаёт mtime и текст отсутствия в одном ответе."""
+    monkeypatch.setenv(sandbox.OUTPUT_DIR_ENV, str(tmp_path))
+    path = tmp_path / "log.jsonl"
+    path.write_bytes(b"one\ntwo\n")
+
+    data, partial, mtime, error = sandbox.load_result_tail(
+        "log.jsonl", 100, "нет {path}")
+
+    assert error == ""
+    assert data == b"one\ntwo\n"
+    assert partial is False
+    assert mtime > 0
+
+    _data, _partial, _mtime, error = sandbox.load_result_tail(
+        "absent.jsonl", 100, "нет {path}")
+
+    assert error == "нет absent.jsonl"
+
+
 def test_read_bounded_keeps_small_file_intact(tmp_path):
     """Файл меньше предела читается целиком и не помечается обрезанным."""
 

@@ -16,6 +16,7 @@ from simintech_mcp.solver_diagnostics import (
     DiagnosticsError,
     parse_diagnostics,
     read_diagnostics,
+    read_diagnostics_result,
 )
 
 
@@ -40,6 +41,25 @@ def _payload(**overrides):
 def _write(path: Path, **overrides) -> Path:
     path.write_text(json.dumps(_payload(**overrides)), encoding="utf-8")
     return path
+
+
+def _write_log(path: Path, *records) -> Path:
+    path.write_text(
+        "\n".join(json.dumps(item) for item in records) + "\n",
+        encoding="utf-8")
+    return path
+
+
+def _call(**overrides):
+    data = {
+        "schema": SCHEMA,
+        "pid": PID,
+        "t": 1.25,
+        "status": "call",
+        "reason": "call",
+    }
+    data.update(overrides)
+    return data
 
 
 @pytest.fixture(autouse=True)
@@ -144,3 +164,128 @@ def test_read_reports_oversized_file(tmp_path):
 
     assert "больше" in line
     assert "solver: " not in line
+
+
+def test_parse_accepts_call_without_counters():
+    data = parse_diagnostics(json.dumps(_call()).encode())
+
+    assert data["status"] == "call"
+    assert "Nbad" not in data
+
+
+def test_read_jsonl_returns_last_outcome(tmp_path):
+    _write_log(tmp_path / "diag.jsonl",
+               _payload(status="accepted", reason="accepted"),
+               _payload(status="rejected", reason="ner>0", Nbad=5))
+
+    result = read_diagnostics_result("diag.jsonl",
+                                     run_started=time.time() - 1)
+
+    assert result.status == "rejected"
+    assert '"reason":"ner>0"' in result.text
+    assert '"Nbad":5' in result.text
+
+
+def test_read_jsonl_trailing_call_keeps_last_outcome(tmp_path):
+    _write_log(tmp_path / "diag.jsonl",
+               _payload(status="accepted", reason="accepted"),
+               _call())
+
+    result = read_diagnostics_result("diag.jsonl",
+                                     run_started=time.time() - 1)
+
+    assert result.status == "accepted"
+    assert '"status":"accepted"' in result.text
+    assert "вход в im_run" in result.text
+
+
+def test_read_jsonl_only_call_has_no_outcome(tmp_path):
+    _write_log(tmp_path / "diag.jsonl", _call())
+
+    result = read_diagnostics_result("diag.jsonl",
+                                     run_started=time.time() - 1)
+
+    assert result.status == "call"
+    assert result.warning is True
+    assert "solver: " not in result.text
+    assert "только записи входа" in result.text
+
+
+def test_parse_accepts_integral_float_counters():
+    data = parse_diagnostics(
+        json.dumps(_payload(Nbad=4.0, Ngood=120.0)).encode())
+
+    assert data["Nbad"] == 4
+    assert data["Ngood"] == 120
+
+
+def test_parse_rejects_fractional_counters():
+    with pytest.raises(DiagnosticsError, match="Nbad"):
+        parse_diagnostics(json.dumps(_payload(Nbad=4.5)).encode())
+
+
+def test_parse_wraps_recursion_and_int_limit_errors():
+    with pytest.raises(DiagnosticsError, match="JSON"):
+        parse_diagnostics(b"[" * 3000)
+    with pytest.raises(DiagnosticsError, match="JSON"):
+        parse_diagnostics(b"9" * 5000)
+
+
+def test_parse_accepts_entry_alias():
+    data = parse_diagnostics(json.dumps(_call(status="entry")).encode())
+
+    assert data["status"] == "entry"
+
+
+def test_read_rejects_previous_run_within_old_tolerance(tmp_path):
+    path = _write(tmp_path / "diag.jsonl")
+    now = time.time()
+    os.utime(path, (now - 1.0, now - 1.0))
+
+    result = read_diagnostics_result("diag.jsonl", run_started=now - 0.5)
+
+    assert "не обновлён" in result.text
+    assert "solver: " not in result.text
+
+
+def test_read_rejects_future_mtime(tmp_path):
+    path = _write(tmp_path / "diag.jsonl")
+    now = time.time()
+    os.utime(path, (now + 60, now + 60))
+
+    result = read_diagnostics_result("diag.jsonl", run_started=now)
+
+    assert "будущем" in result.text
+    assert "solver: " not in result.text
+
+
+def test_read_rejects_mixed_process_log(tmp_path):
+    _write_log(tmp_path / "diag.jsonl",
+               _payload(status="accepted", reason="accepted"),
+               _call(pid=1))
+
+    result = read_diagnostics_result("diag.jsonl",
+                                     run_started=time.time() - 1)
+
+    assert "другого процесса" in result.text
+    assert "solver: " not in result.text
+
+
+def test_read_jsonl_large_log_uses_tail(tmp_path):
+    path = tmp_path / "diag.jsonl"
+    records = [
+        _payload(status="accepted", reason="accepted", t=float(i))
+        for i in range(2000)
+    ]
+    records.append(_payload(status="rejected", reason="err>1", Nbad=7))
+    path.write_text(
+        "\n".join(json.dumps(item) for item in records) + "\n",
+        encoding="utf-8")
+    assert path.stat().st_size > 64 * 1024
+
+    result = read_diagnostics_result("diag.jsonl",
+                                     run_started=time.time() - 1)
+
+    assert result.status == "rejected"
+    assert '"reason":"err>1"' in result.text
+    assert '"Nbad":7' in result.text
