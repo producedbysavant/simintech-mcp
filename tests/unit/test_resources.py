@@ -12,6 +12,20 @@ from _support import _resource_text, _write_skill
 
 
 @pytest.mark.anyio
+async def test_resource_model_ir_guide_covers_semantics():
+    """Справка не отстаёт от поверхности: семантика и оба запроса названы."""
+    text = await _resource_text("simintech://guides/model-ir")
+
+    assert "semantics" in text
+    assert "influence" in text
+    assert "semantic_coverage" in text
+    assert "Semantics" in text
+    assert "known_absences" in text
+    assert "hops" in text
+    assert "not_established" in text
+
+
+@pytest.mark.anyio
 async def test_resource_blocks_catalog_lists_classes_and_params():
     """В каталоге видно классы и имена их параметров — их и ждёт COM."""
     text = await _resource_text("simintech://blocks/catalog")
