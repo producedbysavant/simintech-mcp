@@ -195,6 +195,8 @@ def test_read_jsonl_trailing_call_keeps_last_outcome(tmp_path):
                                      run_started=time.time() - 1)
 
     assert result.status == "accepted"
+    assert result.last_status == "call"
+    assert result.pending_entry is True
     assert '"status":"accepted"' in result.text
     assert "вход в im_run" in result.text
 

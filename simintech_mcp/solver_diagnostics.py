@@ -55,13 +55,34 @@ class DiagnosticsResult:
     ``status`` - статус последнего исхода (``accepted``/``rejected``), а не
     последней строки: после исхода могла остаться запись ``call``. Если
     исхода в хвосте нет, ``status`` - статус последней записи (``call`` или
-    ``entry``), а ``text`` содержит явное предупреждение.
+    ``entry``), а ``text`` содержит явное предупреждение. ``last_status``
+    хранит статус именно последней записи, ``pending_entry`` - был ли после
+    последнего исхода вход без исхода.
     """
 
     text: str
     status: Optional[str] = None
     record: Optional[Dict[str, Any]] = None
     warning: bool = False
+    last_status: Optional[str] = None
+    pending_entry: bool = False
+
+
+def accepted_stall_note(result: DiagnosticsResult) -> str:
+    """Текст для ``Δt=0``, когда последний исход ``accepted``.
+
+    Не выдаёт догадку: если после исхода был вход без исхода, так и говорит;
+    в обоих случаях точная причина не устанавливается.
+    """
+    if result.pending_entry:
+        return ("Журнал решателя: последний исход принят, но после него был "
+                "вход в im_run без исхода. Модельное время не сдвинулось; "
+                "последняя попытка могла выйти без записи исхода (например, "
+                "h<4*hmin). Точная причина не установлена.")
+    return ("Журнал решателя заканчивается принятым шагом, но модельное "
+            "время не сдвинулось. Это не отказ решателя по журналу: "
+            "последняя попытка могла выйти без записи (например, "
+            "h<4*hmin). Точная причина не установлена.")
 
 
 def _number(data: Dict[str, Any], key: str,
@@ -271,14 +292,17 @@ def read_diagnostics_result(path: str, run_started: float) -> DiagnosticsResult:
         return DiagnosticsResult(
             text=("WARNING: в хвосте журнала только записи входа в im_run; "
                   "исхода шага нет"),
-            status=last["status"], record=last, warning=True)
+            status=last["status"], record=last, warning=True,
+            last_status=last["status"])
     outcome = outcomes[-1]
+    pending = last["status"] in _ENTRIES
     text = _line(outcome)
-    if last["status"] not in _OUTCOMES:
+    if pending:
         text += ("\nWARNING: после последнего исхода был вход в im_run "
                  "без исхода")
     return DiagnosticsResult(
-        text=text, status=outcome["status"], record=outcome, warning=False)
+        text=text, status=outcome["status"], record=outcome, warning=False,
+        last_status=last["status"], pending_entry=pending)
 
 
 def read_diagnostics(path: str, run_started: float) -> str:

@@ -366,10 +366,12 @@ def test_simulate_reads_step_diagnostics(monkeypatch, tmp_path):
 def test_simulate_reads_diagnostics_after_steps(monkeypatch, tmp_path):
     _diag_session(monkeypatch, tmp_path)
 
-    def fake_step(count):
-        write_diagnostics(tmp_path / "diag.json", status="rejected",
-                          reason="ner>0")
-        return f"шаги: {count}"
+    def fake_step(count, diagnostics_path=""):
+        assert diagnostics_path == "diag.json"
+        return (f"шаги: {count}\n\n"
+                'solver: {"schema":"solver-step-diagnostics/1","pid":4242,'
+                '"t":1.0,"h":0.001,"status":"rejected","reason":"ner>0",'
+                '"Nbad":1,"Ngood":0}')
 
     monkeypatch.setattr(workflows, "step", fake_step)
     calls = []
@@ -379,7 +381,30 @@ def test_simulate_reads_diagnostics_after_steps(monkeypatch, tmp_path):
 
     assert "шаги: 2" in text
     assert '"status":"rejected"' in text
+    assert text.count("solver: ") == 1
     assert timing(text)
+
+
+def test_simulate_step_failure_does_not_duplicate_log(monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fail_step(count, diagnostics_path=""):
+        assert diagnostics_path == "diag.json"
+        raise ToolError(
+            "Время не сдвинулось после 1 шагов (осталось 0.000 с).\n\n"
+            'solver: {"schema":"solver-step-diagnostics/1","pid":4242,'
+            '"t":0.0,"h":0.001,"status":"rejected","reason":"ner>0",'
+            '"Nbad":1,"Ngood":0}')
+
+    monkeypatch.setattr(workflows, "step", fail_step)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(step_count=1, diagnostics_path="diag.json")
+
+    message = str(excinfo.value)
+    assert message.count("solver: ") == 1
+    assert "журнал решателя не запрошен" not in message
+    assert timing(message)
 
 
 def test_simulate_keeps_diagnostics_on_failed_run(monkeypatch, tmp_path):
@@ -438,7 +463,8 @@ def test_simulate_explains_accepted_log_on_failed_run(monkeypatch, tmp_path):
     def fail(*args, **kwargs):
         write_diagnostics(tmp_path / "diag.jsonl", status="accepted",
                           reason="accepted")
-        raise ToolError("расчёт не дошёл")
+        raise ToolError(
+            "Расчёт не дошёл до 1 с: модельное время 0.000. Частые причины.")
 
     monkeypatch.setattr(workflows, "run", fail)
 
@@ -450,6 +476,30 @@ def test_simulate_explains_accepted_log_on_failed_run(monkeypatch, tmp_path):
     assert "h<4*hmin" in message
     assert "Точная причина не установлена" in message
     assert '"status":"accepted"' in message
+    assert message.count("timing: ") == 1
+
+
+def test_simulate_accepted_log_without_stall_has_no_stall_note(
+        monkeypatch, tmp_path):
+    _diag_session(monkeypatch, tmp_path)
+
+    def fail(*args, **kwargs):
+        write_diagnostics(tmp_path / "diag.jsonl", status="accepted",
+                          reason="accepted")
+        raise ToolError(
+            "Расчёт не дошёл до 100 с: модельное время 10.000. "
+            "Частые причины: `to_time` больше `endtime`.")
+
+    monkeypatch.setattr(workflows, "run", fail)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=100.0, diagnostics_path="diag.jsonl")
+
+    message = str(excinfo.value)
+    assert '"status":"accepted"' in message
+    assert "модельное время 10.000" in message
+    assert "h<4*hmin" not in message
+    assert "Журнал решателя заканчивается" not in message
     assert message.count("timing: ") == 1
 
 
