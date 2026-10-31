@@ -57,7 +57,7 @@ MAX_STEP_COUNT = 1000
 
 
 @mcp.tool(title="Запустить расчёт", annotations={"readOnlyHint": False})
-@runtime.com_threaded
+@runtime.com_threaded(timed=True)
 def run(to_time: Optional[float] = None,
         wait_timeout: float = CALC_WAIT_SECONDS,
         stall_seconds: float = CALC_STALL_SECONDS) -> str:
@@ -77,6 +77,11 @@ def run(to_time: Optional[float] = None,
 
     Расчёт идёт до `endtime` проекта, поэтому `to_time` больше него недостижим
     — поднимите время расчёта через `set_calc_time`.
+
+    Ответ оканчивается машинной строкой
+    `timing: {"t_start":...,"t_end":...,"elapsed_ms":...}`: `t_start` и
+    `t_end` в unix ms, `elapsed_ms` по монотонным часам; паузы клиента между
+    вызовами в него не входят. При отказе строка тоже есть.
 
     Args:
         to_time: время окончания расчёта в секундах (если указано).

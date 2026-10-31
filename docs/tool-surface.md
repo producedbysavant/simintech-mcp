@@ -15,6 +15,15 @@
 `simintech://tools/<name>`. Переменная `SIMINTECH_MCP_DISCOVERY=all`
 возвращает все инструменты без поиска.
 
+## Машинный хвост timing
+
+`run` и `simulate` оканчивают ответ строкой
+`timing: {"t_start":<unix_ms>,"t_end":<unix_ms>,"elapsed_ms":<ms>}`.
+`t_start` и `t_end` - unix ms сервера, `elapsed_ms` - монотонная длительность
+handler. Паузы клиента между вызовами не входят. У `simulate` ровно одна
+такая строка: вложенный `run` свой хвост не оставляет. Отказ (`isError`)
+тоже несёт timing-строку последней.
+
 ## Model IR
 
 `load_model` читает текущий проект снимком `.xprt` без запуска расчёта или

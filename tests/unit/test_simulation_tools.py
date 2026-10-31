@@ -8,7 +8,7 @@ from simintech_mcp import runtime, session
 from simintech_mcp.server import mcp
 from simintech_mcp.tools import simulation as simulation_tools
 
-from _support import _error, _install_fake_simulation, _text
+from _support import _error, _install_fake_simulation, _text, timing
 
 
 @pytest.mark.anyio
@@ -485,3 +485,41 @@ async def test_set_signal_index_on_scalar_is_refused(monkeypatch):
                         {"block": "k_0", "value": 1.0, "index": 0})
 
     assert "не массив" in text
+
+
+@pytest.mark.anyio
+async def test_run_reports_absolute_timing(monkeypatch):
+    """Успешный run несёт абсолютные метки сервера вокруг вызова."""
+    _install_fake_simulation(monkeypatch, [1.0])
+
+    text = _text(await mcp.call_tool("run", {"to_time": 1.0}))
+    data = timing(text)
+
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["t_end"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0
+
+
+@pytest.mark.anyio
+async def test_run_without_target_reports_timing(monkeypatch):
+    """Неблокирующий run тоже возвращает метки."""
+    _install_fake_simulation(monkeypatch, [0.0])
+
+    text = _text(await mcp.call_tool("run", {}))
+    data = timing(text)
+
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0
+
+
+@pytest.mark.anyio
+async def test_run_error_has_timing(monkeypatch):
+    """Отказ run тоже несёт абсолютные метки."""
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    sim.run_to_result = False
+
+    text = await _error("run", {"to_time": 1.0})
+    data = timing(text)
+
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0

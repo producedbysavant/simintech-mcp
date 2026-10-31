@@ -319,20 +319,25 @@ def inspect_model(include_params: bool = False, limit: int = 200) -> str:
         "open_world_hint": False,
     },
 )
-@runtime.workflow_tool
+@runtime.workflow_tool(timed=True)
 def simulate(to_time: Optional[float] = None,
              end_time: Optional[float] = None,
              step_count: Optional[int] = None,
              output_path: str = "",
              summary: bool = True) -> str:
-    """Задать время, запустить расчёт или шаги, прочитать результат."""
+    """Задать время, запустить расчёт или шаги, прочитать результат.
+
+    Ответ оканчивается одной машинной строкой
+    `timing: {"t_start":...,"t_end":...,"elapsed_ms":...}` для всего
+    workflow. Вложенный `run` свой хвост не оставляет.
+    """
     parts: List[str] = []
     if end_time is not None:
         parts.append(set_calc_time(end_time))
     if step_count is not None:
         parts.append(step(step_count))
     else:
-        parts.append(run(to_time=to_time))
+        parts.append(runtime.strip_timing(run(to_time=to_time)))
     parts.append(f"Модельное время: {get_time():g} с")
     if output_path:
         parts.append(read_output_file(output_path))

@@ -8,6 +8,8 @@ from fastmcp.exceptions import ToolError
 from simintech_mcp.specs import BlockSpec, ModelSpec, WireSpec
 from simintech_mcp.tools import workflows
 
+from _support import timing
+
 
 def _patch(monkeypatch, calls, name, result):
     def fake(*args, **kwargs):
@@ -300,3 +302,31 @@ def test_build_model_fit_sizes_false_skips_fit(monkeypatch):
     )
 
     assert not [call for call in calls if call[0] == "fit_port_blocks"]
+
+
+def test_simulate_reports_absolute_timing(monkeypatch):
+    calls = []
+    _patch(monkeypatch, calls, "run",
+           "расчёт завершён\n"
+           'timing: {"t_start":1,"t_end":2,"elapsed_ms":1}')
+    _patch(monkeypatch, calls, "get_time", 1.0)
+
+    text = workflows.simulate(to_time=1.0)
+    data = timing(text)
+
+    assert text.count("timing: ") == 1
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0
+
+
+def test_simulate_error_has_one_timing(monkeypatch):
+    def fail(*args, **kwargs):
+        raise ToolError("расчёт не дошёл")
+
+    monkeypatch.setattr(workflows, "run", fail)
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0)
+
+    message = str(excinfo.value)
+    assert message.count("timing: ") == 1
+    assert timing(message)["elapsed_ms"] >= 0
