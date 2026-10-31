@@ -306,11 +306,27 @@ def test_build_model_fit_sizes_false_skips_fit(monkeypatch):
 
 def test_simulate_reports_absolute_timing(monkeypatch):
     calls = []
-    _patch(monkeypatch, calls, "run", "расчёт завершён")
+    _patch(monkeypatch, calls, "run",
+           "расчёт завершён\n"
+           'timing: {"t_start":1,"t_end":2,"elapsed_ms":1}')
     _patch(monkeypatch, calls, "get_time", 1.0)
 
     text = workflows.simulate(to_time=1.0)
     data = timing(text)
 
+    assert text.count("timing: ") == 1
     assert data["t_start"] > 1_000_000_000_000
-    assert data["elapsed_ms"] == data["t_end"] - data["t_start"]
+    assert data["elapsed_ms"] >= 0
+
+
+def test_simulate_error_has_one_timing(monkeypatch):
+    def fail(*args, **kwargs):
+        raise ToolError("расчёт не дошёл")
+
+    monkeypatch.setattr(workflows, "run", fail)
+    with pytest.raises(ToolError) as excinfo:
+        workflows.simulate(to_time=1.0)
+
+    message = str(excinfo.value)
+    assert message.count("timing: ") == 1
+    assert timing(message)["elapsed_ms"] >= 0

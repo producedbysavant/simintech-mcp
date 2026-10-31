@@ -496,8 +496,8 @@ async def test_run_reports_absolute_timing(monkeypatch):
     data = timing(text)
 
     assert data["t_start"] > 1_000_000_000_000
-    assert data["t_end"] >= data["t_start"]
-    assert data["elapsed_ms"] == data["t_end"] - data["t_start"]
+    assert data["t_end"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0
 
 
 @pytest.mark.anyio
@@ -508,4 +508,18 @@ async def test_run_without_target_reports_timing(monkeypatch):
     text = _text(await mcp.call_tool("run", {}))
     data = timing(text)
 
-    assert data["t_end"] >= data["t_start"]
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0
+
+
+@pytest.mark.anyio
+async def test_run_error_has_timing(monkeypatch):
+    """Отказ run тоже несёт абсолютные метки."""
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    sim.run_to_result = False
+
+    text = await _error("run", {"to_time": 1.0})
+    data = timing(text)
+
+    assert data["t_start"] > 1_000_000_000_000
+    assert data["elapsed_ms"] >= 0

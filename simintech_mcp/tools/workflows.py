@@ -11,7 +11,6 @@ import os
 import platform
 import re
 import sys
-import time
 from importlib.metadata import PackageNotFoundError, version
 from typing import Dict, List, Literal, Optional
 
@@ -29,7 +28,7 @@ from .model_text import import_model_text
 from .project import create_project, set_calc_time
 from .project import status as project_status
 from .screenshot import save_screenshot
-from .simulation import get_time, run, step, with_timing
+from .simulation import get_time, run, step
 from .wires import connect, list_wires
 
 
@@ -320,27 +319,31 @@ def inspect_model(include_params: bool = False, limit: int = 200) -> str:
         "open_world_hint": False,
     },
 )
-@runtime.workflow_tool
+@runtime.workflow_tool(timed=True)
 def simulate(to_time: Optional[float] = None,
              end_time: Optional[float] = None,
              step_count: Optional[int] = None,
              output_path: str = "",
              summary: bool = True) -> str:
-    """Задать время, запустить расчёт или шаги, прочитать результат."""
-    started_ms = time.time_ns() // 1_000_000
+    """Задать время, запустить расчёт или шаги, прочитать результат.
+
+    Ответ оканчивается одной машинной строкой
+    `timing: {"t_start":...,"t_end":...,"elapsed_ms":...}` для всего
+    workflow. Вложенный `run` свой хвост не оставляет.
+    """
     parts: List[str] = []
     if end_time is not None:
         parts.append(set_calc_time(end_time))
     if step_count is not None:
         parts.append(step(step_count))
     else:
-        parts.append(run(to_time=to_time))
+        parts.append(runtime.strip_timing(run(to_time=to_time)))
     parts.append(f"Модельное время: {get_time():g} с")
     if output_path:
         parts.append(read_output_file(output_path))
         if summary:
             parts.append(summarize_output_file(output_path))
-    return with_timing("\n\n".join(parts), started_ms)
+    return "\n\n".join(parts)
 
 
 @mcp.tool(

@@ -91,3 +91,16 @@
   возвращают текстом (в отличие от одноимённых инструментов).
 - Усечение ответа не означает пустоту: `truncated`, `items_total`,
   `violations_total` и `counts` называют полные числа.
+
+## 9. Машинный хвост timing
+
+`run` и `simulate` оканчивают ответ строкой
+`timing: {"t_start":<unix_ms>,"t_end":<unix_ms>,"elapsed_ms":<ms>}`.
+`t_start` и `t_end` - unix ms сервера, `elapsed_ms` - монотонная длительность
+handler; паузы клиента между вызовами не входят. У `simulate` ровно одна
+такая строка: вложенный `run` свой хвост не оставляет. Отказ (`isError`)
+тоже несёт timing-строку последней.
+
+| id | Факт | Статус | Источник |
+|---|---|---|---|
+| `mcp-run-simulate-timing` | `run` и `simulate` дают абсолютные `t_start`/`t_end` и монотонный `elapsed_ms`; у `simulate` один хвост, у отказа тоже есть строка | code-confirmed | `runtime.py`; `tools/simulation.py`; `tools/workflows.py`; `test_simulation_tools.py`; `test_workflows.py` |

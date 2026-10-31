@@ -7,8 +7,6 @@
 
 from __future__ import annotations
 
-import json
-import time
 from typing import TYPE_CHECKING, Optional
 
 from fastmcp.exceptions import ToolError
@@ -58,25 +56,8 @@ CALC_WAIT_MARGIN_SECONDS = 1.0
 MAX_STEP_COUNT = 1000
 
 
-def with_timing(text: str, started_ms: int) -> str:
-    """Дописать абсолютные метки сервера вокруг handler-вызова.
-
-    Метки в миллисекундах unix time: `t_start` снят до работы handler,
-    `t_end` - после. Паузы клиента между вызовами в `elapsed_ms` не входят.
-    """
-    ended_ms = time.time_ns() // 1_000_000
-    payload = {
-        "t_start": started_ms,
-        "t_end": ended_ms,
-        "elapsed_ms": ended_ms - started_ms,
-    }
-    return (text + "\ntiming: "
-            + json.dumps(payload, ensure_ascii=False,
-                         separators=(",", ":")))
-
-
 @mcp.tool(title="Запустить расчёт", annotations={"readOnlyHint": False})
-@runtime.com_threaded
+@runtime.com_threaded(timed=True)
 def run(to_time: Optional[float] = None,
         wait_timeout: float = CALC_WAIT_SECONDS,
         stall_seconds: float = CALC_STALL_SECONDS) -> str:
@@ -97,6 +78,11 @@ def run(to_time: Optional[float] = None,
     Расчёт идёт до `endtime` проекта, поэтому `to_time` больше него недостижим
     — поднимите время расчёта через `set_calc_time`.
 
+    Ответ оканчивается машинной строкой
+    `timing: {"t_start":...,"t_end":...,"elapsed_ms":...}`: `t_start` и
+    `t_end` в unix ms, `elapsed_ms` по монотонным часам; паузы клиента между
+    вызовами в него не входят. При отказе строка тоже есть.
+
     Args:
         to_time: время окончания расчёта в секундах (если указано).
         wait_timeout: сколько секунд ждать выхода времени на `to_time`
@@ -104,7 +90,6 @@ def run(to_time: Optional[float] = None,
         stall_seconds: сколько секунд неизменного времени считать признаком
             остановившегося расчёта (после этого ждать не имеет смысла).
     """
-    started_ms = time.time_ns() // 1_000_000
     if wait_timeout <= 0 or stall_seconds <= 0:
         raise ToolError(
             "wait_timeout и stall_seconds должны быть положительными")
@@ -143,9 +128,8 @@ def run(to_time: Optional[float] = None,
     sim.start()
     if to_time is None:
         sim.run()
-        return with_timing(
-            "Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
-            "через `get_time`)", started_ms)
+        return ("Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
+                "через `get_time`)")
     reached = sim.run_to(to_time, timeout=wait_timeout, stall=stall_seconds)
     actual = sim.get_time()
     if not reached:
@@ -163,8 +147,7 @@ def run(to_time: Optional[float] = None,
             f"`set_calc_time`. Проверьте соединения, скрипт страницы "
             f"и `list_blocks`."
         )
-    return with_timing(
-        f"Расчёт до {to_time} с завершён (время={actual:.3f})", started_ms)
+    return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
 
 
 @mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})

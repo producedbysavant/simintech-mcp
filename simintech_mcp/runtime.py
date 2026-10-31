@@ -311,27 +311,64 @@ def _log_args(fn: Callable[..., Any], args: Tuple[Any, ...],
         return {}
 
 
+_TIMING_PREFIX = "timing: "
+
+
+def strip_timing(text: str) -> str:
+    """Убрать последнюю машинную строку `timing: ...`, если она есть."""
+    lines = text.rstrip().splitlines()
+    if lines and lines[-1].startswith(_TIMING_PREFIX):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _append_timing(text: str, started_ms: int, elapsed_ms: int) -> str:
+    ended_ms = time.time_ns() // 1_000_000
+    payload = {
+        "t_start": started_ms,
+        "t_end": ended_ms,
+        "elapsed_ms": elapsed_ms,
+    }
+    return (text + "\n" + _TIMING_PREFIX
+            + json.dumps(payload, ensure_ascii=False,
+                         separators=(",", ":")))
+
+
 def _instrumented(fn: Callable[..., Any],
-                  invoke: Callable[..., Any]) -> Callable[..., Any]:
+                  invoke: Callable[..., Any], *,
+                  timed: bool = False) -> Callable[..., Any]:
     """Общая обвязка инструмента: журнал вызова плюс контракт отказа.
 
     Отказ превращается в `ToolError` (см. `_call_guarded`) — только по нему
     MCP выставляет `isError`; сюда же пишется запись журнала с длительностью
-    и исходом, поэтому все инструменты логируются одинаково.
+    и исходом, поэтому все инструменты логируются одинаково. Для `timed`
+    ответ получает машинную строку `timing: {t_start,t_end,elapsed_ms}`:
+    абсолютные метки сервера и монотонная длительность, в которую не входят
+    паузы клиента. Отказ несёт ту же строку.
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        started_wall = time.time_ns() // 1_000_000
         started = time.monotonic()
         try:
             result = invoke(*args, **kwargs)
         except ToolError as exc:
+            elapsed_ms = int(round((time.monotonic() - started) * 1000))
             log_event("tool", tool=fn.__name__, ok=False,
-                      ms=round((time.monotonic() - started) * 1000, 1),
+                      ms=elapsed_ms,
                       args=_log_args(fn, args, kwargs), error=str(exc)[:300])
+            if timed:
+                message = strip_timing(str(exc))
+                raise ToolError(
+                    _append_timing(message, started_wall, elapsed_ms)
+                ) from exc
             raise
+        elapsed_ms = int(round((time.monotonic() - started) * 1000))
         log_event("tool", tool=fn.__name__, ok=True,
-                  ms=round((time.monotonic() - started) * 1000, 1),
+                  ms=elapsed_ms,
                   args=_log_args(fn, args, kwargs))
+        if timed and isinstance(result, str):
+            result = _append_timing(result, started_wall, elapsed_ms)
         return result
 
     return wrapper
@@ -339,7 +376,8 @@ def _instrumented(fn: Callable[..., Any],
 
 def com_threaded(fn: Callable[..., Any] | None = None, *,
                  mutates_project: bool = False,
-                 rescue: bool = False) -> Callable[..., Any]:
+                 rescue: bool = False,
+                 timed: bool = False) -> Callable[..., Any]:
     """Выполнить инструмент в выделенном COM-потоке.
 
     Делает три вещи, каждая из которых обязательна:
@@ -384,7 +422,7 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
         # вернуть обёртку, которая дождётся самой функции.
         return functools.partial(com_threaded,
                                  mutates_project=mutates_project,
-                                 rescue=rescue)
+                                 rescue=rescue, timed=timed)
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
         refusal = _stuck_gate(fn.__name__, rescue=rescue)
@@ -411,7 +449,7 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
             result = _append_mutation_note(result)
         return result
 
-    wrapper = _instrumented(fn, invoke)
+    wrapper = _instrumented(fn, invoke, timed=timed)
     setattr(wrapper, COM_THREAD_MARK, True)
     if mutates_project:
         setattr(wrapper, MUTATES_PROJECT_MARK, True)
@@ -436,7 +474,8 @@ def plain_tool(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def workflow_tool(fn: Callable[..., Any] | None = None, *,
-                  mutates_project: bool = False) -> Callable[..., Any]:
+                  mutates_project: bool = False,
+                  timed: bool = False) -> Callable[..., Any]:
     """Инструмент-оркестратор: COM-поток занимают вложенные вызовы.
 
     Сам workflow не отправляется в `_COM_EXECUTOR`: иначе он ждал бы
@@ -447,7 +486,8 @@ def workflow_tool(fn: Callable[..., Any] | None = None, *,
     """
     if fn is None:
         return functools.partial(workflow_tool,
-                                 mutates_project=mutates_project)
+                                 mutates_project=mutates_project,
+                                 timed=timed)
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
         result = _call_guarded(fn, args, kwargs)
@@ -455,7 +495,7 @@ def workflow_tool(fn: Callable[..., Any] | None = None, *,
             result = _append_mutation_note(result)
         return result
 
-    wrapper = _instrumented(fn, invoke)
+    wrapper = _instrumented(fn, invoke, timed=timed)
     setattr(wrapper, COM_THREAD_MARK, True)
     setattr(wrapper, WORKFLOW_MARK, True)
     if mutates_project:
