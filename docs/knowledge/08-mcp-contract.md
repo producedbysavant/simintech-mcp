@@ -35,6 +35,7 @@
 | `mcp-session-scene-degradation` | После `save_project` возможна деградация сцены mmain (выгрузка «успешна» без файла; далее AV) — правило: сохранили → `reload_project`/`open_project`, потом page-вызовы | live-verified | живые случаи 06.10.2026; `tools/project.py:714-722` |
 | `mcp-save-atomic-temp-file` | `save_project` пишет через `<имя>.tmp.<ext>` + `os.replace`; нулевая длина: отказ, не успех; расширение = формат | live-verified | репорт 08.10.2026; замеры 13.10.2026; `project.py::_verify_saved, save_project` |
 | `mcp-save-visible-window` | `save_project` всегда вызывает `FormShow`; после записи проверяет признак видимости (`<visible>`1`</visible>` в `.xprt`, байт 8 zlib-заголовка `.prt`) и при нуле отказывает, не заменяя целевой файл. Параметра `show_form` больше нет | code-confirmed | `project.py::_visible_flag, _require_visible, save_project`; `test_project_tools.py` |
+| `mcp-solver-dll-process-cache` | Внешний модуль решателя загружается в процесс один раз; `reload_project` перечитывает проект, но не гарантирует перечитывание DLL. Сравнимы прогоны внутри одного процесса; для смены DLL завершите процесс (Stop-Process) и переподключитесь | live-verified | живой A/B-прогон 31.10.2026; `tools/project.py::reload_project` |
 
 ## 4. Контракт правок (issue #18)
 
