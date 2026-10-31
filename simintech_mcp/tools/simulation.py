@@ -224,9 +224,10 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
         diagnostics = read_diagnostics_result(diagnostics_path, run_started)
         if diagnostics.status == "accepted":
             message = (
-                f"{head} Журнал решателя показывает принятый шаг: это не "
-                f"отказ решателя. В idle-режиме step(1) может пересоздавать "
-                f"решатель с t=0; проверьте режим расчёта и синхронизацию."
+                f"{head} Журнал решателя заканчивается принятым шагом, но "
+                f"модельное время не сдвинулось. Это не отказ решателя по "
+                f"журналу: последняя попытка могла выйти без записи "
+                f"(например, h<4*hmin). Точная причина не установлена."
             )
         elif diagnostics.status == "rejected":
             message = (

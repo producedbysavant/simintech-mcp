@@ -446,7 +446,9 @@ def test_simulate_explains_accepted_log_on_failed_run(monkeypatch, tmp_path):
         workflows.simulate(to_time=1.0, diagnostics_path="diag.jsonl")
 
     message = str(excinfo.value)
-    assert "Журнал решателя: принятый шаг" in message
+    assert "принятым шагом" in message
+    assert "h<4*hmin" in message
+    assert "Точная причина не установлена" in message
     assert '"status":"accepted"' in message
     assert message.count("timing: ") == 1
 

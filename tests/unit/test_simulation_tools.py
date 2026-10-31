@@ -593,8 +593,11 @@ async def test_step_explains_accepted_log_on_stalled_time(
     text = await _error(
         "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
 
-    assert "принятый шаг" in text
+    assert "принятым шагом" in text
     assert "не отказ решателя" in text
+    assert "h<4*hmin" in text
+    assert "Точная причина не установлена" in text
+    assert "idle-режиме" not in text
     assert '"status":"accepted"' in text
     assert "не соединён вход" not in text
 

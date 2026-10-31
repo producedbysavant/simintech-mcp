@@ -362,8 +362,10 @@ def simulate(to_time: Optional[float] = None,
         message = runtime.strip_timing(str(exc))
         if diagnostics.status == "accepted":
             message += (
-                "\n\nЖурнал решателя: принятый шаг; модельное время не "
-                "сдвинулось. Это не отказ решателя.")
+                "\n\nЖурнал решателя заканчивается принятым шагом, но "
+                "модельное время не сдвинулось. Это не отказ решателя по "
+                "журналу: последняя попытка могла выйти без записи "
+                "(например, h<4*hmin). Точная причина не установлена.")
         elif diagnostics.status == "rejected":
             message += "\n\nЖурнал решателя: отказ шага."
         elif diagnostics.status in ("call", "entry"):
