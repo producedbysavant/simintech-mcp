@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from simintech_mcp import runtime, sandbox, session
 from simintech_mcp.server import mcp
+from simintech_mcp.solver_diagnostics import SCHEMA
 from simintech_mcp.tools import simulation as simulation_tools
 
 from _support import (
@@ -593,10 +595,43 @@ async def test_step_explains_accepted_log_on_stalled_time(
     text = await _error(
         "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
 
-    assert "принятый шаг" in text
+    assert "принятым шагом" in text
     assert "не отказ решателя" in text
+    assert "h<4*hmin" in text
+    assert "Точная причина не установлена" in text
+    assert "idle-режиме" not in text
     assert '"status":"accepted"' in text
     assert "не соединён вход" not in text
+
+
+@pytest.mark.anyio
+async def test_step_accepted_then_call_reports_pending_entry(
+        monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0])
+    original = sim.step
+
+    def step_and_write():
+        original()
+        records = [
+            {"schema": SCHEMA, "pid": 4242, "t": 0.001, "h": 0.001,
+             "status": "accepted", "reason": "accepted",
+             "Nbad": 0, "Ngood": 0},
+            {"schema": SCHEMA, "pid": 4242, "t": 0.002,
+             "status": "call", "reason": "entry"},
+        ]
+        (diagnostics_env / "diag.jsonl").write_text(
+            "\n".join(json.dumps(item) for item in records) + "\n",
+            encoding="utf-8")
+
+    sim.step = step_and_write
+
+    text = await _error(
+        "step", {"count": 1, "diagnostics_path": "diag.jsonl"})
+
+    assert "последний исход принят" in text
+    assert "вход в im_run без исхода" in text
+    assert "заканчивается принятым шагом" not in text
+    assert '"status":"accepted"' in text
 
 
 @pytest.mark.anyio

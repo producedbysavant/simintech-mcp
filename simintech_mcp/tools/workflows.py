@@ -19,7 +19,7 @@ from fastmcp.exceptions import ToolError
 
 from .. import __version__, runtime, sandbox, session, skills, surface
 from ..app import mcp
-from ..solver_diagnostics import read_diagnostics_result
+from ..solver_diagnostics import accepted_stall_note, read_diagnostics_result
 from ..specs import ModelSpec, render_model_text
 from .blocks import get_block_params, list_blocks
 from .check_model import audit_routing, check_model_layout
@@ -312,6 +312,18 @@ def inspect_model(include_params: bool = False, limit: int = 200) -> str:
     return "\n\n".join(parts)
 
 
+def _looks_like_stall(message: str) -> bool:
+    """Отказ по стоячему времени, а не по именованной причине.
+
+    У `run` сообщение «Расчёт не дошёл до …» бывает и при `to_time` больше
+    `endtime`, и при COM-таймауте. Признак stall - явный текст `step` или
+    нулевое фактическое время в отказе `run`.
+    """
+    return ("Время не сдвинулось" in message
+            or ("Расчёт не дошёл до" in message
+                and "модельное время 0.000" in message))
+
+
 @mcp.tool(
     title="Расчёт и результат",
     annotations={
@@ -352,25 +364,27 @@ def simulate(to_time: Optional[float] = None,
     run_started = time.time()
     try:
         if step_count is not None:
-            parts.append(step(step_count))
+            parts.append(step(step_count, diagnostics_path=diagnostics_path))
         else:
             parts.append(runtime.strip_timing(run(to_time=to_time)))
     except Exception as exc:
         if not diagnostics_path:
             raise
+        if step_count is not None:
+            # step уже прочитал журнал и сформулировал сообщение.
+            raise ToolError(runtime.strip_timing(str(exc))) from exc
         diagnostics = read_diagnostics_result(diagnostics_path, run_started)
         message = runtime.strip_timing(str(exc))
-        if diagnostics.status == "accepted":
-            message += (
-                "\n\nЖурнал решателя: принятый шаг; модельное время не "
-                "сдвинулось. Это не отказ решателя.")
-        elif diagnostics.status == "rejected":
-            message += "\n\nЖурнал решателя: отказ шага."
-        elif diagnostics.status in ("call", "entry"):
-            message += "\n\nЖурнал решателя: вход в im_run без исхода."
+        if _looks_like_stall(message):
+            if diagnostics.status == "accepted":
+                message += "\n\n" + accepted_stall_note(diagnostics)
+            elif diagnostics.status == "rejected":
+                message += "\n\nЖурнал решателя: отказ шага."
+            elif diagnostics.status in ("call", "entry"):
+                message += "\n\nЖурнал решателя: вход в im_run без исхода."
         raise ToolError(f"{message}\n\n{diagnostics.text}") from exc
     parts.append(f"Модельное время: {get_time():g} с")
-    if diagnostics_path:
+    if diagnostics_path and step_count is None:
         parts.append(read_diagnostics_result(diagnostics_path, run_started).text)
     if output_path:
         try:

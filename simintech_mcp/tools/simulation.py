@@ -14,7 +14,7 @@ from fastmcp.exceptions import ToolError
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..solver_diagnostics import read_diagnostics_result
+from ..solver_diagnostics import accepted_stall_note, read_diagnostics_result
 
 if TYPE_CHECKING:
     # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
@@ -173,10 +173,12 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
     а значения не показываются.
 
     `count` - число вызовов `ProjectStep`, а не число входов в `im_run`:
-    часть итераций сервера может не дойти до модуля, расхождение видно по
-    строкам `call` и исходов в журнале. В idle-режиме `step(1)` может
-    пересоздавать решатель с `t=0`, поэтому `Δt=0` не означает отказ
-    решателя; при `diagnostics_path` причина берётся из журнала.
+    один вход может дать несколько принятых шагов или ни одного, поэтому
+    `call` и `accepted` не обязаны идти 1:1. `Δt=0` не означает отказ
+    решателя: последняя попытка могла выйти без записи (например,
+    `h<4*hmin`), а в idle-режиме `step(1)` может пересоздавать решатель с
+    `t=0`. При `diagnostics_path` журнал даёт последний записанный исход;
+    если попытка не оставила записи, точная причина не устанавливается.
 
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
@@ -223,11 +225,7 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
                 f"запрошен (`diagnostics_path` не задан). {causes}")
         diagnostics = read_diagnostics_result(diagnostics_path, run_started)
         if diagnostics.status == "accepted":
-            message = (
-                f"{head} Журнал решателя показывает принятый шаг: это не "
-                f"отказ решателя. В idle-режиме step(1) может пересоздавать "
-                f"решатель с t=0; проверьте режим расчёта и синхронизацию."
-            )
+            message = f"{head} {accepted_stall_note(diagnostics)}"
         elif diagnostics.status == "rejected":
             message = (
                 f"{head} Журнал решателя: отказ шага, причина в строке "

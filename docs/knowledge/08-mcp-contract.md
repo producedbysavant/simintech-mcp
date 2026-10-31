@@ -114,10 +114,17 @@ handler; паузы клиента между вызовами не входят
 JSON Lines схемы `solver-step-diagnostics/1` в каталоге результатов. MCP
 читает хвост, проверяет `pid` (процесс mmain сессии) и свежесть по mtime,
 берёт последний исход `accepted`/`rejected`; записи `call`/`entry` -
-вход в `im_run`, не исход. При сомнении отдаёт `WARNING` и не показывает
-значения. Успешная проверка добавляет строку `solver: {...}` перед
-`timing:` (у `step` timing нет).
+вход в `im_run`, не исход. `call`/`entry` и исходы не обязаны идти 1:1:
+один вход в `im_run` может дать несколько принятых шагов или ни одного;
+читатель отдаёт последний исход и не агрегирует. Если модельное время
+не сдвинулось, а последний исход `accepted`, `step` не приписывает
+причину решателю: последняя попытка могла не оставить записи, и текст
+говорит, что точная причина не установлена. При сомнении отдаёт
+`WARNING` и не показывает значения; исключение - `accepted`, после
+которого был вход без исхода: значения последнего исхода показываются,
+а `WARNING` о входе идёт отдельно. Успешная проверка добавляет строку
+`solver: {...}` перед `timing:` (у `step` timing нет).
 
 | id | Факт | Статус | Источник |
 |---|---|---|---|
-| `mcp-solver-step-diagnostics` | `simulate` и `step` читают хвост журнала только по `diagnostics_path`; для исхода обязательны `schema`, `pid`, `t`, `h`, `status`, `Nbad`, `Ngood`, у отказа - `reason` или `code`; `call`/`entry` - якорь входа без обязательных счётчиков; чужой PID, старый mtime, битый JSON, только входы без исхода и отказ без причины дают `WARNING` без значений | code-confirmed | `solver_diagnostics.py`; `tools/simulation.py`; `tools/workflows.py`; `test_solver_diagnostics.py`; `test_simulation_tools.py`; `test_workflows.py` |
+| `mcp-solver-step-diagnostics` | `simulate` и `step` читают хвост журнала только по `diagnostics_path`; для исхода обязательны `schema`, `pid`, `t`, `h`, `status`, `Nbad`, `Ngood`, у отказа - `reason` или `code`; `call`/`entry` - якорь входа без обязательных счётчиков; `call`/`accepted` не 1:1, читатель не агрегирует; при `Δt=0` и последнем `accepted` причина не устанавливается (последняя попытка могла не оставить записи); `accepted` + вход без исхода показывает значения с отдельным `WARNING`; чужой PID, старый mtime, битый JSON, только входы без исхода и отказ без причины дают `WARNING` без значений | code-confirmed | `solver_diagnostics.py`; `tools/simulation.py`; `tools/workflows.py`; `test_solver_diagnostics.py`; `test_simulation_tools.py`; `test_workflows.py` |
