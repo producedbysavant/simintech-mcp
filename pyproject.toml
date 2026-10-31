@@ -141,7 +141,11 @@ dependencies = [
     # больше не выдаётся за доказанное влияние.
     # squash-коммит main 669a890, тег указывает на него.
     # sha: 669a890a5ac6a3e2b8e0d956db8ca18687f16d33
-    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.19.0",
+    # v0.19.1: script без зависимостей и утверждённые known_absences;
+    # предварительная строка больше не подтверждает отсутствие.
+    # squash-коммит main e694c3e, тег указывает на него.
+    # sha: e694c3e362f29f3966843bb45e6bdc3933c7639b
+    "simintech-api @ git+https://github.com/producedbysavant/simintech-code@v0.19.1",
     # MCP SDK v2: FastMCP 4 работает на нём. Прямая нижняя граница важна:
     # на 1.x поля аннотаций camelCase, на 2.x snake_case, и сервер не должен
     # молча ставиться со старым SDK.
