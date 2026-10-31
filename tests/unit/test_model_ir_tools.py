@@ -203,3 +203,33 @@ async def test_bad_source_and_budget(monkeypatch, tmp_path):
     (tmp_path / "m.bin").write_bytes(b"x")
     text = await _error("load_model", {"path": "m.bin"})
     assert "ожидается" in text
+
+
+@pytest.mark.anyio
+async def test_semantic_queries(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIMINTECH_OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "m.xprt").write_text(MODEL, encoding="utf-8")
+
+    data = json.loads(_text(await mcp.call_tool(
+        "load_model", {"path": "m.xprt"})))
+    assert data["semantics"]["objects_total"] == 2
+    assert data["semantics"]["objects_with_behavior"] >= 1
+
+    coverage = json.loads(_text(await mcp.call_tool(
+        "query_model", {"model_ref": data["model_ref"],
+                        "query": "semantic_coverage"})))
+    assert coverage["items"][0]["objects_total"] == 2
+    assert (coverage["items"][0]["pilot_scope_counts"]["live_acceptance"]
+            >= 1)
+
+    result = json.loads(_text(await mcp.call_tool(
+        "query_model", {"model_ref": data["model_ref"],
+                        "query": "influence",
+                        "arguments": {"target": "main::G:0"}})))
+    assert result["items"]
+    assert result["items"][0]["source"]["address"] == "main::K@property:a"
+
+    manifest = _text(await mcp.call_tool(
+        "get_model_manifest",
+        {"model_ref": data["model_ref"], "budget_tokens": 3000}))
+    assert "## Semantics" in manifest

@@ -11,17 +11,21 @@ import json
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, cast
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.topology import read_topology
 from simintech_api.model_ir import (
     ModelIR,
+    ModelQueryError,
     build_manifest,
     build_model_ir,
+    influence,
+    load_default_contracts,
     parse_model_text,
     parse_xprt,
     parse_xprt_file,
+    semantic_coverage,
     topology_to_ir,
 )
 from simintech_api.topology import parse_topology
@@ -171,6 +175,26 @@ def read_model(path: str, sources: List[str],
     return built, True, project_id
 
 
+def _semantics(model: ModelIR) -> Dict[str, Any]:
+    try:
+        return semantic_coverage(model)
+    except ModelQueryError as exc:
+        return {"error": str(exc)}
+
+
+def _semantics_summary(model: ModelIR) -> Dict[str, Any]:
+    data = _semantics(model)
+    if "error" in data:
+        return data
+    keys = (
+        "objects_total", "objects_with_behavior",
+        "objects_with_approved_behavior", "objects_with_known_ports",
+        "objects_unknown", "dependencies_total", "dependencies_known",
+        "known_absences_total", "pilot_scope_counts",
+    )
+    return {key: data[key] for key in keys if key in data}
+
+
 def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
     coverage = model.coverage
     by_code: Dict[str, int] = {}
@@ -218,6 +242,7 @@ def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
             "by_code": by_code,
             "sample": sample,
         },
+        "semantics": _semantics_summary(model),
         "hints": hints,
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -243,9 +268,11 @@ def load_model(path: str = "",
     модельное время. `path` - файл в каталоге результатов: `.xprt`/`.xml`,
     `.txt` (savemodeltofile) или `.topology`/`.tsv`.
 
-    Возвращает JSON с `model_ref`, хешем, счётчиками, покрытием и первыми
-    расхождениями. XML, скрипты и полные значения свойств не возвращаются.
-    Снимок живёт в памяти; после правки проекта старый `model_ref` устареет.
+    Возвращает JSON с `model_ref`, хешем, счётчиками, покрытием,
+    семантическим покрытием и первыми расхождениями. Полный словарь
+    `semantic_coverage` доступен запросом `query_model`. XML, скрипты и
+    полные значения свойств не возвращаются. Снимок живёт в памяти; после
+    правки проекта старый `model_ref` устареет.
     """
     chosen = ([_source_from_path(path)] if path and sources is None
               else list(sources or ["xprt"]))
@@ -300,7 +327,9 @@ def query_model(model_ref: str, query: str,
     Запросы: `inspect_node`, `find_objects`, `trace_signal`, `ancestors`,
     `descendants`, `find_path`, `find_cycles`, `check_connections`,
     `compare_models`, `validate_invariants`, `list_discrepancies`,
-    `coverage`. Для `compare_models` в arguments нужен `other_ref`.
+    `coverage`, `influence`, `semantic_coverage`. Для `compare_models` в
+    arguments нужен `other_ref`; для `influence` - `target` (порт или
+    объект), необязательные `max_depth`, `include`, `max_items`.
     Ответ несёт evidence, покрытие, unknown и truncated; `items` и
     `unknown` ограничены 200 элементами. `check_connections` добавляет
     контракты и режет объединённый список тем же пределом.
@@ -348,6 +377,39 @@ def query_model(model_ref: str, query: str,
                     f"контракты: проверено {report.evaluated}, "
                     f"ошибок {report.failed}, "
                     f"не проверено {report.not_evaluated}")
+    elif query == "influence":
+        target = str(args.get("target", "")).strip()
+        if not target:
+            raise ToolError("influence: нужен target")
+        include = args.get("include") or ("contract", "not_established")
+        if not isinstance(include, (list, tuple)):
+            raise ToolError("influence: include должен быть списком")
+        include_values = tuple(
+            str(value) for value in cast(Iterable[object], include))
+        try:
+            result = influence(
+                snapshot.index, load_default_contracts(), target,
+                max_depth=int(args.get("max_depth", 64)),
+                include=include_values,
+                max_items=min(int(args.get("max_items", MAX_QUERY_ITEMS)),
+                              MAX_QUERY_ITEMS))
+        except ModelQueryError as exc:
+            raise ToolError(f"influence: {exc}") from exc
+        payload = result.to_dict()
+    elif query == "semantic_coverage":
+        coverage = _semantics(snapshot.model)
+        if "error" in coverage:
+            raise ToolError(
+                f"semantic_coverage: {coverage['error']}")
+        payload: Dict[str, Any] = {
+            "query": "semantic_coverage",
+            "scope": "full_model",
+            "model_hash": snapshot.model.meta.structure_hash,
+            "items": [coverage],
+            "unknown": [],
+            "truncated": False,
+            "evidence": {},
+        }
     else:
         result = snapshot.index.query(query, args)
         payload = result.to_dict()
