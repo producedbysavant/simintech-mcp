@@ -554,23 +554,23 @@ async def test_run_reads_diagnostics_on_success(monkeypatch, diagnostics_env):
     _run_writes(sim, diagnostics_env / "diag.json",
                 status="accepted", reason="accepted")
 
-    text = _text(await mcp.call_tool(
-        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"}))
+    args = {"to_time": 1.0, "diagnostics_path": "diag.json"}
+    text = _text(await mcp.call_tool("run", args))
 
     assert '"status":"accepted"' in text
 
 
 @pytest.mark.anyio
-async def test_run_explains_entry_on_stalled_time(monkeypatch,
-                                                diagnostics_env):
+async def test_run_explains_entry_on_stalled_time(
+        monkeypatch, diagnostics_env):
     """Стоящее время и вход в im_run: это init, а не отказ решателя."""
     sim = _install_fake_simulation(monkeypatch, [0.0])
     sim.run_to_result = False
     _run_writes(sim, diagnostics_env / "diag.json",
                 status="call", reason="entry")
 
-    text = await _error(
-        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+    args = {"to_time": 1.0, "diagnostics_path": "diag.json"}
+    text = await _error("run", args)
 
     assert "вход в im_run без исхода" in text
     assert "stall_seconds" in text
@@ -578,14 +578,14 @@ async def test_run_explains_entry_on_stalled_time(monkeypatch,
 
 
 @pytest.mark.anyio
-async def test_run_explains_empty_journal_on_stalled_time(monkeypatch,
-                                                         diagnostics_env):
+async def test_run_explains_empty_journal_on_stalled_time(
+        monkeypatch, diagnostics_env):
     """Журнала нет: решатель не достигнут, а не stall с причиной."""
     sim = _install_fake_simulation(monkeypatch, [0.0])
     sim.run_to_result = False
 
-    text = await _error(
-        "run", {"to_time": 1.0, "diagnostics_path": "absent.json"})
+    args = {"to_time": 1.0, "diagnostics_path": "absent.json"}
+    text = await _error("run", args)
 
     assert "записей этого прогона нет" in text
     assert "im_run не достигнут" in text
