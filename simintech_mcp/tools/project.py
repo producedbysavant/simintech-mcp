@@ -14,7 +14,7 @@ import zlib
 from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
-from simintech_api import Project
+from simintech_api import COMClient, Project
 
 from .. import runtime, session
 from ..app import mcp
@@ -168,7 +168,7 @@ def disconnect() -> str:
 # ─── Проекты ──────────────────────────────────────────────────────
 
 
-def _project_file_name(client, project: "Project") -> str:
+def _project_file_name(client: COMClient, project: "Project") -> str:
     """Файл, из которого открыт проект; пусто - проект без файла.
 
     Идентичность проверяется по `GetOpenedFileName`, а не по составу страницы:
