@@ -264,7 +264,11 @@ async def test_check_reports_empty_ports_from_contour(monkeypatch, tmp_path):
 
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
-    assert "ВНИМАНИЕ: пустые порты: k_0[1]" in text
+    assert "ВНИМАНИЕ: пустые порты" in text
+    assert "k_0[1]" in text
+    assert "0-based" in text
+    assert "не in:N" in text
+    assert "end_port_index" in text
 
 
 @pytest.mark.anyio
@@ -470,7 +474,8 @@ async def test_check_reads_report_on_model_not_running(monkeypatch, tmp_path):
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
     assert "модель не считает" in text
-    assert "пустые порты: k_0[0]" in text
+    assert "пустые порты" in text
+    assert "k_0[0]" in text
 
 
 @pytest.mark.anyio
