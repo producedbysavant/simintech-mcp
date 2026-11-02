@@ -191,6 +191,26 @@ async def test_set_block_param_reports_written_value_not_input(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_set_block_param_signalnames_names_one_shot(monkeypatch):
+    """Повторная запись SignalNames не применилась: назвать причину и обход."""
+    class _Sticky(_FakeBlock):
+        def set_property(self, name, value):
+            return self
+
+    block = _Sticky("Выход алгоритма", {"SignalNames": "old"})
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "new",
+         "allow_unknown": True}))
+
+    assert "в блоке 'SignalNames' = 'old'" in text
+    assert "только в пустую таблицу" in text
+    assert "Запись в список сигналов" in text
+
+
+@pytest.mark.anyio
 async def test_set_block_param_accepts_array(monkeypatch):
     """Массив в стиле SimInTech разбирается в список."""
     block = _FakeBlock("Сумматор", {})
