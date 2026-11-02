@@ -405,9 +405,10 @@ async def test_run_page_script_locked_result_advises_repeat(
 
     class _Locked(_BridgeRuns):
         def run_page_script(self, body, result_path):
-            raise ScriptBridgeError(
+            error = ScriptBridgeError(
                 f"файл результата заперт: {result_path} открыт процессом "
                 "SimInTech")
+            raise error from PermissionError("locked")
 
     _install(monkeypatch, tmp_path, _Locked, project=_FakeProject())
 
@@ -416,6 +417,30 @@ async def test_run_page_script_locked_result_advises_repeat(
     assert "повторите вызов" in message
     assert "частично" in message
     assert "list_wires" in message
+
+
+@pytest.mark.anyio
+async def test_run_page_script_unsafe_state_does_not_advise_repeat(
+        monkeypatch, tmp_path):
+    """Тот же текст в обёртке unsafe-state не должен звать повторять вызов."""
+    from simintech_api.exceptions import (ScriptBridgeError,
+                                          ScriptBridgeUnsafeStateError)
+
+    from _support import _error
+
+    class _Unsafe(_BridgeRuns):
+        def run_page_script(self, body, result_path):
+            cause = ScriptBridgeError("файл результата заперт")
+            raise ScriptBridgeUnsafeStateError(
+                "прежний скрипт страницы не восстановлен") from cause
+
+    _install(monkeypatch, tmp_path, _Unsafe, project=_FakeProject())
+
+    message = await _error("run_page_script", {"script": "x();"})
+
+    assert "не восстановлен" in message
+    assert "повторите вызов" not in message
+    assert "Файл результата уникален" not in message
 
 
 @pytest.mark.anyio
