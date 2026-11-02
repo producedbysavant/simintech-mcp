@@ -110,8 +110,8 @@ handler; паузы клиента между вызовами не входят
 
 ## 10. Диагностика шага внешнего решателя
 
-`simulate` и `step` принимают необязательный `diagnostics_path`: журнал
-JSON Lines схемы `solver-step-diagnostics/1` в каталоге результатов. MCP
+`run`, `simulate` и `step` принимают необязательный `diagnostics_path`:
+журнал JSON Lines схемы `solver-step-diagnostics/1` в каталоге результатов. MCP
 читает хвост, проверяет `pid` (процесс mmain сессии) и свежесть по mtime,
 берёт последний исход `accepted`/`rejected`; записи `call`/`entry` -
 вход в `im_run`, не исход. `call`/`entry` и исходы не обязаны идти 1:1:
@@ -127,4 +127,4 @@ JSON Lines схемы `solver-step-diagnostics/1` в каталоге резул
 
 | id | Факт | Статус | Источник |
 |---|---|---|---|
-| `mcp-solver-step-diagnostics` | `simulate` и `step` читают хвост журнала только по `diagnostics_path`; для исхода обязательны `schema`, `pid`, `t`, `h`, `status`, `Nbad`, `Ngood`, у отказа - `reason` или `code`; `call`/`entry` - якорь входа без обязательных счётчиков; `call`/`accepted` не 1:1, читатель не агрегирует; при `Δt=0` и последнем `accepted` причина не устанавливается (последняя попытка могла не оставить записи); `accepted` + вход без исхода показывает значения с отдельным `WARNING`; чужой PID, старый mtime, битый JSON, только входы без исхода и отказ без причины дают `WARNING` без значений | code-confirmed | `solver_diagnostics.py`; `tools/simulation.py`; `tools/workflows.py`; `test_solver_diagnostics.py`; `test_simulation_tools.py`; `test_workflows.py` |
+| `mcp-solver-step-diagnostics` | `run`, `simulate` и `step` читают хвост журнала только по `diagnostics_path`; для исхода обязательны `schema`, `pid`, `t`, `h`, `status`, `Nbad`, `Ngood`, у отказа - `reason` или `code`; `call`/`entry` - якорь входа без обязательных счётчиков; `call`/`accepted` не 1:1, читатель не агрегирует; при `Δt=0` и последнем `accepted` причина не устанавливается (последняя попытка могла не оставить записи); `accepted` + вход без исхода показывает значения с отдельным `WARNING`; чужой PID, старый mtime, битый JSON, только входы без исхода и отказ без причины дают `WARNING` без значений | code-confirmed | `solver_diagnostics.py`; `tools/simulation.py`; `tools/workflows.py`; `test_solver_diagnostics.py`; `test_simulation_tools.py`; `test_workflows.py` |

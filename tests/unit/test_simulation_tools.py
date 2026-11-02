@@ -592,6 +592,66 @@ async def test_run_explains_empty_journal_on_stalled_time(
     assert "WARNING: диагностика шага" in text
 
 
+@pytest.mark.anyio
+async def test_run_explains_accepted_on_stalled_time(monkeypatch,
+                                                     diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+    sim.run_to_result = False
+    _run_writes(sim, diagnostics_env / "diag.json",
+                status="accepted", reason="accepted")
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+
+    assert "заканчивается принятым шагом" in text
+
+
+@pytest.mark.anyio
+async def test_run_explains_rejected_on_stalled_time(monkeypatch,
+                                                     diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+    sim.run_to_result = False
+    _run_writes(sim, diagnostics_env / "diag.json",
+                status="rejected", reason="ner>0")
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+
+    assert "отказ шага" in text
+
+
+@pytest.mark.anyio
+async def test_run_no_stall_note_when_time_is_nonzero(monkeypatch,
+                                                      diagnostics_env):
+    """to_time больше endtime: время 0.050, это не stall и не init."""
+    sim = _install_fake_simulation(monkeypatch, [0.05])
+    sim.run_to_result = False
+    _run_writes(sim, diagnostics_env / "diag.json",
+                status="accepted", reason="accepted")
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+
+    assert "модельное время 0.050" in text
+    assert "заканчивается принятым шагом" not in text
+    assert "im_run не достигнут" not in text
+
+
+@pytest.mark.anyio
+async def test_run_unavailable_journal_is_not_empty_journal(
+        monkeypatch, diagnostics_env):
+    """Чужой PID: журнал недоступен, «записей нет» было бы догадкой."""
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+    sim.run_to_result = False
+    _run_writes(sim, diagnostics_env / "diag.json", pid=1)
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+
+    assert "недоступен или не относится" in text
+    assert "записей этого прогона нет" not in text
+
+
 @pytest.fixture
 def diagnostics_env(monkeypatch, tmp_path):
     monkeypatch.setenv(sandbox.OUTPUT_DIR_ENV, str(tmp_path))
