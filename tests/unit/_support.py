@@ -712,6 +712,9 @@ class _SavableProject:
     инструмента на невидимом проекте.
     """
 
+    #: Ответы правок называют проект по id (issue #18).
+    id = 7
+
     def __init__(self, raises: bool = False, writes: bool = True,
                  state: int = 0,
                  state_error: "BaseException | None" = None,

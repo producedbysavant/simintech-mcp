@@ -391,6 +391,19 @@ def clear_unsaved() -> None:
     _unsaved = False
 
 
+def note_saved(path: str) -> None:
+    """Запомнить файл, в который сохранён текущий проект.
+
+    COM-имя (`GetOpenedFileName`) у проекта из шаблона остаётся именем
+    шаблона, а `SaveProjectBinary`/`SaveProjectXML` его не меняют. Для меток,
+    `opened_from` и `reload_project` источник истины - путь, который записал
+    `save_project`. Реестр линий и снимки Model IR не сбрасываются: проект
+    остаётся тем же.
+    """
+    global _project_path
+    _project_path = path
+
+
 def mutation_note() -> str:
     """Хвост ответа мутирующего инструмента: куда внесены и что не сохранено.
 

@@ -621,6 +621,27 @@ async def test_save_project_binary_flag_writes_prt(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_save_project_updates_session_path(monkeypatch, tmp_path):
+    """После записи сессия знает сохранённый файл, а не шаблон.
+
+    COM-имя у проекта из шаблона остаётся именем шаблона; метки и
+    `reload_project` должны опираться на путь, который записал `save_project`.
+    """
+    target = tmp_path / "m.prt"
+    project = _install_savable(monkeypatch)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(project, source_path=None)
+    try:
+        _text(await mcp.call_tool(
+            "save_project", {"path": str(target), "binary": True}))
+
+        assert session.opened_from() == str(target)
+        assert "m.prt" in session.project_label()
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_save_project_has_no_hidden_window_option(monkeypatch, tmp_path):
     """Возможности записать проект с невидимым окном больше нет.
 
