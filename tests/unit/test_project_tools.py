@@ -642,6 +642,46 @@ async def test_save_project_updates_session_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_save_project_failure_keeps_session_path(monkeypatch, tmp_path):
+    """Незавершённое сохранение путь сессии не меняет."""
+    target = tmp_path / "m.prt"
+    project = _install_savable(monkeypatch, writes=False)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(project, source_path=None)
+    try:
+        await _error("save_project", {"path": str(target), "binary": True})
+
+        assert session.opened_from() is None, \
+            "путь не должен меняться до состоявшейся замены"
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_reload_project_uses_saved_path(monkeypatch, tmp_path):
+    """После save_project reload переоткрывает сохранённый файл, не шаблон."""
+    target = tmp_path / "m.prt"
+    project = _install_savable(monkeypatch)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(project, source_path=None)
+    try:
+        _text(await mcp.call_tool(
+            "save_project", {"path": str(target), "binary": True}))
+        opened = _WireProject({}, project_id=9)
+        monkeypatch.setattr(project_tools.Project, "open",
+                            staticmethod(lambda client, path: opened))
+        monkeypatch.setattr(session, "ensure_client", lambda: object())
+        monkeypatch.setattr(session, "pack_membership", lambda: False)
+
+        text = _text(await mcp.call_tool("reload_project", {}))
+
+        assert "ПЕРЕОТКРЫТ ИЗ ФАЙЛА" in text
+        assert "создан из шаблона" not in text
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_save_project_has_no_hidden_window_option(monkeypatch, tmp_path):
     """Возможности записать проект с невидимым окном больше нет.
 

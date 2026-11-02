@@ -759,6 +759,8 @@ def _install_savable(monkeypatch, raises: bool = False,
                               state=state, state_error=state_error,
                               visible=visible)
     monkeypatch.setattr(session, "_project", project)
+    # save_project теперь пишет и путь; снимок возвращает его после теста.
+    monkeypatch.setattr(session, "_project_path", session._project_path)
     return project
 
 
