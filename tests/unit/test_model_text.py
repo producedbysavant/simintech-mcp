@@ -58,6 +58,15 @@ class _Page:
     def get_blocks(self) -> list:
         return list(self._blocks)
 
+    def find_block(self, name):
+        for block in self._blocks:
+            try:
+                if block.get_name() == name:
+                    return block
+            except Exception:                                  # noqa: BLE001
+                continue
+        return None
+
     def get_wires(self) -> list:
         return list(self._wires)
 
@@ -72,6 +81,9 @@ class _FakeProject:
 
     def get_current_page(self):
         return _Page(self._wires, self._blocks)
+
+    def get_main_page(self):
+        return self.get_current_page()
 
 
 def _dump_path_from_body(body: str) -> str:
@@ -601,6 +613,47 @@ async def test_import_model_text_builds_body_and_reports_changes(
     assert "createmodel(getcurrentprojectid, model);" in _BridgeRunsContour.body
     assert 'block0: (type = "Ступенька")' in _BridgeRunsContour.body
     assert "Отчёт об изменениях" in result
+
+
+@pytest.mark.anyio
+async def test_import_model_text_refuses_demux_out_of_range(
+        monkeypatch, tmp_path):
+    """out:2+ у «Демультиплексора» теряет src: отказ до контура, не «+N»."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    _BridgeRunsContour.body = ""
+    text = ('dmx: (type = "Демультиплексор", a=[1, 1, 1]),\n'
+            'kx: (type = "Усилитель"),\n'
+            'w2: (type = "wire", points=[], src = "dmx:out:2", '
+            'dst = "kx:in:0")')
+
+    message = await _error("import_model_text", {"model_text": text})
+
+    assert "импорт не выполнен" in message
+    assert "w2: dmx:out:2" in message
+    assert "connect_branch" in message
+    assert _BridgeRunsContour.body == "", "контур не должен запускаться"
+
+
+@pytest.mark.anyio
+async def test_import_model_text_refuses_demux_out_of_range_existing_block(
+        monkeypatch, tmp_path):
+    """Демультиплексор уже на странице: класс читается через COM-фейк."""
+    class _Demux:
+        class_name = "Демультиплексор"
+
+        def get_name(self):
+            return "Demux"
+
+    _install(monkeypatch, tmp_path, _BridgeRunsContour, blocks=[_Demux()])
+    _BridgeRunsContour.body = ""
+
+    message = await _error("import_model_text", {"model_text": (
+        'w2: (type = "wire", points=[], src = "Demux:out:2", '
+        'dst = "kx:in:0")')})
+
+    assert "импорт не выполнен" in message
+    assert "connect_branch" in message
+    assert _BridgeRunsContour.body == ""
 
 
 @pytest.mark.anyio

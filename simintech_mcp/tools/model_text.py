@@ -547,6 +547,80 @@ def _wire_count() -> Optional[int]:
 #: сборкой, поэтому приблизительность ему прощается, а молчание — нет.
 _RECORD_NAME_RE = re.compile(r"\s*([A-Za-z_][\w]*)\s*:\s*\(")
 
+#: Тип записи в тексте: `Имя: (type = "Класс", ...`.
+_RECORD_TYPE_RE = re.compile(
+    r"([A-Za-z_][\w]*)\s*:\s*\(\s*type\s*=\s*\"([^\"]+)\"")
+
+
+def _wire_records(model_text: str) -> "List[Tuple[str, str, str]]":
+    """Записи проводов в тексте, включая однострочную форму импорта.
+
+    `parse_page_wires` ждёт выгрузку, где имя записи стоит отдельной строкой
+    (`w: (`). Импортный текст часто пишут одной строкой (`w: (type = "wire",
+    ...)`), поэтому здесь запись вырезается по балансу скобок, а `src`/`dst`
+    ищутся внутри неё. Это не разбор языка: нужна только пара адресов.
+    """
+    pairs: "List[Tuple[str, str, str]]" = []
+    for match in re.finditer(r"([A-Za-z_]\w*)\s*:\s*\(", model_text):
+        start = match.end() - 1
+        depth = 0
+        in_quote = False
+        end = start
+        while end < len(model_text):
+            char = model_text[end]
+            if char == '"':
+                in_quote = not in_quote
+            elif not in_quote:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+            end += 1
+        body = model_text[start + 1:end]
+        if not re.match(r"\s*type\s*=\s*\"wire\"", body):
+            continue
+        src = re.search(r"\bsrc\s*=\s*\"([^\"]+)\"", body)
+        dst = re.search(r"\bdst\s*=\s*\"([^\"]+)\"", body)
+        if src and dst:
+            pairs.append((match.group(1), src.group(1), dst.group(1)))
+    return pairs
+
+
+def _demux_out_of_range_wires(model_text: str) -> "List[str]":
+    """Записи src, где «Демультиплексор» out:N при N>=2 теряет источник.
+
+    Живой замер 02.11.2026: out:0 и out:1 импортируются как ветви, а out:2 и
+    выше среда создаёт линией без `src`; повторный импорт к тем же `dst`
+    добавляет пустые дубли. Проверка идёт до контура: иначе ответ «+2» скрывал
+    бы линию, которая не работает.
+    """
+    wires = _wire_records(model_text)
+    if not wires:
+        return []
+    declared = {match.group(1): match.group(2)
+                for match in _RECORD_TYPE_RE.finditer(model_text)}
+    page = None
+    bad: "List[str]" = []
+    for name, src, _dst in wires:
+        block, sep, out_index = src.partition(":out:")
+        if not sep or not out_index.isdigit() or int(out_index) < 2:
+            continue
+        class_name = declared.get(block)
+        if class_name is None:
+            try:
+                if page is None:
+                    page = session.ensure_project().get_main_page()
+                target = page.find_block(block)
+                class_name = (str(target.class_name).strip()
+                              if target is not None else None)
+            except Exception:                                  # noqa: BLE001
+                class_name = None
+        if class_name == "Демультиплексор":
+            bad.append(f"{name}: {src}")
+    return bad
+
 
 def _text_wire_roles(model_text: str) -> "Tuple[bool, bool]":
     """Роли проводов текста: (есть провода, есть провода на блоки этого текста).
@@ -797,7 +871,15 @@ def import_model_text(model_text: str) -> str:
       при необходимости `save_project` и переоткрытие → провода) — второй
       путь, и он **не для моделей с памятью** (их собирают ОДНИМ текстом —
       см. ниже; провода такого текста чините пересозданием).
-    - **Класс субмодели в тексте — «Субмодель», не `Macro`.** Рабочая форма —
+    - **Ветви от «Демультиплексора».** Живой замер 02.11.2026: `out:0` и
+      `out:1` импортируются как ветви (`src = "<линия>:0"`), а `out:2` и выше
+      среда создаёт линией без `src`; повторный импорт к тем же `dst` плодит
+      пустые дубли. Инструмент проверяет такие адреса **до** контура и
+      отказывает: линию без источника надо строить `connect_branch` после
+      импорта блоков. Молчаливый «+N линий» здесь скрывал бы неработающую
+      связь.
+
+    - **Класс субмодели в тексте: «Субмодель», не `Macro`.** Рабочая форма:
       `type = "Субмодель"` с содержимым во вложенной секции `subsystem:`
       (свойства страницы): импортируется целиком, вместе с внутренними
       блоками (живые замеры 06–08.10.2026 — так пересобраны 9 субмоделей
@@ -869,6 +951,17 @@ def import_model_text(model_text: str) -> str:
             "текст модели пуст: собирать нечего. Пустой текст — не «ничего не "
             "сделает»: он означает, что на стороне клиента содержимое потеряно, "
             "и молчание здесь скрыло бы это.")
+    demux_bad = _demux_out_of_range_wires(model_text)
+    if demux_bad:
+        shown = ", ".join(demux_bad[:3])
+        more = (f" и ещё {len(demux_bad) - 3}"
+                if len(demux_bad) > 3 else "")
+        raise ToolError(
+            f"импорт не выполнен: ветви от «Демультиплексор» с out:2 и выше "
+            f"среда создаёт линиями без src ({shown}{more}). out:0 и out:1 "
+            f"импортируются корректно. Уберите эти записи из текста и создайте "
+            f"их `connect_branch` после импорта блоков: линия без источника "
+            f"молча останавливает расчёт, а повторный импорт плодит дубли.")
     dups = _duplicate_record_names(model_text)
     roles = _text_wire_roles(model_text)
     wires_before = _wire_count()
