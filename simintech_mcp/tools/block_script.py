@@ -68,7 +68,7 @@ def _runtime_literal(text: str) -> str:
     return " + ".join(parts) if parts else '""'
 
 
-@mcp.tool(title="Скрипт блока", annotations={"readOnlyHint": True})
+@mcp.tool(title="Скрипт блока", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def get_block_script(block: str) -> str:
     """Прочитать скрипт блока — например, «Языка программирования».
@@ -77,6 +77,9 @@ def get_block_script(block: str) -> str:
     страницы у `get_page_script`: расчёт не запускается и модельное время не
     сдвигается. Контурный путь (`getpropasstring`) для чтения не годится — он
     перезапускает модель и уничтожает результаты вызывающего.
+
+    **Это не чистое чтение.** Снимок пишет временный `.xprt`; файл удаляется,
+    но запись состоялась. Поэтому `readOnlyHint` здесь `False`.
 
     Скрипт есть у блока класса «Язык программирования» (запись `Script` в
     свойствах блока). У блока без такой записи ответ — «скрипта нет», а не

@@ -123,7 +123,7 @@ def change_report(before: list[str], after: list[str],
             f"{len(after)}{tail}{more}. {restored_note}")
 
 
-@mcp.tool(title="Скрипт страницы", annotations={"readOnlyHint": True})
+@mcp.tool(title="Скрипт страницы", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def get_page_script() -> str:
     """Прочитать скрипт текущей страницы проекта.
@@ -137,6 +137,10 @@ def get_page_script() -> str:
     инициализация, и она обнуляет модельное время; инструмент чтения, сдвигающий
     время, уничтожал бы результаты уже сделанного расчёта. Живой замер
     2026-09-29: на остановленном проекте время до и после чтения совпадает.
+
+    **Это не чистое чтение.** Снимок делается `SaveProjectXML` во временный
+    `.xprt`; файл удаляется, но запись состоялась. Поэтому `readOnlyHint`
+    здесь `False`.
 
     Пустой скрипт — не отказ: у проекта из шаблона скрипта страницы нет вовсе, и
     об этом сообщается текстом.
