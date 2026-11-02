@@ -26,8 +26,9 @@ handler. Паузы клиента между вызовами не входят
 
 ## Диагностика шага внешнего решателя
 
-`simulate(diagnostics_path=...)` и `step(diagnostics_path=...)` читают
-журнал JSON Lines: одна JSON-запись на строку. MCP читает хвост журнала
+`run(diagnostics_path=...)`, `simulate(diagnostics_path=...)` и
+`step(diagnostics_path=...)` читают журнал JSON Lines: одна JSON-запись на
+строку. MCP читает хвост журнала
 и берёт последний исход. Схема - `solver-step-diagnostics/1`:
 
 ```json

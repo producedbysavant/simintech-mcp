@@ -1,6 +1,7 @@
 """Диагностика шага внешнего решателя: журнал JSON Lines и проверки.
 
-Модуль не является инструментом: им пользуются ``simulate`` и ``step``.
+Модуль не является инструментом: им пользуются ``simulate``, ``step`` и
+``run``.
 Модуль интегрирования пишет по одной JSON-строке на попытку шага, а MCP
 читает хвост журнала и берёт последний исход. Записи ``call``/``entry`` -
 якоря входа в ``im_run``; они не являются исходом и не выдаются за него.
@@ -66,6 +67,11 @@ class DiagnosticsResult:
     warning: bool = False
     last_status: Optional[str] = None
     pending_entry: bool = False
+    #: Причина предупреждения: `missing`/`empty` - журнала нет или он пуст;
+    #: `foreign_pid`, `stale`, `future_mtime`, `malformed`, `truncated`,
+    #: `unavailable`, `pid_unknown` - журнал недоступен или не относится к
+    #: прогону. Нужна, чтобы не выдавать недоступность за «записей нет».
+    reason: Optional[str] = None
 
 
 def accepted_stall_note(result: DiagnosticsResult) -> str:
@@ -248,14 +254,18 @@ def read_diagnostics_result(path: str, run_started: float) -> DiagnosticsResult:
         return DiagnosticsResult(
             text=("WARNING: диагностика шага недоступна: PID сессии неизвестен, "
                   "принадлежность файла прогону не проверить"),
-            warning=True)
+            warning=True, reason="pid_unknown")
     try:
         raw, partial, mtime, error = sandbox.load_result_tail(
             path, MAX_BYTES, MISSING_LOG)
     except ToolError as exc:
-        return DiagnosticsResult(text=_warning(str(exc)), warning=True)
+        return DiagnosticsResult(text=_warning(str(exc)), warning=True,
+                                 reason="unavailable")
     if error:
-        return DiagnosticsResult(text=_warning(error), warning=True)
+        reason = ("missing" if error == MISSING_LOG.format(path=path)
+                  else "unreadable")
+        return DiagnosticsResult(text=_warning(error), warning=True,
+                                 reason=reason)
     try:
         records = parse_log(raw, partial_first_line=partial)
     except DiagnosticsError as exc:
@@ -264,9 +274,10 @@ def read_diagnostics_result(path: str, run_started: float) -> DiagnosticsResult:
                 text=_warning(
                     f"файл {path} больше {MAX_BYTES} байт; последняя строка "
                     f"не помещается"),
-                warning=True)
+                warning=True, reason="truncated")
+        reason = "empty" if "нет записей" in str(exc) else "malformed"
         return DiagnosticsResult(
-            text=_warning(f"{path}: {exc}"), warning=True)
+            text=_warning(f"{path}: {exc}"), warning=True, reason=reason)
     foreign = next(
         (item for item in records if item["pid"] != expected_pid), None)
     if foreign is not None:
@@ -274,18 +285,18 @@ def read_diagnostics_result(path: str, run_started: float) -> DiagnosticsResult:
             text=(f"WARNING: диагностика шага от другого процесса: в "
                   f"журнале pid={foreign['pid']}, сессия pid={expected_pid}; "
                   f"значения не приняты"),
-            warning=True)
+            warning=True, reason="foreign_pid")
     if mtime < run_started - STALE_TOLERANCE_SECONDS:
         return DiagnosticsResult(
             text=(f"WARNING: файл диагностики не обновлён этим прогоном "
                   f"(mtime={mtime:.3f}, старт={run_started:.3f}); значения "
                   f"не приняты"),
-            warning=True)
+            warning=True, reason="stale")
     if mtime > time.time() + STALE_TOLERANCE_SECONDS:
         return DiagnosticsResult(
             text=(f"WARNING: mtime файла диагностики в будущем "
                   f"(mtime={mtime:.3f}); значения не приняты"),
-            warning=True)
+            warning=True, reason="future_mtime")
     last = records[-1]
     outcomes = [item for item in records if item["status"] in _OUTCOMES]
     if not outcomes:
