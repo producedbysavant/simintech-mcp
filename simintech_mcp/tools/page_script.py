@@ -29,7 +29,8 @@ from typing import Any, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.script_bridge import ScriptBridge
-from simintech_api.exceptions import ScriptBridgeError
+from simintech_api.exceptions import (ScriptBridgeError,
+                                      ScriptBridgeUnsafeStateError)
 from simintech_api.model_operations import build_inject_submodel_script_body
 from simintech_api.script_probe import (
     OUTCOME_ABORTED,
@@ -220,11 +221,22 @@ def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
         run = bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
         discard_result(path)
+        # Структурный признак, а не текст: `ScriptBridgeUnsafeStateError`
+        # оборачивает первичную ошибку и может содержать ту же фразу, но там
+        # прежний скрипт не восстановлен, и повторять вызов нельзя.
+        locked = (not isinstance(exc, ScriptBridgeUnsafeStateError)
+                  and isinstance(exc.__cause__, PermissionError))
+        hint = (
+            " Файл результата уникален на вызов: повторите вызов. Перед "
+            "повтором проверьте, не создалась ли правка частично "
+            "(`list_wires`, `export_model_text`): тело могло дойти до "
+            "изменения модели и оборваться до `freeobject`."
+            if locked else "")
         raise ToolError(
-            f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
-            "расчёт должен сдвинуть модельное время: проверьте, что модель "
-            "считает — неподключённый вход останавливает расчёт всей модели "
-            "молча."
+            f"{failed}: {exc}.{hint} Тело идёт в секцию `initialization`, "
+            "поэтому расчёт должен сдвинуть модельное время: проверьте, что "
+            "модель считает: неподключённый вход останавливает расчёт всей "
+            "модели молча."
         ) from exc
     discard_result(path)
     return run.outcome, run.restored_script
