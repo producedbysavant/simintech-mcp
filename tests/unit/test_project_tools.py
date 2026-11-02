@@ -480,6 +480,54 @@ async def test_create_project_accepts_reused_id_for_empty_template(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_create_project_refuses_unreadable_same_id(monkeypatch):
+    """Совпал id, состав не читается: неизвестность не разрешение."""
+    class _Unreadable:
+        id = 5
+
+        def get_main_page(self):
+            raise RuntimeError("страница не читается")
+
+    previous = _Unreadable()
+    opened = _WireProject({"k_0": _RenamingBlock("Константа")}, project_id=5)
+    monkeypatch.setattr(project_tools.Project, "from_template",
+                        staticmethod(lambda client: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    monkeypatch.setattr(session, "pack_membership", lambda: False)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous)
+    try:
+        text = await _error("create_project", {})
+
+        assert "состав блоков прочитать не удалось" in text
+        assert "повторите" in text
+        assert session.current_project() is previous
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_create_project_notes_ambiguous_empty_same_id(monkeypatch):
+    """Оба состава пусты: создание состоялось, но id совпал, есть примечание."""
+    previous = _WireProject({}, project_id=5)
+    opened = _WireProject({}, project_id=5)
+    monkeypatch.setattr(project_tools.Project, "from_template",
+                        staticmethod(lambda client: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    monkeypatch.setattr(session, "pack_membership", lambda: False)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous)
+    try:
+        text = _text(await mcp.call_tool("create_project", {}))
+
+        assert "создан" in text
+        assert "ПРИМЕЧАНИЕ" in text
+        assert "мог быть переиспользован" in text
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
 async def test_set_calc_time_delegates_to_project(monkeypatch):
     """set_calc_time передаёт значение в проект."""
 

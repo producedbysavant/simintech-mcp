@@ -172,8 +172,9 @@ def _page_object_names(project: "Project") -> Optional[list[str]]:
     """Имена блоков главной страницы; `None` - прочитать не удалось.
 
     Снимок нужен только для одного вопроса: среда вернула новый проект или
-    тот же живой. Ошибка чтения не должна превращаться в отказ: тогда
-    инструмент не смог бы работать на проекте с нечитаемой страницей.
+    тот же живой. `None` - сигнал неизвестности, а не пустой список:
+    вызывающий обязан отличить нечитаемую страницу от читаемой пустой и не
+    принимать неизвестность за разрешение.
     """
     try:
         page = project.get_main_page()
@@ -203,8 +204,11 @@ def create_project(project_hint: str = "model",
     Поэтому при совпадении id инструмент сравнивает состав блоков главной
     страницы. Если прежний проект был непуст и состав не изменился, это тот же
     живой проект: вместо «создан» приходит отказ с советом сохранить и закрыть
-    прежний проект. Пустая страница после открытия шаблона считается новым
-    проектом: шаблон пуст, и отличить его от прежнего пустого нечем.
+    прежний проект. Если состав прочитать не удалось, инструмент тоже
+    отказывает: неизвестность здесь не разрешение выдать прежний проект за
+    новый. Пустая страница после открытия шаблона считается новым проектом:
+    шаблон пуст, и отличить его от прежнего пустого нечем, поэтому ответ несёт
+    примечание о совпавшем id.
 
     Args:
         project_hint: подсказка для сообщения. Имя проекта задаёт среда,
@@ -218,12 +222,24 @@ def create_project(project_hint: str = "model",
     if end_time is not None and end_time <= 0:
         raise ToolError("end_time должен быть положительным числом секунд")
 
+    # Проверка живости клиента идёт до чтения прежнего проекта: снимок
+    # состава не должен ходить в COM через мёртвый прокси.
+    client = session.ensure_client()
     previous = session.current_project()
     previous_names = (_page_object_names(previous)
                       if previous is not None else None)
-    prj = Project.from_template(session.ensure_client())
+    prj = Project.from_template(client)
+    ambiguous = False
     if previous is not None and previous.id == prj.id:
         new_names = _page_object_names(prj)
+        if previous_names is None or new_names is None:
+            # Неизвестность не разрешение: принять тот же id за новый проект
+            # значило бы снова выдать прежний за созданный.
+            raise ToolError(
+                f"Новый проект принять нельзя: среда вернула тот же id "
+                f"({prj.id}), а состав блоков прочитать не удалось. Прежний "
+                f"проект не закрыт и не изменён. Проверьте `list_blocks`; "
+                f"если страница читается, повторите `create_project`.")
         if previous_names and new_names == previous_names:
             # Тот же id и тот же непустой состав: среда не создала новый
             # проект, а вернула текущий. `replace_project` закрытие пропустит,
@@ -235,13 +251,19 @@ def create_project(project_hint: str = "model",
                 f"Прежний проект не закрыт и не изменён. Сохраните его "
                 f"(`save_project`) и закройте (`close_project`), затем "
                 f"повторите `create_project`.")
+        if not previous_names and not new_names:
+            ambiguous = True
     replaced = session.replace_project(prj)
     if end_time is not None:
         prj.set_calc_end_time(end_time)
     tail = (f", время расчёта {end_time} с" if end_time is not None
             else ", время расчёта — из шаблона (10 с)")
-    return (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}."
-            + replaced)
+    result = (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}."
+              + replaced)
+    if ambiguous:
+        result += ("\nПРИМЕЧАНИЕ: id совпал с прежним, оба состава пусты: "
+                   "проект мог быть переиспользован. Проверьте `list_blocks`.")
+    return result
 
 
 @mcp.tool(title="Задать время расчёта", annotations={"readOnlyHint": False})
