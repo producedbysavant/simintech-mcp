@@ -14,7 +14,8 @@ from fastmcp.exceptions import ToolError
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..solver_diagnostics import accepted_stall_note, read_diagnostics_result
+from ..solver_diagnostics import (DiagnosticsResult, accepted_stall_note,
+                                  read_diagnostics_result)
 
 if TYPE_CHECKING:
     # `SignalInfo` определён в `simintech_api.model` (публичного реэкспорта
@@ -58,11 +59,34 @@ CALC_WAIT_MARGIN_SECONDS = 1.0
 MAX_STEP_COUNT = 1000
 
 
+def _run_diagnostics_note(message: str, diagnostics: DiagnosticsResult) -> str:
+    """Пояснение к отказу `run` по журналу решателя.
+
+    Заметка нужна только при стоящем на нуле времени: недостижение `to_time`
+    из-за `endtime` - не stall, и журнал там ничего не объясняет. Пустой
+    журнал, вход без исхода и принятый шаг при стоящем времени - три разных
+    состояния, и догадку за них не выдаём.
+    """
+    if "модельное время 0.000" not in message:
+        return ""
+    if diagnostics.status == "accepted":
+        return "\n\n" + accepted_stall_note(diagnostics)
+    if diagnostics.status == "rejected":
+        return "\n\nЖурнал решателя: отказ шага, причина в строке solver."
+    if diagnostics.status in ("call", "entry"):
+        return ("\n\nЖурнал решателя: вход в im_run без исхода; init или шаг "
+                "не завершён. Если инициализация медленная, поднимите "
+                "stall_seconds.")
+    return ("\n\nЖурнал решателя: записей этого прогона нет, im_run не "
+            "достигнут.")
+
+
 @mcp.tool(title="Запустить расчёт", annotations={"readOnlyHint": False})
 @runtime.com_threaded(timed=True)
 def run(to_time: Optional[float] = None,
         wait_timeout: float = CALC_WAIT_SECONDS,
-        stall_seconds: float = CALC_STALL_SECONDS) -> str:
+        stall_seconds: float = CALC_STALL_SECONDS,
+        diagnostics_path: str = "") -> str:
     """Запустить расчёт проекта (опционально до момента времени).
 
     Проверяется **фактическое** модельное время, а не код возврата: на проекте
@@ -85,12 +109,27 @@ def run(to_time: Optional[float] = None,
     `t_end` в unix ms, `elapsed_ms` по монотонным часам; паузы клиента между
     вызовами в него не входят. При отказе строка тоже есть.
 
+    `diagnostics_path` - необязательный журнал JSON Lines диагностики шага
+    внешнего решателя (схема `solver-step-diagnostics/1`). MCP читает хвост
+    и берёт последний исход `accepted`/`rejected`; `call`/`entry` - вход в
+    `im_run`, он не выдаётся за исход. Журнал читается и при успехе, и при
+    отказе. Если время стоит на нуле, отказ различает три состояния:
+    записей нет (решатель не достигнут), `call`/`entry` без исхода (init или
+    шаг не завершён; для медленного init поднимите `stall_seconds`),
+    `accepted` при стоящем времени (шаг принят, но время не двинулось).
+    Журнал принимается только от процесса mmain текущей сессии и только
+    обновлённый этим прогоном; иначе ответ несёт `WARNING`, а значения не
+    показываются.
+
     Args:
         to_time: время окончания расчёта в секундах (если указано).
         wait_timeout: сколько секунд ждать выхода времени на `to_time`
             (не больше `runtime.COM_CALL_TIMEOUT - CALC_WAIT_MARGIN_SECONDS`).
         stall_seconds: сколько секунд неизменного времени считать признаком
             остановившегося расчёта (после этого ждать не имеет смысла).
+            Медленный неявный init может не двигать время дольше этого
+            значения; тогда его поднимают осознанно.
+        diagnostics_path: журнал диагностики шага; пусто - не читать.
     """
     if wait_timeout <= 0 or stall_seconds <= 0:
         raise ToolError(
@@ -127,29 +166,44 @@ def run(to_time: Optional[float] = None,
             f"что единственный COM-поток остался бы занят опросом, пока вызов "
             f"не завершится.")
     sim = session.ensure_project().simulation()
-    sim.start()
-    if to_time is None:
-        sim.run()
-        return ("Расчёт запущен (неблокирующий вызов: подтвердить ход можно "
-                "через `get_time`)")
-    reached = sim.run_to(to_time, timeout=wait_timeout, stall=stall_seconds)
-    actual = sim.get_time()
-    if not reached:
-        # Отказ, а не текст: недостижение отметки — это неудача, и клиент,
-        # доверяющий `isError`, иначе увидел бы успех (ровно то, против чего
-        # весь контракт). Текст причины сохраняется целиком.
-        raise ToolError(
-            f"Расчёт не дошёл до {to_time} с: модельное время "
-            f"{actual:.3f} (ждали {wait_timeout:.0f} с). Частые "
-            f"причины: у какого-то блока не соединён вход — это молча "
-            f"останавливает расчёт всей модели; у проекта нет расчётного "
-            f"слоя и время не растёт вовсе; скрипт страницы не "
-            f"скомпилировался — среда об этом молчит, а расчёт стоит; "
-            f"либо `to_time` больше `endtime` — поднимите его через "
-            f"`set_calc_time`. Проверьте соединения, скрипт страницы "
-            f"и `list_blocks`."
-        )
-    return f"Расчёт до {to_time} с завершён (время={actual:.3f})"
+    run_started = time.time()
+    try:
+        sim.start()
+        if to_time is None:
+            sim.run()
+            result = ("Расчёт запущен (неблокирующий вызов: подтвердить ход "
+                      "можно через `get_time`)")
+        else:
+            reached = sim.run_to(to_time, timeout=wait_timeout,
+                                 stall=stall_seconds)
+            actual = sim.get_time()
+            if not reached:
+                # Отказ, а не текст: недостижение отметки: это неудача, и
+                # клиент, доверяющий `isError`, иначе увидел бы успех (ровно то,
+                # против чего весь контракт). Текст причины сохраняется целиком.
+                raise ToolError(
+                    f"Расчёт не дошёл до {to_time} с: модельное время "
+                    f"{actual:.3f} (ждали {wait_timeout:.0f} с). Частые "
+                    f"причины: у какого-то блока не соединён вход: это молча "
+                    f"останавливает расчёт всей модели; у проекта нет "
+                    f"расчётного слоя и время не растёт вовсе; скрипт страницы "
+                    f"не скомпилировался: среда об этом молчит, а расчёт "
+                    f"стоит; либо `to_time` больше `endtime`: поднимите его "
+                    f"через `set_calc_time`. Проверьте соединения, скрипт "
+                    f"страницы и `list_blocks`."
+                )
+            result = f"Расчёт до {to_time} с завершён (время={actual:.3f})"
+    except Exception as exc:
+        if not diagnostics_path:
+            raise
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        message = str(exc)
+        note = _run_diagnostics_note(message, diagnostics)
+        raise ToolError(f"{message}{note}\n\n{diagnostics.text}") from exc
+    if diagnostics_path:
+        diagnostics = read_diagnostics_result(diagnostics_path, run_started)
+        result = f"{result}\n\n{diagnostics.text}"
+    return result
 
 
 @mcp.tool(title="Шаги расчёта", annotations={"readOnlyHint": False})

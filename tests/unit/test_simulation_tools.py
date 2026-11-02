@@ -535,6 +535,63 @@ async def test_run_error_has_timing(monkeypatch):
     assert data["elapsed_ms"] >= 0
 
 
+def _run_writes(sim, path, **overrides):
+    """run_to фейка пишет журнал, как это делал бы решатель."""
+    original = sim.run_to
+
+    def run_to_and_write(*args, **kwargs):
+        result = original(*args, **kwargs)
+        write_diagnostics(path, **overrides)
+        return result
+
+    sim.run_to = run_to_and_write
+    return sim
+
+
+@pytest.mark.anyio
+async def test_run_reads_diagnostics_on_success(monkeypatch, diagnostics_env):
+    sim = _install_fake_simulation(monkeypatch, [1.0])
+    _run_writes(sim, diagnostics_env / "diag.json",
+                status="accepted", reason="accepted")
+
+    text = _text(await mcp.call_tool(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"}))
+
+    assert '"status":"accepted"' in text
+
+
+@pytest.mark.anyio
+async def test_run_explains_entry_on_stalled_time(monkeypatch,
+                                                diagnostics_env):
+    """Стоящее время и вход в im_run: это init, а не отказ решателя."""
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+    sim.run_to_result = False
+    _run_writes(sim, diagnostics_env / "diag.json",
+                status="call", reason="entry")
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "diag.json"})
+
+    assert "вход в im_run без исхода" in text
+    assert "stall_seconds" in text
+    assert "solver: " not in text
+
+
+@pytest.mark.anyio
+async def test_run_explains_empty_journal_on_stalled_time(monkeypatch,
+                                                         diagnostics_env):
+    """Журнала нет: решатель не достигнут, а не stall с причиной."""
+    sim = _install_fake_simulation(monkeypatch, [0.0])
+    sim.run_to_result = False
+
+    text = await _error(
+        "run", {"to_time": 1.0, "diagnostics_path": "absent.json"})
+
+    assert "записей этого прогона нет" in text
+    assert "im_run не достигнут" in text
+    assert "WARNING: диагностика шага" in text
+
+
 @pytest.fixture
 def diagnostics_env(monkeypatch, tmp_path):
     monkeypatch.setenv(sandbox.OUTPUT_DIR_ENV, str(tmp_path))
