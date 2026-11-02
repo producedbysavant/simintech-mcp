@@ -657,6 +657,68 @@ async def test_import_model_text_refuses_demux_out_of_range_existing_block(
 
 
 @pytest.mark.anyio
+async def test_import_model_text_demux_type_not_first(monkeypatch, tmp_path):
+    """`type` не первым свойством: компилятор принимает, guard обязан видеть."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    _BridgeRunsContour.body = ""
+    text = ('dmx: (a=[1, 1, 1], type = "Демультиплексор"),\n'
+            'kx: (type = "Усилитель"),\n'
+            'w2: (points=[], src = "dmx:out:2", dst = "kx:in:0", '
+            'type = "wire")')
+
+    message = await _error("import_model_text", {"model_text": text})
+
+    assert "импорт не выполнен" in message
+    assert "первую линию с выхода - `connect`" in message
+    assert _BridgeRunsContour.body == ""
+
+
+@pytest.mark.anyio
+async def test_import_model_text_demux_unicode_and_case(monkeypatch, tmp_path):
+    """Кириллическое имя и регистр в адресе не прячут ветвь от проверки."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    _BridgeRunsContour.body = ""
+    text = ('Дм: (type = "Демультиплексор", a=[1, 1, 1]),\n'
+            'w: (type = "wire", points=[], src = "дм:out:2", '
+            'dst = "kx:in:0")')
+
+    message = await _error("import_model_text", {"model_text": text})
+
+    assert "импорт не выполнен" in message
+    assert "дм:out:2" in message
+
+
+@pytest.mark.anyio
+async def test_import_model_text_demux_read_failure_is_refusal(
+        monkeypatch, tmp_path):
+    """Класс источника не прочитался: отказ, а не молчаливое «+N»."""
+    class _BrokenPage:
+        def get_blocks(self):
+            return []
+
+        def find_block(self, name):
+            raise RuntimeError("COM не ответил")
+
+    class _BrokenProject:
+        id = 7
+
+        def get_current_page(self):
+            return _BrokenPage()
+
+    _install(monkeypatch, tmp_path, _BridgeRunsContour, wires=[object()])
+    session._project = _BrokenProject()
+    _BridgeRunsContour.body = ""
+
+    message = await _error("import_model_text", {"model_text": (
+        'w2: (type = "wire", points=[], src = "dmx:out:2", '
+        'dst = "kx:in:0")')})
+
+    assert "не удалось прочитать класс" in message
+    assert "Проверка ветвей" in message
+    assert _BridgeRunsContour.body == ""
+
+
+@pytest.mark.anyio
 async def test_import_model_text_reports_model_stuck(monkeypatch, tmp_path):
     """«Модель не считает» — не отказ сборки: текст принят, а расчёт стоит."""
     class _Stuck(_BridgeRunsContour):

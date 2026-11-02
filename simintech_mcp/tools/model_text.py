@@ -547,27 +547,54 @@ def _wire_count() -> Optional[int]:
 #: сборкой, поэтому приблизительность ему прощается, а молчание — нет.
 _RECORD_NAME_RE = re.compile(r"\s*([A-Za-z_][\w]*)\s*:\s*\(")
 
-#: Тип записи в тексте: `Имя: (type = "Класс", ...`.
-_RECORD_TYPE_RE = re.compile(
-    r"([A-Za-z_][\w]*)\s*:\s*\(\s*type\s*=\s*\"([^\"]+)\"")
+#: Имя записи в тексте: буква или подчёркивание, дальше любые буквы и цифры.
+#: `\w` в Python Unicode-осведомлён, поэтому кириллические имена тоже видны.
+_RECORD_START_RE = re.compile(r"([^\W\d]\w*)\s*:\s*\(")
 
 
-def _wire_records(model_text: str) -> "List[Tuple[str, str, str]]":
-    """Записи проводов в тексте, включая однострочную форму импорта.
+def _top_level_text(body: str) -> str:
+    """Текст записи без вложенных скобочных групп (свойства верхнего уровня).
 
-    `parse_page_wires` ждёт выгрузку, где имя записи стоит отдельной строкой
-    (`w: (`). Импортный текст часто пишут одной строкой (`w: (type = "wire",
-    ...)`), поэтому здесь запись вырезается по балансу скобок, а `src`/`dst`
-    ищутся внутри неё. Это не разбор языка: нужна только пара адресов.
+    Вложенная `subsystem: (...)` не должна отдавать `type = "wire"` или
+    `src`/`dst` внешней записи: иначе блок с вложенным проводом выглядел бы
+    проводом, а чужой `src` приписался бы не тому имени.
     """
-    pairs: "List[Tuple[str, str, str]]" = []
-    for match in re.finditer(r"([A-Za-z_]\w*)\s*:\s*\(", model_text):
-        start = match.end() - 1
-        depth = 0
-        in_quote = False
-        end = start
-        while end < len(model_text):
-            char = model_text[end]
+    out: "List[str]" = []
+    depth = 0
+    in_quote = False
+    for char in body:
+        if char == '"':
+            in_quote = not in_quote
+            out.append(char if depth == 0 else " ")
+        elif in_quote:
+            out.append(char if depth == 0 else " ")
+        elif char == "(":
+            depth += 1
+            out.append(" ")
+        elif char == ")":
+            depth -= 1
+            out.append(" ")
+        else:
+            out.append(char if depth == 0 else " ")
+    return "".join(out)
+
+
+def _record_entries(model_text: str) -> "List[Tuple[str, str]]":
+    """Записи верхнего уровня: `(имя, тело)`.
+
+    Текст может быть обёрнут в `( … )` или подан записями без обёртки; глубина
+    верхнего уровня определяется по обёртке. Записи вложенных субмоделей
+    пропускаются: импорт идёт в текущий контейнер, и одноимённый блок в
+    субмодели не должен влиять на проверку.
+    """
+    stripped = model_text.strip()
+    top = 1 if stripped.startswith("(") and stripped.endswith(")") else 0
+    records: "List[Tuple[str, str]]" = []
+    depth = 0
+    in_quote = False
+    pos = 0
+    for match in _RECORD_START_RE.finditer(model_text):
+        for char in model_text[pos:match.start()]:
             if char == '"':
                 in_quote = not in_quote
             elif not in_quote:
@@ -575,16 +602,51 @@ def _wire_records(model_text: str) -> "List[Tuple[str, str, str]]":
                     depth += 1
                 elif char == ")":
                     depth -= 1
-                    if depth == 0:
+        pos = match.start()
+        if in_quote or depth != top:
+            continue
+        start = match.end() - 1
+        end = start
+        nested = 0
+        quote = False
+        while end < len(model_text):
+            char = model_text[end]
+            if char == '"':
+                quote = not quote
+            elif not quote:
+                if char == "(":
+                    nested += 1
+                elif char == ")":
+                    nested -= 1
+                    if nested == 0:
                         break
             end += 1
-        body = model_text[start + 1:end]
-        if not re.match(r"\s*type\s*=\s*\"wire\"", body):
+        records.append((match.group(1), model_text[start + 1:end]))
+        depth += 1
+        pos = match.end()
+    return records
+
+
+def _wire_records(model_text: str) -> "List[Tuple[str, str, str]]":
+    """Записи проводов верхнего уровня, включая однострочную форму импорта.
+
+    Сначала пробуется `parse_page_wires` (форма выгрузки), затем сканер
+    записей: импортный текст часто пишут одной строкой и с `type` не первым
+    свойством, а компилятор принимает любой порядок. Это не разбор языка:
+    нужны только имя и пара адресов.
+    """
+    wires = parse_page_wires(model_text)
+    if wires:
+        return wires
+    pairs: "List[Tuple[str, str, str]]" = []
+    for name, body in _record_entries(model_text):
+        top = _top_level_text(body)
+        if not re.search(r"\btype\s*=\s*\"wire\"", top):
             continue
-        src = re.search(r"\bsrc\s*=\s*\"([^\"]+)\"", body)
-        dst = re.search(r"\bdst\s*=\s*\"([^\"]+)\"", body)
+        src = re.search(r"\bsrc\s*=\s*\"([^\"]+)\"", top)
+        dst = re.search(r"\bdst\s*=\s*\"([^\"]+)\"", top)
         if src and dst:
-            pairs.append((match.group(1), src.group(1), dst.group(1)))
+            pairs.append((name, src.group(1), dst.group(1)))
     return pairs
 
 
@@ -595,29 +657,66 @@ def _demux_out_of_range_wires(model_text: str) -> "List[str]":
     выше среда создаёт линией без `src`; повторный импорт к тем же `dst`
     добавляет пустые дубли. Проверка идёт до контура: иначе ответ «+2» скрывал
     бы линию, которая не работает.
+
+    Неизвестность не разрешение: если класс источника не объявлен в тексте и
+    не читается на текущей странице, импорт отказывает, а не пропускает
+    проверку молча.
     """
     wires = _wire_records(model_text)
     if not wires:
         return []
-    declared = {match.group(1): match.group(2)
-                for match in _RECORD_TYPE_RE.finditer(model_text)}
+    declared: "Dict[str, str]" = {}
+    for name, body in _record_entries(model_text):
+        top = _top_level_text(body)
+        match = re.search(r"\btype\s*=\s*\"([^\"]+)\"", top)
+        if match and match.group(1).strip() != "wire":
+            declared.setdefault(name.casefold(), match.group(1).strip())
     page = None
+    classes: "Dict[str, Optional[str]]" = {}
     bad: "List[str]" = []
     for name, src, _dst in wires:
         block, sep, out_index = src.partition(":out:")
-        if not sep or not out_index.isdigit() or int(out_index) < 2:
+        if not sep or not out_index.isdecimal():
             continue
-        class_name = declared.get(block)
+        try:
+            out_number = int(out_index)
+        except ValueError:
+            continue
+        if out_number < 2:
+            continue
+        key = block.casefold()
+        class_name = declared.get(key)
         if class_name is None:
-            try:
-                if page is None:
-                    page = session.ensure_project().get_main_page()
-                target = page.find_block(block)
-                class_name = (str(target.class_name).strip()
-                              if target is not None else None)
-            except Exception:                                  # noqa: BLE001
-                class_name = None
-        if class_name == "Демультиплексор":
+            if key in classes:
+                class_name = classes[key]
+            else:
+                try:
+                    if page is None:
+                        page = session.ensure_project().get_current_page()
+                    target = page.find_block(block)
+                    if target is None:
+                        for candidate in page.get_blocks():
+                            try:
+                                if str(candidate.get_name()).casefold() == key:
+                                    target = candidate
+                                    break
+                            except Exception:                  # noqa: BLE001
+                                continue
+                    if target is None:
+                        raise ToolError(
+                            f"источник '{block}' для ветви {name} не найден ни "
+                            f"в тексте, ни на текущей странице: проверить, не "
+                            f"«Демультиплексор» ли это, нельзя")
+                    class_name = str(target.class_name).strip()
+                except ToolError:
+                    raise
+                except Exception as exc:                       # noqa: BLE001
+                    raise ToolError(
+                        f"не удалось прочитать класс блока-источника "
+                        f"'{block}' для ветви {name}: {exc}. Проверка ветвей "
+                        f"демультиплексора не выполнена") from exc
+                classes[key] = class_name
+        if class_name and class_name.casefold() == "демультиплексор":
             bad.append(f"{name}: {src}")
     return bad
 
@@ -875,9 +974,9 @@ def import_model_text(model_text: str) -> str:
       `out:1` импортируются как ветви (`src = "<линия>:0"`), а `out:2` и выше
       среда создаёт линией без `src`; повторный импорт к тем же `dst` плодит
       пустые дубли. Инструмент проверяет такие адреса **до** контура и
-      отказывает: линию без источника надо строить `connect_branch` после
-      импорта блоков. Молчаливый «+N линий» здесь скрывал бы неработающую
-      связь.
+      отказывает: линию без источника надо строить после импорта блоков,
+      первую с выхода - `connect`, последующие - `connect_branch`.
+      Молчаливый «+N линий» здесь скрывал бы неработающую связь.
 
     - **Класс субмодели в тексте: «Субмодель», не `Macro`.** Рабочая форма:
       `type = "Субмодель"` с содержимым во вложенной секции `subsystem:`
@@ -960,8 +1059,9 @@ def import_model_text(model_text: str) -> str:
             f"импорт не выполнен: ветви от «Демультиплексор» с out:2 и выше "
             f"среда создаёт линиями без src ({shown}{more}). out:0 и out:1 "
             f"импортируются корректно. Уберите эти записи из текста и создайте "
-            f"их `connect_branch` после импорта блоков: линия без источника "
-            f"молча останавливает расчёт, а повторный импорт плодит дубли.")
+            f"после импорта блоков: первую линию с выхода - `connect`, "
+            f"последующие - `connect_branch`. Линия без источника молча "
+            f"останавливает расчёт, а повторный импорт плодит дубли.")
     dups = _duplicate_record_names(model_text)
     roles = _text_wire_roles(model_text)
     wires_before = _wire_count()
