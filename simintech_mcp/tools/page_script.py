@@ -216,11 +216,18 @@ def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
         run = bridge().run_page_script(body, path)
     except ScriptBridgeError as exc:
         discard_result(path)
+        locked = "файл результата заперт" in str(exc)
+        hint = (
+            " Файл результата уникален на вызов: повторите вызов. Перед "
+            "повтором проверьте, не создалась ли правка частично "
+            "(`list_wires`, `export_model_text`): тело могло дойти до "
+            "изменения модели и оборваться до `freeobject`."
+            if locked else "")
         raise ToolError(
-            f"{failed}: {exc}. Тело идёт в секцию `initialization`, поэтому "
-            "расчёт должен сдвинуть модельное время: проверьте, что модель "
-            "считает — неподключённый вход останавливает расчёт всей модели "
-            "молча."
+            f"{failed}: {exc}.{hint} Тело идёт в секцию `initialization`, "
+            "поэтому расчёт должен сдвинуть модельное время: проверьте, что "
+            "модель считает: неподключённый вход останавливает расчёт всей "
+            "модели молча."
         ) from exc
     discard_result(path)
     return run.outcome, run.restored_script

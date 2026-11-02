@@ -391,6 +391,34 @@ async def test_run_page_script_refuses_abort_with_last_line(monkeypatch, tmp_pat
 
 
 @pytest.mark.anyio
+async def test_run_page_script_locked_result_advises_repeat(
+        monkeypatch, tmp_path):
+    """Запертый файл результата: отказ говорит повторить и проверить модель.
+
+    Замок означает, что тело оборвалось до `freeobject`; прочитать тот же файл
+    повторно нельзя, а новая попытка пишет под новым именем. Автоматически
+    повторять мутирующее тело нельзя: ветвь могла создаться дважды.
+    """
+    from simintech_api.exceptions import ScriptBridgeError
+
+    from _support import _error
+
+    class _Locked(_BridgeRuns):
+        def run_page_script(self, body, result_path):
+            raise ScriptBridgeError(
+                f"файл результата заперт: {result_path} открыт процессом "
+                "SimInTech")
+
+    _install(monkeypatch, tmp_path, _Locked, project=_FakeProject())
+
+    message = await _error("run_page_script", {"script": "x();"})
+
+    assert "повторите вызов" in message
+    assert "частично" in message
+    assert "list_wires" in message
+
+
+@pytest.mark.anyio
 async def test_run_page_script_uses_fresh_result_path_per_call(
         monkeypatch, tmp_path):
     """Имя файла результата уникально на вызов — запертый файл не мешает.
