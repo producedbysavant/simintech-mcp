@@ -167,6 +167,21 @@ def disconnect() -> str:
 
 # ─── Проекты ──────────────────────────────────────────────────────
 
+
+def _page_object_names(project: "Project") -> Optional[list[str]]:
+    """Имена блоков главной страницы; `None` - прочитать не удалось.
+
+    Снимок нужен только для одного вопроса: среда вернула новый проект или
+    тот же живой. Ошибка чтения не должна превращаться в отказ: тогда
+    инструмент не смог бы работать на проекте с нечитаемой страницей.
+    """
+    try:
+        page = project.get_main_page()
+        return sorted(str(block.get_name()) for block in page.get_blocks())
+    except Exception:                                          # noqa: BLE001
+        return None
+
+
 @mcp.tool(title="Создать проект", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def create_project(project_hint: str = "model",
@@ -183,6 +198,14 @@ def create_project(project_hint: str = "model",
     `mmain.exe`. Смена текущего проекта называется в ответе явно («было …
     → стало …», issue #18).
 
+    **Совпавший id ещё не значит новый проект.** Среда переиспользует COM id:
+    после сохранения проект может быть открыт повторно под прежним номером.
+    Поэтому при совпадении id инструмент сравнивает состав блоков главной
+    страницы. Если прежний проект был непуст и состав не изменился, это тот же
+    живой проект: вместо «создан» приходит отказ с советом сохранить и закрыть
+    прежний проект. Пустая страница после открытия шаблона считается новым
+    проектом: шаблон пуст, и отличить его от прежнего пустого нечем.
+
     Args:
         project_hint: подсказка для сообщения. Имя проекта задаёт среда,
             переименование через COM недоступно.
@@ -195,7 +218,23 @@ def create_project(project_hint: str = "model",
     if end_time is not None and end_time <= 0:
         raise ToolError("end_time должен быть положительным числом секунд")
 
+    previous = session.current_project()
+    previous_names = (_page_object_names(previous)
+                      if previous is not None else None)
     prj = Project.from_template(session.ensure_client())
+    if previous is not None and previous.id == prj.id:
+        new_names = _page_object_names(prj)
+        if previous_names and new_names == previous_names:
+            # Тот же id и тот же непустой состав: среда не создала новый
+            # проект, а вернула текущий. `replace_project` закрытие пропустит,
+            # и ответ «создан» был бы ложью (живой замер 02.11.2026: после
+            # save_project блоки прежнего проекта остались на странице).
+            raise ToolError(
+                f"Новый проект не создан: среда вернула прежний проект "
+                f"(id={prj.id}) с теми же объектами ({len(previous_names)}). "
+                f"Прежний проект не закрыт и не изменён. Сохраните его "
+                f"(`save_project`) и закройте (`close_project`), затем "
+                f"повторите `create_project`.")
     replaced = session.replace_project(prj)
     if end_time is not None:
         prj.set_calc_end_time(end_time)

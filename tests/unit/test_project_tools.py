@@ -16,6 +16,7 @@ from simintech_mcp.tools import project as project_tools
 
 from _support import (
     _OwnedClientStub,
+    _RenamingBlock,
     _SavableProject,
     _TemplateProject,
     _WireProject,
@@ -426,6 +427,54 @@ async def test_create_project_reports_switch_from_previous(monkeypatch):
         assert "СМЕНИЛСЯ" in text
         assert "было «CoolInt.prt» (id=12)" in text
         assert "стало «проект из шаблона» (id=5)" in text
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_create_project_refuses_when_same_live_project(monkeypatch):
+    """Совпал id и состав блоков: это прежний проект, а не новый.
+
+    Живой замер 02.11.2026: после save_project create_project вернул тот же id,
+    прежние блоки остались на странице, а ответ говорил «создан».
+    """
+    block = _RenamingBlock("Константа")
+    previous = _WireProject({"k_0": block}, project_id=5)
+    opened = _WireProject({"k_0": block}, project_id=5)
+    monkeypatch.setattr(project_tools.Project, "from_template",
+                        staticmethod(lambda client: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    monkeypatch.setattr(session, "pack_membership", lambda: False)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous)
+    try:
+        text = await _error("create_project", {})
+
+        assert "Новый проект не создан" in text
+        assert "id=5" in text
+        assert "не изменён" in text
+        assert session.current_project() is previous, \
+            "сессия не должна переключаться на тот же живой проект"
+    finally:
+        session.set_project(prev_project, source_path=prev_path)
+
+
+@pytest.mark.anyio
+async def test_create_project_accepts_reused_id_for_empty_template(monkeypatch):
+    """Совпал id, но шаблон пуст: это новый проект, создание состоялось."""
+    previous = _WireProject({"k_0": _RenamingBlock("Константа")}, project_id=5)
+    opened = _WireProject({}, project_id=5)
+    monkeypatch.setattr(project_tools.Project, "from_template",
+                        staticmethod(lambda client: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    monkeypatch.setattr(session, "pack_membership", lambda: False)
+    prev_project, prev_path = session.current_project(), session._project_path
+    session.set_project(previous)
+    try:
+        text = _text(await mcp.call_tool("create_project", {}))
+
+        assert "создан" in text
+        assert session.current_project() is opened
     finally:
         session.set_project(prev_project, source_path=prev_path)
 
