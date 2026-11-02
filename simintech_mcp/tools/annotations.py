@@ -264,7 +264,7 @@ def _cell_lines(records: List[MemoryCell], limit: int) -> List[str]:
 
 
 @mcp.tool(title="Аннотации и ячейки памяти",
-          annotations={"readOnlyHint": True})
+          annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def list_annotations() -> str:
     """Прочитать подписи страниц и имена ячеек памяти из снимка `.xprt`.
@@ -275,6 +275,9 @@ def list_annotations() -> str:
     `visual_props`, которого нет в COM-чтении. `export_model_text` подписи не
     выгружает. Снимок `SaveProjectXML` отдаёт их без запуска расчёта и без
     сдвига модельного времени.
+
+    **Это не чистое чтение.** Снимок пишет временный `.xprt`; файл удаляется,
+    но запись состоялась. Поэтому `readOnlyHint` здесь `False`.
 
     **Что читается.** Замер на вендорских `.xprt` (SimInTech64, 24.10.2026):
     у `TextLabel`, `RotatedText` и `constLabel` текст в `visual_props.Text`,

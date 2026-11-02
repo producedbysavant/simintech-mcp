@@ -95,8 +95,7 @@ _MUTATING_TOOLS = {
 #: не разрушительный — файл уникален, перезаписи чужого нет.
 _READ_ONLY_TOOLS = {
     "status", "get_time", "list_blocks", "list_wires", "get_block_params",
-    "get_page_script", "get_block_script",
-    "list_signals", "get_signal", "read_output_file", "list_annotations",
+    "list_signals", "get_signal", "read_output_file",
     "summarize_output_file", "inspect_project_file", "project_network_role",
     "list_pack_projects", "help_text", "search_language_functions",
     "get_language_function",
