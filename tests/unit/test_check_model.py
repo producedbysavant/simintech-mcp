@@ -268,6 +268,7 @@ async def test_check_reports_empty_ports_from_contour(monkeypatch, tmp_path):
     assert "k_0[1]" in text
     assert "0-based" in text
     assert "не in:N" in text
+    assert "end_port_index" in text
 
 
 @pytest.mark.anyio
