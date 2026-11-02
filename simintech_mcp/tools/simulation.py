@@ -244,6 +244,12 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
     `t=0`. При `diagnostics_path` журнал даёт последний записанный исход;
     если попытка не оставила записи, точная причина не устанавливается.
 
+    **Шаги идут от инициализации.** `step` всегда вызывает `ProjectStart`,
+    который исполняет `initialization` и сбрасывает модельное время. Поэтому
+    при ненулевом времени ответ называет сброс (`сбросила модельное время:
+    X -> Y`), а шаги между вызовами не накапливаются. Для непрерывного
+    расчёта берите один пакет `step(count=N)` или `run(to_time=...)`.
+
     Args:
         count: сколько шагов выполнить (> 0, не больше `MAX_STEP_COUNT`).
         diagnostics_path: журнал диагностики шага; пусто - не читать.
@@ -259,9 +265,11 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
         )
     sim = session.ensure_project().simulation()
     run_started = time.time()
+    previous = 0.0
     before = 0.0
     after = 0.0
     try:
+        previous = sim.get_time()
         sim.start()
         before = sim.get_time()
         after = before
@@ -273,11 +281,16 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
             raise
         diagnostics = read_diagnostics_result(diagnostics_path, run_started)
         raise ToolError(f"{exc}\n\n{diagnostics.text}") from exc
+    reset = ""
+    if previous > before + 1e-9:
+        reset = (f" Инициализация (`ProjectStart`) сбросила модельное время: "
+                 f"{previous:.3f} -> {before:.3f}; шаги идут от "
+                 f"{before:.3f}, а не продолжают прежний расчёт.")
     if after <= before:
         # Отказ, а не текст: время не сдвинулось - это неудача; клиент,
         # доверяющий `isError`, иначе счёл бы шаги выполненными.
         head = (f"Время не сдвинулось после {count} шагов (осталось "
-                f"{after:.3f} с).")
+                f"{after:.3f} с).{reset}")
         causes = (
             "Частые причины: у какого-то блока не соединён вход, у проекта "
             "нет расчётного слоя (создайте его через `create_project`) либо "
@@ -305,7 +318,8 @@ def step(count: int = 1, diagnostics_path: str = "") -> str:
                 f"{head} Точная причина не установлена, журнал решателя "
                 f"недоступен. {causes}")
         raise ToolError(f"{message}\n\n{diagnostics.text}")
-    result = f"Выполнено шагов: {count} (время: {before:.3f} → {after:.3f})"
+    result = (f"Выполнено шагов: {count} "
+              f"(время: {before:.3f} → {after:.3f}).{reset}")
     if diagnostics_path:
         diagnostics = read_diagnostics_result(diagnostics_path, run_started)
         result = f"{result}\n\n{diagnostics.text}"

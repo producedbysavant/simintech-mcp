@@ -110,11 +110,26 @@ async def test_stalled_run_names_the_page_script_cause(monkeypatch):
 @pytest.mark.anyio
 async def test_step_reports_time_delta(monkeypatch):
     """Успешные шаги подтверждаются дельтой времени."""
-    _install_fake_simulation(monkeypatch, [0.0, 0.003])
+    _install_fake_simulation(monkeypatch, [0.0, 0.0, 0.003])
 
     text = _text(await mcp.call_tool("step", {"count": 3}))
 
     assert "0.000 → 0.003" in text
+
+
+@pytest.mark.anyio
+async def test_step_reports_time_reset(monkeypatch):
+    """ProjectStart сбросил ненулевое время: ответ называет сброс.
+
+    Живой замер 02.11.2026: get_time 0.05, step(1) ответил «0.000 → 0.001».
+    Без отдельного чтения до start сброс был невидим.
+    """
+    _install_fake_simulation(monkeypatch, [0.05, 0.0, 0.001])
+
+    text = _text(await mcp.call_tool("step", {"count": 1}))
+
+    assert "0.000 → 0.001" in text
+    assert "сбросила модельное время: 0.050 -> 0.000" in text
 
 
 @pytest.mark.anyio
@@ -675,7 +690,7 @@ def _step_writes(sim, path, **overrides):
 
 @pytest.mark.anyio
 async def test_step_reads_diagnostics(monkeypatch, diagnostics_env):
-    sim = _install_fake_simulation(monkeypatch, [0.0, 0.001])
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0, 0.001])
     _step_writes(sim, diagnostics_env / "diag.json",
                  status="rejected", reason="ner>0", Nbad=3)
 
@@ -805,7 +820,7 @@ async def test_step_keeps_diagnostics_on_exception(
 
 @pytest.mark.anyio
 async def test_step_reports_missing_diagnostics(monkeypatch, diagnostics_env):
-    _install_fake_simulation(monkeypatch, [0.0, 0.001])
+    _install_fake_simulation(monkeypatch, [0.0, 0.0, 0.001])
 
     text = _text(await mcp.call_tool(
         "step", {"count": 1, "diagnostics_path": "absent.json"}))
@@ -817,7 +832,7 @@ async def test_step_reports_missing_diagnostics(monkeypatch, diagnostics_env):
 
 @pytest.mark.anyio
 async def test_step_rejects_foreign_diagnostics(monkeypatch, diagnostics_env):
-    sim = _install_fake_simulation(monkeypatch, [0.0, 0.001])
+    sim = _install_fake_simulation(monkeypatch, [0.0, 0.0, 0.001])
     _step_writes(sim, diagnostics_env / "diag.json", pid=1)
 
     text = _text(await mcp.call_tool(

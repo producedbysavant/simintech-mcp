@@ -546,6 +546,25 @@ async def test_create_project_notes_ambiguous_empty_same_id(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_set_project_config_names_reinit(monkeypatch):
+    """Запись настройки называет переинициализацию и сброс времени."""
+    class _ConfigProject:
+        def set_calc_setting(self, param, value):
+            self.written = (param, value)
+
+    project = _ConfigProject()
+    monkeypatch.setattr(session, "ensure_project", lambda: project)
+
+    text = _text(await mcp.call_tool(
+        "set_project_config", {"param": "hmin", "value": "0.0001"}))
+
+    assert project.written == ("hmin", "0.0001")
+    assert "hmin = 0.0001" in text
+    assert "следующей инициализации" in text
+    assert "сбрасывает модельное время" in text
+
+
+@pytest.mark.anyio
 async def test_set_calc_time_delegates_to_project(monkeypatch):
     """set_calc_time передаёт значение в проект."""
 
