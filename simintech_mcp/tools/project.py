@@ -14,7 +14,7 @@ import zlib
 from typing import Optional, Tuple
 
 from fastmcp.exceptions import ToolError
-from simintech_api import COMClient, Project
+from simintech_api import Project
 
 from .. import runtime, session
 from ..app import mcp
@@ -167,25 +167,6 @@ def disconnect() -> str:
 
 # ─── Проекты ──────────────────────────────────────────────────────
 
-
-def _project_file_name(client: COMClient, project: "Project") -> str:
-    """Файл, из которого открыт проект; пусто - проект без файла.
-
-    Идентичность проверяется по `GetOpenedFileName`, а не по составу страницы:
-    чтение страницы активирует её (`SetCurrentPage`) и после `save_project`
-    попадает ровно в тот паттерн, который даёт деградацию сцены mmain.
-    Ошибка чтения - отказ: неизвестность здесь не разрешение.
-    """
-    try:
-        return client.get_opened_file_name(project.id).strip()
-    except Exception as exc:                                   # noqa: BLE001
-        raise ToolError(
-            f"не удалось прочитать файл проекта (id={project.id}): {exc}. "
-            f"Определить, новый это проект или прежний, нельзя. Проверьте "
-            f"`reload_project` или `open_project`; если сессия мертва - "
-            f"`disconnect`.") from exc
-
-
 @mcp.tool(title="Создать проект", annotations={"readOnlyHint": False})
 @runtime.com_threaded
 def create_project(project_hint: str = "model",
@@ -202,13 +183,12 @@ def create_project(project_hint: str = "model",
     `mmain.exe`. Смена текущего проекта называется в ответе явно («было …
     → стало …», issue #18).
 
-    **Совпавший id ещё не значит новый проект.** Среда переиспользует COM id:
-    после сохранения проект может быть открыт повторно под прежним номером.
-    Идентичность проверяется по `GetOpenedFileName`: у проекта, сохранённого в
-    файл, путь непуст, у шаблона пуст. Совпадение непустого пути означает тот
-    же живой проект, и вместо «создан» приходит отказ. Если оба пути пусты,
-    отличить новый шаблон от прежнего нельзя: при несохранённых правках
-    инструмент отказывает, иначе отвечает примечанием о совпавшем id.
+    **Совпавший id не подтверждает создание.** Среда переиспользует COM id.
+    Отличить новый проект от прежнего по имени файла нельзя: у проекта из
+    шаблона `GetOpenedFileName` равно имени шаблона, у `NewProject` -
+    `Noname.prt`, а `SaveProjectBinary`/`SaveProjectXML` имя открытого файла не
+    меняют (живой замер 02.11.2026). Поэтому при совпадении id инструмент
+    отказывает и не утверждает «создан»: закройте прежний проект и повторите.
 
     **Состав страницы не читается намеренно.** `get_blocks` активирует
     страницу (`SetCurrentPage`), а после `save_project` это ровно тот паттерн,
@@ -227,48 +207,25 @@ def create_project(project_hint: str = "model",
     if end_time is not None and end_time <= 0:
         raise ToolError("end_time должен быть положительным числом секунд")
 
-    # Проверка живости клиента идёт до чтения прежнего проекта: файл не должен
-    # читаться через мёртвый прокси.
     client = session.ensure_client()
     previous = session.current_project()
-    previous_file = (_project_file_name(client, previous)
-                     if previous is not None else None)
     prj = Project.from_template(client)
-    ambiguous = False
     if previous is not None and previous.id == prj.id:
-        new_file = _project_file_name(client, prj)
-        if previous_file and new_file and previous_file == new_file:
-            # Тот же id и тот же файл: среда не создала новый проект, а
-            # вернула текущий. `replace_project` закрытие пропустит, и ответ
-            # «создан» был бы ложью (живой замер 02.11.2026: после
-            # save_project блоки прежнего проекта остались на странице).
-            raise ToolError(
-                f"Новый проект не создан: среда вернула прежний проект "
-                f"(id={prj.id}, файл {previous_file!r}). Прежний проект не "
-                f"закрыт и не изменён. Сохраните его (`save_project`) и "
-                f"закройте (`close_project`; участник пакета - `close_pack`), "
-                f"затем повторите `create_project`.")
-        if not previous_file and not new_file and session.unsaved_changes():
-            raise ToolError(
-                f"Новый проект принять нельзя: id совпал ({prj.id}), оба "
-                f"проекта без файла, а у прежнего есть несохранённые правки. "
-                f"Сохраните его (`save_project`) и закройте (`close_project`; "
-                f"участник пакета - `close_pack`), затем повторите "
-                f"`create_project`.")
-        if not previous_file and not new_file:
-            ambiguous = True
+        # Тот же id: отличить новый проект от прежнего нечем, а закрывать
+        # «прежний» нельзя - это тот же объект среды. Отказ fail-closed.
+        raise ToolError(
+            f"Новый проект не подтверждён: среда вернула прежний id "
+            f"({prj.id}). Отличить новый проект от прежнего по имени файла "
+            f"нельзя: у проекта из шаблона оно равно имени шаблона. Прежний "
+            f"проект не закрыт и не изменён. Закройте его (`close_project`; "
+            f"участник пакета - `close_pack`) и повторите `create_project`.")
     replaced = session.replace_project(prj)
     if end_time is not None:
         prj.set_calc_end_time(end_time)
     tail = (f", время расчёта {end_time} с" if end_time is not None
             else ", время расчёта — из шаблона (10 с)")
-    result = (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}."
-              + replaced)
-    if ambiguous:
-        result += ("\nПРИМЕЧАНИЕ: id совпал с прежним, оба проекта без файла: "
-                   "новый это проект или прежний, не доказано. Проверьте "
-                   "`list_blocks`.")
-    return result
+    return (f"Проект '{project_hint}' создан из шаблона (id={prj.id}){tail}."
+            + replaced)
 
 
 @mcp.tool(title="Задать время расчёта", annotations={"readOnlyHint": False})

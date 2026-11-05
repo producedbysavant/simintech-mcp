@@ -417,9 +417,6 @@ async def test_create_project_reports_switch_from_previous(monkeypatch):
     """Создание поверх открытого проекта называет смену (issue #18)."""
 
     _project_obj, _opened = _install_fake_template(monkeypatch)
-    monkeypatch.setattr(
-        session, "ensure_client",
-        lambda: _FilesClient([r"C:\a\CoolInt.prt", ""]))
     prev_project, prev_path = session.current_project(), session._project_path
     session.set_project(_WireProject({}, project_id=12),
                         source_path=r"C:\a\CoolInt.prt")
@@ -433,114 +430,30 @@ async def test_create_project_reports_switch_from_previous(monkeypatch):
         session.set_project(prev_project, source_path=prev_path)
 
 
-class _FilesClient:
-    """Клиент отдаёт имена файлов по очереди: вызов до и после шаблона."""
+@pytest.mark.anyio
+async def test_create_project_refuses_when_same_id(monkeypatch):
+    """Совпал id: отказ, не утверждаем «создан».
 
-    def __init__(self, names, error=None):
-        self.names = list(names)
-        self.error = error
-
-    def get_opened_file_name(self, project_id):
-        if self.error is not None:
-            raise self.error
-        return self.names.pop(0) if self.names else ""
-
-
-def _same_id_project(monkeypatch, files):
+    Живой замер 02.11.2026: после save_project create_project вернул тот же id,
+    прежние блоки остались на странице. Имя файла у всех проектов из шаблона
+    одинаковое, поэтому доказать создание нечем; безопасный исход - отказ.
+    """
     previous = _WireProject({}, project_id=5)
     opened = _WireProject({}, project_id=5)
     monkeypatch.setattr(project_tools.Project, "from_template",
                         staticmethod(lambda client: opened))
-    monkeypatch.setattr(session, "ensure_client", lambda: files)
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
     monkeypatch.setattr(session, "pack_membership", lambda: False)
     prev_project, prev_path = session.current_project(), session._project_path
     session.set_project(previous)
-    return previous, opened, prev_project, prev_path
-
-
-@pytest.mark.anyio
-async def test_create_project_refuses_when_same_live_project(monkeypatch):
-    """Совпал id и файл: это прежний проект, а не новый.
-
-    Живой замер 02.11.2026: после save_project create_project вернул тот же id,
-    прежние блоки остались на странице, а ответ говорил «создан».
-    """
-    files = _FilesClient([r"C:\a\m.prt", r"C:\a\m.prt"])
-    previous, opened, prev_project, prev_path = _same_id_project(
-        monkeypatch, files)
     try:
         text = await _error("create_project", {})
 
-        assert "Новый проект не создан" in text
-        assert "id=5" in text
+        assert "Новый проект не подтверждён" in text
+        assert "прежний id (5)" in text
         assert "close_pack" in text
         assert session.current_project() is previous, \
             "сессия не должна переключаться на тот же живой проект"
-    finally:
-        session.set_project(prev_project, source_path=prev_path)
-
-
-@pytest.mark.anyio
-async def test_create_project_accepts_reused_id_for_empty_template(monkeypatch):
-    """Совпал id, но новый проект без файла: это шаблон, создание состоялось."""
-    files = _FilesClient([r"C:\a\m.prt", ""])
-    previous, opened, prev_project, prev_path = _same_id_project(
-        monkeypatch, files)
-    try:
-        text = _text(await mcp.call_tool("create_project", {}))
-
-        assert "создан" in text
-        assert session.current_project() is opened
-    finally:
-        session.set_project(prev_project, source_path=prev_path)
-
-
-@pytest.mark.anyio
-async def test_create_project_refuses_unreadable_file_name(monkeypatch):
-    """Файл проекта не читается: неизвестность не разрешение."""
-    files = _FilesClient([], error=RuntimeError("COM не ответил"))
-    previous, opened, prev_project, prev_path = _same_id_project(
-        monkeypatch, files)
-    try:
-        text = await _error("create_project", {})
-
-        assert "не удалось прочитать файл проекта" in text
-        assert "reload_project" in text
-        assert "disconnect" in text
-        assert session.current_project() is previous
-    finally:
-        session.set_project(prev_project, source_path=prev_path)
-
-
-@pytest.mark.anyio
-async def test_create_project_refuses_ambiguous_empty_with_unsaved(monkeypatch):
-    """Оба без файла и есть несохранённые правки: принять за новый нельзя."""
-    files = _FilesClient(["", ""])
-    previous, opened, prev_project, prev_path = _same_id_project(
-        monkeypatch, files)
-    session.mark_mutated()
-    try:
-        text = await _error("create_project", {})
-
-        assert "несохранённые правки" in text
-        assert "save_project" in text
-        assert session.current_project() is previous
-    finally:
-        session.set_project(prev_project, source_path=prev_path)
-
-
-@pytest.mark.anyio
-async def test_create_project_notes_ambiguous_empty_same_id(monkeypatch):
-    """Оба без файла и правок нет: создание состоялось, но есть примечание."""
-    files = _FilesClient(["", ""])
-    previous, opened, prev_project, prev_path = _same_id_project(
-        monkeypatch, files)
-    try:
-        text = _text(await mcp.call_tool("create_project", {}))
-
-        assert "создан" in text
-        assert "ПРИМЕЧАНИЕ" in text
-        assert "не доказано" in text
     finally:
         session.set_project(prev_project, source_path=prev_path)
 
