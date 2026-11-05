@@ -24,7 +24,9 @@ mcp = FastMCP(
     version=__version__,
     instructions=(
         "Управление SimInTech через COM API (Windows, mmain.exe /regserver). "
-        "Начните с doctor. Сборка: build_model(spec=...) с ModelSpec; "
+        "Начните с doctor. "
+        "Порядок работы с моделью: simintech://guides/workflow. "
+        "Сборка: build_model(spec=...) с ModelSpec; "
         "верхнеуровневые провода создаются connect, не текстом. "
         "Один выход и одна линия: второй приёмник от того же выхода "
         "подключается connect_branch, повторный connect отвергается. "
