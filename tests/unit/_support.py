@@ -712,6 +712,9 @@ class _SavableProject:
     инструмента на невидимом проекте.
     """
 
+    #: Ответы правок называют проект по id (issue #18).
+    id = 7
+
     def __init__(self, raises: bool = False, writes: bool = True,
                  state: int = 0,
                  state_error: "BaseException | None" = None,
@@ -756,6 +759,8 @@ def _install_savable(monkeypatch, raises: bool = False,
                               state=state, state_error=state_error,
                               visible=visible)
     monkeypatch.setattr(session, "_project", project)
+    # save_project теперь пишет и путь; снимок возвращает его после теста.
+    monkeypatch.setattr(session, "_project_path", session._project_path)
     return project
 
 

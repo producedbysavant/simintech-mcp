@@ -966,6 +966,7 @@ def save_project(path: str, binary: bool = False) -> str:
             "переименуйте его вручную.") from exc
 
     session.clear_unsaved()
+    session.note_saved(path)
     if binary:
         return f"Проект сохранён в бинарный файл (.prt): {path}.{tail}"
     return f"Проект сохранён в XML (.xprt): {path}.{tail}"
