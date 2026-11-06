@@ -766,7 +766,9 @@ def set_block_param(block: str, param: str, value: str,
         notes.append("класс вне правила высоты: nport здесь не число входных "
                      "контактов, пины и размер не пересобираются")
     signalnames = param.strip().lower() == "signalnames"
-    if signalnames and class_name in ALGORITHM_SIGNAL_CLASSES:
+    algorithm_signal = (signalnames
+                        and class_name in ALGORITHM_SIGNAL_CLASSES)
+    if algorithm_signal:
         notes.append(
             "у блоков «Вход алгоритма»/«Выход алгоритма» таблица SignalNames "
             "через COM не ведётся: запись свойства не применяется, "
@@ -804,7 +806,7 @@ def set_block_param(block: str, param: str, value: str,
         # ('0.000041' → '4.1e-05'), и неприменённой записью, а объявить одну
         # из них — тот же неверный диагноз, от которого чинит эта правка.
         notes.append(f"в блоке '{param}' = '{actual}', а запрошено '{value}'")
-        if signalnames:
+        if signalnames and not algorithm_signal:
             # Живой замер 02.11.2026: таблица сигналов материализуется при
             # первой записи, и повторная запись свойства её уже не меняет.
             # Это не кеш базы сигналов: перезапуск среды не помогал. Но

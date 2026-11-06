@@ -545,7 +545,63 @@ async def test_save_project_refuses_parent_file_before_com(
     text = await _error(
         "save_project", {"path": str(blocker / "m.xprt")})
 
-    assert "не найден" in text
+    assert "не каталог" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_relative_path_before_com(
+        monkeypatch, tmp_path):
+    """Относительный путь расходится у сервера и COM-среды: отказ до COM."""
+    project = _install_savable(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    text = await _error("save_project", {"path": "m.xprt"})
+
+    assert "относительный" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_unwritable_directory_before_com(
+        monkeypatch, tmp_path):
+    """Предварительная проверка записи отвергает каталог до COM."""
+    target = tmp_path / "m.xprt"
+    project = _install_savable(monkeypatch)
+    monkeypatch.setattr(
+        project_tools.os, "access", lambda path, mode: False)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "недоступен для записи" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform != "win32", reason="имена Windows")
+async def test_save_project_refuses_reserved_device_name(
+        monkeypatch, tmp_path):
+    """NUL.xprt отвергается до COM, а не после бесполезной записи."""
+    target = tmp_path / "NUL.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "зарезервировано" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform != "win32", reason="имена Windows")
+async def test_save_project_refuses_invalid_windows_characters(
+        monkeypatch, tmp_path):
+    """Недопустимый символ в имени отвергается до COM."""
+    target = tmp_path / "bad?.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "недопустимые для Windows" in text
     assert project.calls == []
 
 

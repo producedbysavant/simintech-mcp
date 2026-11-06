@@ -377,7 +377,9 @@ def _instrumented(fn: Callable[..., Any],
 def com_threaded(fn: Callable[..., Any] | None = None, *,
                  mutates_project: bool = False,
                  rescue: bool = False,
-                 timed: bool = False) -> Callable[..., Any]:
+                 timed: bool = False,
+                 preflight: Callable[..., None] | None = None
+                 ) -> Callable[..., Any]:
     """Выполнить инструмент в выделенном COM-потоке.
 
     Делает три вещи, каждая из которых обязательна:
@@ -422,12 +424,18 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
         # вернуть обёртку, которая дождётся самой функции.
         return functools.partial(com_threaded,
                                  mutates_project=mutates_project,
-                                 rescue=rescue, timed=timed)
+                                 rescue=rescue, timed=timed,
+                                 preflight=preflight)
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
         refusal = _stuck_gate(fn.__name__, rescue=rescue)
         if refusal is not None:
             raise ToolError(refusal)
+        if preflight is not None:
+            # Проверка идёт в вызывающем потоке, а не в единственном
+            # COM-потоке: медленный `isdir`/`access` не должен занимать его и
+            # попадать под 120-с таймаут вместе с последующими вызовами.
+            _call_guarded(preflight, args, kwargs)
         future = _COM_EXECUTOR.submit(_call_guarded, fn, args, kwargs)
         try:
             result = future.result(timeout=COM_CALL_TIMEOUT)

@@ -31,6 +31,30 @@ def test_com_threaded_uses_single_dedicated_thread():
     assert whoami() == whoami() == whoami()
 
 
+def test_com_threaded_preflight_runs_outside_com_thread():
+    """Preflight не занимает единственный COM-поток.
+
+    Проверка пути (`isdir`/`access`) может быть медленной на сетевом диске;
+    в COM-потоке она попала бы под общий 120-с таймаут и заблокировала бы
+    остальные инструменты.
+    """
+    import threading
+
+    seen: list[tuple[str, int]] = []
+
+    def preflight() -> None:
+        seen.append(("pre", threading.get_ident()))
+
+    @runtime.com_threaded(preflight=preflight)
+    def body() -> str:
+        seen.append(("body", threading.get_ident()))
+        return "ok"
+
+    assert body() == "ok"
+    assert [kind for kind, _ in seen] == ["pre", "body"]
+    assert seen[0][1] != seen[1][1]
+
+
 def test_com_threaded_returns_result_and_wraps_errors():
     """Отказ доставляется как `ToolError` — по нему MCP выставляет `isError`.
 
