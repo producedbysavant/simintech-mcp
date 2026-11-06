@@ -827,11 +827,13 @@ async def test_save_project_refuses_unreadable_state(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_save_project_failure_is_error(monkeypatch):
+async def test_save_project_failure_is_error(monkeypatch, tmp_path):
     """Неудачная запись — отказ, а не ответ «проект сохранён»."""
     project = _install_savable(monkeypatch, raises=True)
+    target = tmp_path / "m.prt"
 
-    text = await _error("save_project", {"path": r"C:\m.prt", "binary": True})
+    text = await _error(
+        "save_project", {"path": str(target), "binary": True})
 
     assert "диск переполнен" in text
     assert any(kind == "binary" for kind, _ in project.calls), \
