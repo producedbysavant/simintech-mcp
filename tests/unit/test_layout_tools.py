@@ -13,6 +13,8 @@ from fastmcp.exceptions import ToolError
 from simintech_mcp.server import mcp
 
 from simintech_mcp import session
+from simintech_mcp.geometry import WIRE_PITCH
+from simintech_mcp.tools import layout as layout_tools
 
 from _support import (
     _AnchorBlock,
@@ -387,6 +389,15 @@ async def test_layout_place_skips_label_objects(monkeypatch):
     assert "Подписи (не блоки) не расставляются: 1" in text
     assert "k_0—TextLabel3" not in text, \
         "карточка подписи принята за наложение"
+
+
+def test_layout_grid_matches_wire_pitch():
+    """MCP держит шаг 8, а не библиотечный GRID_SIZE=20."""
+    assert layout_tools.GRID_STEP == WIRE_PITCH == 8.0
+    centers = {"a": (20.0, 20.0), "b": (21.0, 22.0)}
+    layout_tools._snap_centers(centers)
+    for x, y in centers.values():
+        assert x % 8 == 0 and y % 8 == 0
 
 
 @pytest.mark.anyio

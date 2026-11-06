@@ -23,6 +23,7 @@ GUI — это дефект?» и фиксирует границу: **что и
 | `backward-links-not-predicted` | Обратные связи (приёмник левее источника) не предсказываются — маршрут ведёт среда; такие линии честно в «не проверено», а не в «чисто» | code-confirmed | `geometry.py:159-163`; `tools/check_model.py:912-919` |
 | `channel-track-order-is-model` | Порядок треков **внутри канала** — модель (сортировка по Y приёмника/источника); как среда укладывает треки, не измерялось | code-confirmed | `tools/check_model.py:832-837` («предсказание, не замер») |
 | `far-link-midpoint-vertical-live` | Дальнюю связь (через ≥2 колонок) среда ведёт вертикалью у `(x_src+x_dst)/2` и препятствия не обходит | live-verified | замер снимками 08.10.2026 (2.26.9.29); свод — `tools/check_model.py:822-831` |
+| `mcp-layout-grid-8` | MCP держит шаг 8: `GRID_STEP == WIRE_PITCH == 8`, центры после `_snap_centers` кратны 8. Библиотечный `GRID_SIZE = 20` относится к `Grid`/`Router` и в MCP не используется; менять его в MCP нельзя | code-confirmed | `tools/layout.py:38-42`; `geometry.py:33`; `test_layout_tools.py::test_layout_grid_matches_wire_pitch` |
 
 ## 2. Что проверяют метрики (и чего не проверяют)
 

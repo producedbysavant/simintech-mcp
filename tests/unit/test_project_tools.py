@@ -22,6 +22,7 @@ from _support import (
     _error,
     _install_fake_template,
     _install_savable,
+    _resource_text,
     _text,
     _visible_prt,
     _visible_xprt,
@@ -517,6 +518,57 @@ async def test_save_project_defaults_to_xml(monkeypatch, tmp_path):
     assert target.read_bytes() == _visible_xprt(), \
         "целевой файл не получил запись"
     assert not os.path.exists(_temp_of(target)), "временный хвост остался"
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_missing_parent_before_com(
+        monkeypatch, tmp_path):
+    """Отсутствующий каталог отвергается до COM и до показа формы."""
+    target = tmp_path / "missing" / "m.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "не найден" in text
+    assert "каталог результатов" in text
+    assert project.calls == [], "COM тронут до проверки каталога"
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_parent_file_before_com(
+        monkeypatch, tmp_path):
+    """Родитель-файл не каталог: отказ до COM."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("x", encoding="utf-8")
+    project = _install_savable(monkeypatch)
+
+    text = await _error(
+        "save_project", {"path": str(blocker / "m.xprt")})
+
+    assert "не найден" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_directory_target(monkeypatch, tmp_path):
+    """Путь-каталог не выдаётся за файл проекта."""
+    target = tmp_path / "dir.xprt"
+    target.mkdir()
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "указывает на каталог" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_description_warns_about_repo_disk():
+    """Полная справка называет риск каталога репозитория и рабочий обход."""
+    description = await _resource_text("simintech://tools/save_project")
+    assert "каталог репозитория" in description
+    assert "каталог результатов" in description
+    assert "таймаут" in description
 
 
 @pytest.mark.anyio

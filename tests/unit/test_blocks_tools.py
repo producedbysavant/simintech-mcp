@@ -231,6 +231,26 @@ async def test_set_block_param_signalnames_empty_table_not_one_shot(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("class_name", [
+    "Вход алгоритма", "Выход алгоритма",
+])
+async def test_set_block_param_signalnames_algorithm_block_names_gui_limit(
+        monkeypatch, class_name):
+    """У блоков алгоритма SignalNames через COM не ведётся: назвать GUI."""
+    block = _FakeBlock(class_name, {"SignalNames": ""})
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "new",
+         "allow_unknown": True}))
+
+    assert "через COM не ведётся" in text
+    assert "GUI" in text
+    assert "param='signals'" in text
+
+
+@pytest.mark.anyio
 async def test_set_block_param_accepts_array(monkeypatch):
     """Массив в стиле SimInTech разбирается в список."""
     block = _FakeBlock("Сумматор", {})
@@ -851,6 +871,8 @@ async def test_set_block_param_nport_rebuilds_pins_and_size(monkeypatch):
     assert "пины: 2 → 4" in text
     assert "32x32 → 32x64" in text
     assert "4 вход(ов) × 16" in text
+    assert "в конец списка" in text
+    assert "смысловой группировки" in text
 
 
 @pytest.mark.anyio
