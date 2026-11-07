@@ -197,7 +197,7 @@ async def test_set_block_param_signalnames_names_one_shot(monkeypatch):
         def set_property(self, name, value):
             return self
 
-    block = _Sticky("Выход алгоритма", {"SignalNames": "old"})
+    block = _Sticky("Усилитель", {"SignalNames": "old"})
     _install_fake_project(monkeypatch, {"ALG_0": block})
 
     text = _tool_text(await mcp.call_tool(
@@ -218,7 +218,7 @@ async def test_set_block_param_signalnames_empty_table_not_one_shot(
         def set_property(self, name, value):
             return self
 
-    block = _Formatting("Выход алгоритма", {"SignalNames": ""})
+    block = _Formatting("Усилитель", {"SignalNames": ""})
     _install_fake_project(monkeypatch, {"ALG_0": block})
 
     text = _tool_text(await mcp.call_tool(
@@ -228,6 +228,40 @@ async def test_set_block_param_signalnames_empty_table_not_one_shot(
 
     assert "таблица была пуста" in text
     assert "только в пустую таблицу" not in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("class_name", [
+    "Вход алгоритма", "Вход алгоритма (векторный)",
+    "Выход алгоритма", "Выход алгоритма (векторный)",
+])
+@pytest.mark.parametrize("previous", ["old", ""])
+async def test_set_block_param_signalnames_algorithm_block_names_gui_limit(
+        monkeypatch, class_name, previous):
+    """У блоков алгоритма SignalNames через COM не ведётся: назвать GUI.
+
+    Запись моделируется «липкой», как в живом замере: значение не меняется.
+    Ответ не должен одновременно предлагать `param='signals'` или объяснять
+    расхождение пустой таблицей.
+    """
+    class _Sticky(_FakeBlock):
+        def set_property(self, name, value):
+            return self
+
+    block = _Sticky(class_name, {"SignalNames": previous})
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "new",
+         "allow_unknown": True}))
+
+    assert "через COM не ведётся" in text
+    assert "GUI" in text
+    assert "param='signals' у этих классов пуст" in text
+    assert "Имена сигналов пишите" not in text
+    assert "Запись в список сигналов" not in text
+    assert "таблица была пуста" not in text
 
 
 @pytest.mark.anyio
@@ -851,6 +885,8 @@ async def test_set_block_param_nport_rebuilds_pins_and_size(monkeypatch):
     assert "пины: 2 → 4" in text
     assert "32x32 → 32x64" in text
     assert "4 вход(ов) × 16" in text
+    assert "в конец списка" in text
+    assert "смысловой группировки" in text
 
 
 @pytest.mark.anyio

@@ -674,6 +674,73 @@ def _temp_save_path(path: str) -> str:
     return f"{stem}.tmp{ext}"
 
 
+#: Имена устройств Windows, которые нельзя использовать как файл проекта.
+_WINDOWS_RESERVED = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)})
+_WINDOWS_INVALID = frozenset('<>:"|?*')
+
+
+def _check_save_target(path: str) -> None:
+    """Проверить путь до COM: абсолютный, не каталог, родитель существует.
+
+    Проверка идёт в вызывающем потоке (`com_threaded(preflight=...)`), а не в
+    единственном COM-потоке. Она отсекает отсутствующий или заведомо
+    недоступный путь, но не спасает от зависания COM на доступном каталоге:
+    живой случай 05.11.2026 был именно на доступном каталоге репозитория.
+    Пробный файл не создаётся: запись пробы на медленном или сетевом диске
+    сама может зависнуть, а `isdir`/`access` для локального пути быстры.
+    `os.access(W_OK)` на Windows не учитывает ACL, поэтому окончательный
+    отказ даёт запись; проверка остаётся ранней отсечкой очевидных случаев.
+    """
+    if not os.path.isabs(path):
+        raise ToolError(
+            f"Путь «{path}» относительный: сохраняйте по абсолютному пути. "
+            f"COM-среда разрешает относительный путь от своего каталога, а "
+            f"проверка и замена файла идут от каталога сервера: это разные "
+            f"файлы. Укажите абсолютный путь или сохраните в каталог "
+            f"результатов и скопируйте файл на место. Файл не тронут.")
+    if sys.platform == "win32":
+        name = os.path.basename(path)
+        stem = name.split(".", 1)[0].upper()
+        if stem in _WINDOWS_RESERVED:
+            raise ToolError(
+                f"Имя «{name}» зарезервировано Windows: файл проекта не "
+                f"создастся. Выберите другое имя. Файл не тронут.")
+        if any(char in _WINDOWS_INVALID for char in name):
+            raise ToolError(
+                f"Имя «{name}» содержит недопустимые для Windows символы "
+                f"< > : \" | ? *. Выберите другое имя. Файл не тронут.")
+    target = os.path.abspath(path)
+    if os.path.isdir(target):
+        raise ToolError(
+            f"Путь «{path}» указывает на каталог: нужно имя файла проекта. "
+            f"Файл не тронут.")
+    directory = os.path.dirname(target)
+    if os.path.exists(directory) and not os.path.isdir(directory):
+        raise ToolError(
+            f"Путь «{directory}» существует, но это не каталог. Укажите "
+            f"каталог для файла проекта. Файл не тронут.")
+    if not os.path.isdir(directory):
+        raise ToolError(
+            f"Каталог для сохранения «{directory}» не найден. Сохраните "
+            f"проект в каталог результатов (его печатает `doctor`/`help`) "
+            f"и скопируйте файл на место. Файл не тронут.")
+    if not os.access(directory, os.W_OK):
+        raise ToolError(
+            f"Каталог для сохранения «{directory}» недоступен для записи "
+            f"по предварительной проверке. Сохраните проект в каталог "
+            f"результатов (его печатает `doctor`/`help`) и скопируйте файл "
+            f"на место. Файл не тронут.")
+
+
+def _save_preflight(path: str, binary: bool = False) -> None:
+    """Проверки `save_project` до постановки в COM-поток."""
+    _refuse_format_extension_mismatch(path, binary)
+    _check_save_target(path)
+
+
 def _remove_quietly(path: str) -> None:
     """Убрать временный файл, не мешая исходной ошибке всплыть."""
     try:
@@ -816,7 +883,7 @@ def _refuse_format_extension_mismatch(path: str, binary: bool) -> None:
         "destructiveHint": True,
     },
 )
-@runtime.com_threaded
+@runtime.com_threaded(preflight=_save_preflight)
 def save_project(path: str, binary: bool = False) -> str:
     """Сохранить текущий проект в файл.
 
@@ -876,6 +943,20 @@ def save_project(path: str, binary: bool = False) -> str:
     нормализации Win32: хвостовые точки и пробелы система отбрасывает сама
     (`m.prt ` — это файл `m.prt`).
 
+    **Куда сохранять.** Не сохраняйте в каталог репозитория или на медленный
+    диск: живой случай 05.11.2026, сохранение в рабочий каталог на диске C:
+    не вернулось за 120 с, процесс `mmain.exe` остался жив, после этого все
+    COM-инструменты отказали, несохранённые правки потеряны. Проверка до COM
+    ловит относительный путь, каталог вместо файла, отсутствующий или
+    заведомо недоступный каталог. Она не спасает от зависания COM на
+    доступном каталоге: живой случай был именно на доступном каталоге, а
+    таймаут COM-вызова не ставится, потому что вызов таймаутом не
+    прерывается и `disconnect` встаёт за ним в очередь. Рабочий обход:
+    сохранить в каталог результатов (его печатает `doctor`/`help`) и
+    скопировать файл на место. По умолчанию каталог результатов создаётся с
+    правами 0o700; если `SIMINTECH_OUTPUT_DIR` переопределён, доступность
+    проверяет preflight.
+
     **Запись снимает счёт несохранённого.** Ответы мутирующих инструментов
     заканчиваются «Не сохранено: …», а `reload_project` отличает «правки были
     отброшены» от «перечитан тот же файл»; успешная запись — момент, когда
@@ -895,7 +976,6 @@ def save_project(path: str, binary: bool = False) -> str:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
     """
-    _refuse_format_extension_mismatch(path, binary)
     project = session.ensure_project()
     try:
         state = project.simulation().get_state()

@@ -22,6 +22,7 @@ from _support import (
     _error,
     _install_fake_template,
     _install_savable,
+    _resource_text,
     _text,
     _visible_prt,
     _visible_xprt,
@@ -520,6 +521,113 @@ async def test_save_project_defaults_to_xml(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_save_project_refuses_missing_parent_before_com(
+        monkeypatch, tmp_path):
+    """Отсутствующий каталог отвергается до COM и до показа формы."""
+    target = tmp_path / "missing" / "m.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "не найден" in text
+    assert "каталог результатов" in text
+    assert project.calls == [], "COM тронут до проверки каталога"
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_parent_file_before_com(
+        monkeypatch, tmp_path):
+    """Родитель-файл не каталог: отказ до COM."""
+    blocker = tmp_path / "blocked"
+    blocker.write_text("x", encoding="utf-8")
+    project = _install_savable(monkeypatch)
+
+    text = await _error(
+        "save_project", {"path": str(blocker / "m.xprt")})
+
+    assert "не каталог" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_relative_path_before_com(
+        monkeypatch, tmp_path):
+    """Относительный путь расходится у сервера и COM-среды: отказ до COM."""
+    project = _install_savable(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    text = await _error("save_project", {"path": "m.xprt"})
+
+    assert "относительный" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_unwritable_directory_before_com(
+        monkeypatch, tmp_path):
+    """Предварительная проверка записи отвергает каталог до COM."""
+    target = tmp_path / "m.xprt"
+    project = _install_savable(monkeypatch)
+    monkeypatch.setattr(
+        project_tools.os, "access", lambda path, mode: False)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "недоступен для записи" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform != "win32", reason="имена Windows")
+async def test_save_project_refuses_reserved_device_name(
+        monkeypatch, tmp_path):
+    """NUL.xprt отвергается до COM, а не после бесполезной записи."""
+    target = tmp_path / "NUL.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "зарезервировано" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+@pytest.mark.skipif(sys.platform != "win32", reason="имена Windows")
+async def test_save_project_refuses_invalid_windows_characters(
+        monkeypatch, tmp_path):
+    """Недопустимый символ в имени отвергается до COM."""
+    target = tmp_path / "bad?.xprt"
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "недопустимые для Windows" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_directory_target(monkeypatch, tmp_path):
+    """Путь-каталог не выдаётся за файл проекта."""
+    target = tmp_path / "dir.xprt"
+    target.mkdir()
+    project = _install_savable(monkeypatch)
+
+    text = await _error("save_project", {"path": str(target)})
+
+    assert "указывает на каталог" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
+async def test_save_project_description_warns_about_repo_disk():
+    """Полная справка называет риск каталога репозитория и рабочий обход."""
+    description = await _resource_text("simintech://tools/save_project")
+    assert "каталог репозитория" in description
+    assert "каталог результатов" in description
+    assert "таймаут" in description
+
+
+@pytest.mark.anyio
 async def test_save_project_binary_flag_writes_prt(monkeypatch, tmp_path):
     """binary=True пишет нативный .prt — его открывает GUI SimInTech."""
     target = tmp_path / "m.prt"
@@ -719,11 +827,13 @@ async def test_save_project_refuses_unreadable_state(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_save_project_failure_is_error(monkeypatch):
+async def test_save_project_failure_is_error(monkeypatch, tmp_path):
     """Неудачная запись — отказ, а не ответ «проект сохранён»."""
     project = _install_savable(monkeypatch, raises=True)
+    target = tmp_path / "m.prt"
 
-    text = await _error("save_project", {"path": r"C:\m.prt", "binary": True})
+    text = await _error(
+        "save_project", {"path": str(target), "binary": True})
 
     assert "диск переполнен" in text
     assert any(kind == "binary" for kind, _ in project.calls), \
