@@ -349,7 +349,10 @@ def _ledger_payload(snapshot: model_store.Snapshot,
                 raise ToolError(
                     f"experiments: запись {wanted!r} не найдена")
             entry = found
-            other_version = True
+            other_version = (
+                found.record.structure_hash,
+                found.record.content_hash,
+            ) != (structure_hash, content_hash)
         items = [entry.to_dict(current)]
         shown = 1
         total = 1

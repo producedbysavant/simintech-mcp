@@ -409,6 +409,19 @@ async def test_query_experiments_reads_other_version_by_id(
 
 
 @pytest.mark.anyio
+async def test_experiments_id_race_stays_current(monkeypatch, tmp_path):
+    data = await _load(tmp_path, monkeypatch)
+    record = await _record(data["model_ref"])
+    monkeypatch.setattr(experiment_ledger, "entries_for",
+                        lambda *args: ())
+
+    detail = await _experiments(data["model_ref"], id=record["id"])
+
+    assert detail["evidence"]["other_version"] is False
+    assert not any("другой версии" in note for note in detail["notes"])
+
+
+@pytest.mark.anyio
 async def test_forget_all_notes_other_versions(monkeypatch, tmp_path):
     first = await _load(tmp_path, monkeypatch, "a.xprt", MODEL)
     await _record(first["model_ref"])
