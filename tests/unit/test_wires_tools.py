@@ -295,6 +295,33 @@ class _BranchBlock:
         return object()
 
 
+class _PortCountBlock(_BranchBlock):
+    """Блок с общим счётом портов для preflight `build_model`."""
+
+    def get_port_count(self):
+        return self._out + self._in
+
+    def get_block_port(self, index):
+        from simintech_api import PortError
+        if 0 <= index < self._out + self._in:
+            return object()
+        raise PortError(f"блок {self.id}: порт {index} не найден")
+
+
+def test_check_wire_endpoints_reports_out_of_range(monkeypatch):
+    """Preflight называет допустимый диапазон и подсказывает connect_ports."""
+    from simintech_mcp.tools.wires import check_wire_endpoints
+
+    block = _PortCountBlock("l1", 1, out_ports=1, in_ports=2)
+    _install_wire_project(monkeypatch, {"l1": block})
+
+    assert check_wire_endpoints([("l1", 0, "l1", 1)]) == []
+    errors = check_wire_endpoints([("l1", 1, "l1", 0)])
+    assert errors
+    assert "0-based" in errors[0]
+    assert "connect_ports" in errors[0]
+
+
 class _BranchBridge:
     """Мост-подделка тела ветвления: отвечает заданными строками.
 

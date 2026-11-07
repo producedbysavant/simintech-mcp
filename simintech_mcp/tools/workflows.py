@@ -20,7 +20,7 @@ from fastmcp.exceptions import ToolError
 from .. import __version__, runtime, sandbox, session, skills, surface
 from ..app import mcp
 from ..solver_diagnostics import accepted_stall_note, read_diagnostics_result
-from ..specs import ModelSpec, render_model_text
+from ..specs import ModelSpec, WireSpec, render_model_text
 from .blocks import get_block_params, list_blocks
 from .check_model import audit_routing, check_model_layout
 from .files import read_output_file, summarize_output_file
@@ -31,7 +31,7 @@ from .project import create_project, set_calc_time
 from .project import status as project_status
 from .screenshot import save_screenshot
 from .simulation import get_time, run, step
-from .wires import connect, list_wires
+from .wires import check_wire_endpoints, connect, list_wires
 
 
 _ENDPOINT_RE = re.compile(
@@ -60,6 +60,33 @@ def _parse_endpoint(value: str, expected_kind: str) -> tuple[str, int]:
             f"конец провода {value!r} должен быть в формате "
             f"имя:{expected_kind}:N")
     return match.group("name"), int(match.group("index"))
+
+
+def _resolve_wire_endpoints(
+        wires: List[WireSpec],
+        actual: Dict[str, str]) -> tuple[
+            List[tuple[WireSpec, str, int, str, int]], List[str]]:
+    """Разобрать провода один раз: концы для preflight и connect.
+
+    Оба прохода обязаны видеть одни и те же имена блоков и индексы портов;
+    две копии разбора разошлись бы при следующем изменении адресации.
+    """
+    resolved: List[tuple[WireSpec, str, int, str, int]] = []
+    errors: List[str] = []
+    for wire in wires:
+        try:
+            src_name, out_index = _parse_endpoint(wire.src, "out")
+            dst_name, in_index = _parse_endpoint(wire.dst, "in")
+            src = actual.get(src_name.lower())
+            dst = actual.get(dst_name.lower())
+            if src is None or dst is None:
+                raise ToolError(
+                    f"после импорта не найден блок {src_name!r} или "
+                    f"{dst_name!r}")
+            resolved.append((wire, src, out_index, dst, in_index))
+        except ToolError as exc:
+            errors.append(f"провод {wire.src} -> {wire.dst}: {exc}")
+    return resolved, errors
 
 
 def _import_notes(result: str) -> List[str]:
@@ -212,10 +239,25 @@ def build_model(spec: Optional[ModelSpec] = None,
     По умолчанию new_project=False: модель дополняет текущий проект, а при
     его отсутствии создаёт новый. new_project=True закрывает текущий проект;
     при несохранённых правках вызов отказывает, пока их не сохранить.
+
+    Если `points` заданы у всех блоков спецификации, `layout=True` не
+    переставляет их: координаты остаются из спеки, а линии только
+    нормализуются. Если `points` есть только у части блоков, вызов
+    отказывает до импорта: иначе остальные блоки остались бы в точке
+    импорта или потеряли бы свои координаты. Иначе раскладка идёт
+    `layout_place` как раньше.
     """
     if (spec is None) == (not model_text.strip()):
         raise ToolError(
             "нужен ровно один источник: spec или model_text")
+    if spec is not None and layout:
+        pointed = [block for block in spec.blocks if block.points]
+        if pointed and len(pointed) != len(spec.blocks):
+            raise ToolError(
+                "points заданы не для всех блоков: раскладка либо сохранит "
+                "координаты и оставит остальные блоки на месте импорта, либо "
+                "перезапишет points. Задайте points для всех блоков или "
+                "layout=False.")
 
     notes: List[str] = []
     notes.append(_project_or_create(project_hint, end_time, new_project))
@@ -229,30 +271,51 @@ def build_model(spec: Optional[ModelSpec] = None,
         except ToolError as exc:
             notes.append(f"WARNING: подгонка размеров не выполнена: {exc}")
 
+    failed_wires = 0
     if spec is not None:
         blocks_text = render_model_text(spec, include_wires=False)
         notes.extend(_import_notes(import_model_text(blocks_text)))
         fit_sizes_note()
+        listing_error: Optional[ToolError] = None
         try:
             listing = list_blocks(limit=0)
         except ToolError as exc:
             listing = ""
+            listing_error = exc
             notes.append(f"WARNING: список блоков не прочитан: {exc}")
+        if listing_error is not None and spec.wires:
+            raise ToolError(
+                f"Список блоков не прочитан: {listing_error}. Провода не "
+                f"проверялись и не создавались; восстановите COM и повторите "
+                f"build_model.") from listing_error
         actual = _block_names(listing)
-        connected = 0
-        for wire in spec.wires:
+        resolved, preflight = _resolve_wire_endpoints(spec.wires, actual)
+        if resolved and not preflight:
             try:
-                src_name, out_index = _parse_endpoint(wire.src, "out")
-                dst_name, in_index = _parse_endpoint(wire.dst, "in")
-                src = actual.get(src_name.lower())
-                dst = actual.get(dst_name.lower())
-                if src is None or dst is None:
-                    raise ToolError(
-                        f"после импорта не найден блок {src_name!r} или "
-                        f"{dst_name!r}")
+                preflight = check_wire_endpoints([
+                    (src, out_index, dst, in_index)
+                    for _wire, src, out_index, dst, in_index in resolved
+                ])
+            except ToolError as exc:
+                raise ToolError(
+                    f"Проверка портов не выполнена: {exc}. Провода не "
+                    f"создавались; повторите после восстановления COM."
+                ) from exc
+        if preflight:
+            raise ToolError(
+                "Сборка остановлена до создания проводов: "
+                + "; ".join(preflight)
+                + ". Блоки созданы, провода не создавались. Проверьте имена "
+                  "блоков и индексы портов (0-based), затем повторите "
+                  "build_model.")
+        connected = 0
+        failed_wires = 0
+        for wire, src, out_index, dst, in_index in resolved:
+            try:
                 connect(src, dst, out_index=out_index, in_index=in_index)
                 connected += 1
             except ToolError as exc:
+                failed_wires += 1
                 notes.append(
                     f"WARNING: провод {wire.src} -> {wire.dst}: {exc}")
         notes.append(
@@ -265,8 +328,16 @@ def build_model(spec: Optional[ModelSpec] = None,
             "для надёжной сборки используйте spec.")
 
     if layout:
+        pointed = ([block for block in spec.blocks if block.points]
+                   if spec is not None else [])
         try:
-            notes.append(layout_place())
+            if pointed and spec is not None:
+                notes.append(layout_place(normalize_only=True))
+                notes.append(
+                    "Раскладка не пересчитывалась: у блоков заданы points; "
+                    "координаты сохранены, линии нормализованы.")
+            else:
+                notes.append(layout_place())
         except ToolError as exc:
             notes.append(f"WARNING: раскладка не выполнена: {exc}")
     if check:
@@ -280,7 +351,9 @@ def build_model(spec: Optional[ModelSpec] = None,
         except ToolError as exc:
             notes.append(f"WARNING: снимок не сделан: {exc}")
 
-    return "Модель собрана.\n\n" + "\n\n".join(notes)
+    head = ("Модель собрана." if failed_wires == 0
+            else "Модель собрана частично.")
+    return head + "\n\n" + "\n\n".join(notes)
 
 
 @mcp.tool(

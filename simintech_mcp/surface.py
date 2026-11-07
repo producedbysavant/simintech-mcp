@@ -35,6 +35,8 @@ CORE_TOOLS = (
     "doctor",
     "create_project",
     "open_project",
+    "save_project",
+    "close_project",
     "build_model",
     "build_and_verify",
     "inspect_model",
