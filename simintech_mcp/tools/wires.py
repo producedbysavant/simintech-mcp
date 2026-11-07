@@ -159,6 +159,85 @@ def connect(src: str, dst: str,
     return f"Соединено {src_name} -> {dst_name} (wire={wire.id})"
 
 
+def _out_port_count(block: Any) -> int:
+    """Сколько у блока направленных выходов (перебором `GetOutPort`)."""
+    try:
+        total = int(block.get_port_count())
+    except Exception:                                          # noqa: BLE001
+        return 0
+    found = 0
+    for index in range(total):
+        try:
+            block.get_out_port(index)
+        except PortError:
+            continue
+        found += 1
+    return found
+
+
+def _endpoint_error(block: Any, name: str, index: int,
+                    output: bool) -> Optional[str]:
+    """Почему порт не годится для `connect`; None — годится."""
+    getter = block.get_out_port if output else block.get_in_port
+    try:
+        getter(index)
+        return None
+    except PortError:
+        pass
+    kind = "выходных" if output else "входных"
+    try:
+        count = (_out_port_count(block) if output
+                 else int(block.get_in_port_count()))
+    except Exception:                                          # noqa: BLE001
+        count = None
+    detail = f"у блока {name!r} нет {kind} портов с индексом {index}"
+    if count is not None:
+        detail += f"; доступно {kind} портов: {count} (индексы 0-based"
+        if count:
+            detail += f", допустимо 0..{count - 1}"
+        detail += ")"
+    # Порт с тем же сквозным индексом мог существовать, но быть
+    # ненаправленным (электрическая клемма): подсказка ведёт к connect_ports.
+    try:
+        block.get_block_port(index)
+    except Exception:                                          # noqa: BLE001
+        pass
+    else:
+        detail += ("; порт с этим индексом существует, но не является "
+                   "направленным. Для ненаправленных и электрических портов "
+                   "используйте connect_ports")
+    return detail
+
+
+@runtime.com_threaded
+def check_wire_endpoints(
+        endpoints: List[Tuple[str, int, str, int]]) -> List[str]:
+    """Проверить концы проводов до создания линий.
+
+    Возвращает список отказов; пустой список — все порты разрешаются.
+    Проверка идёт до `connect`, чтобы `build_model` не создавал часть
+    проводов, а потом молча сообщал «0 из N» (issue #264).
+    """
+    page = session.ensure_project().get_main_page()
+    errors: List[str] = []
+    seen: set[Tuple[str, int, bool]] = set()
+    for src, out_index, dst, in_index in endpoints:
+        for name, index, output in ((src, out_index, True),
+                                    (dst, in_index, False)):
+            key = (name, index, output)
+            if key in seen:
+                continue
+            seen.add(key)
+            block = resolve_block(page, name)
+            if block is None:
+                errors.append(f"блок {name!r} не найден на странице")
+                continue
+            error = _endpoint_error(block, name, index, output)
+            if error is not None:
+                errors.append(error)
+    return errors
+
+
 #: Тип линии «ЭЦ - Электрическая» для `CreateWire`. Номера объявлены в
 #: `CommonLib.xcsl` поставки: 0 математическая (`MBTYWire`), 1
 #: теплогидравлическая (`HydroWire`), 2 тепловая (`HeatWire`), 3 электрическая

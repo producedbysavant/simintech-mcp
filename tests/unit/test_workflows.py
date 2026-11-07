@@ -28,6 +28,7 @@ def test_build_model_spec_imports_blocks_and_connects(monkeypatch):
     _patch(monkeypatch, calls, "list_blocks",
            "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
     _patch(monkeypatch, calls, "connect", "соединено")
+    _patch(monkeypatch, calls, "check_wire_endpoints", [])
     _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
     _patch(monkeypatch, calls, "layout_place", "расставлено")
     monkeypatch.setattr(workflows.session, "current_project", lambda: None)
@@ -72,6 +73,7 @@ def test_build_model_reports_partial_success(monkeypatch):
     def fail(*args, **kwargs):
         raise ToolError("порт занят")
 
+    _patch(monkeypatch, calls, "check_wire_endpoints", [])
     monkeypatch.setattr(workflows, "connect", fail)
     monkeypatch.setattr(workflows.session, "current_project", lambda: None)
 
@@ -86,8 +88,97 @@ def test_build_model_reports_partial_success(monkeypatch):
         layout=False,
     )
 
+    assert "Модель собрана частично" in text
     assert "WARNING" in text
     assert "порт занят" in text
+
+
+def test_build_model_preflight_rejects_ports_before_connect(monkeypatch):
+    """Неверный индекс порта отказывает до создания проводов (issue #264)."""
+    calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
+    _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
+    _patch(monkeypatch, calls, "check_wire_endpoints",
+           ["у блока 'k_0' нет выходных портов с индексом 1; "
+            "доступно выходных портов: 1 (индексы 0-based, допустимо 0..0)"])
+    called = []
+
+    def fail_connect(*args, **kwargs):
+        called.append(True)
+        raise AssertionError("connect не должен вызываться после отказа")
+
+    monkeypatch.setattr(workflows, "connect", fail_connect)
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    with pytest.raises(ToolError, match="0-based"):
+        workflows.build_model(
+            spec=ModelSpec(
+                blocks=[BlockSpec(name="k_0", type="Константа"),
+                        BlockSpec(name="kx_0", type="Усилитель")],
+                wires=[WireSpec(src="k_0:out:1", dst="kx_0:in:0")],
+            ),
+            layout=False,
+        )
+
+    assert called == [], "build_model создал провод после отказа preflight"
+
+
+def test_build_model_with_points_keeps_layout(monkeypatch):
+    """points из спеки не перезаписываются раскладкой (issue #265)."""
+    calls = []
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
+    _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
+    _patch(monkeypatch, calls, "connect", "соединено")
+    _patch(monkeypatch, calls, "check_wire_endpoints", [])
+    _patch(monkeypatch, calls, "layout_place", "нормализовано")
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    text = workflows.build_model(
+        spec=ModelSpec(
+            blocks=[
+                BlockSpec(name="k_0", type="Константа",
+                          points=[(100.0, 100.0)]),
+                BlockSpec(name="kx_0", type="Усилитель",
+                          points=[(300.0, 100.0)]),
+            ],
+            wires=[WireSpec(src="k_0:out:0", dst="kx_0:in:0")],
+        ),
+        layout=True,
+    )
+
+    layout = [c for c in calls if c[0] == "layout_place"]
+    assert layout and layout[0][2].get("normalize_only") is True
+    assert "points" in text
+
+
+def test_build_model_without_points_uses_layout(monkeypatch):
+    """Без points сохраняется прежняя полная раскладка."""
+    calls = []
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
+    _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
+    _patch(monkeypatch, calls, "connect", "соединено")
+    _patch(monkeypatch, calls, "check_wire_endpoints", [])
+    _patch(monkeypatch, calls, "layout_place", "расставлено")
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    workflows.build_model(
+        spec=ModelSpec(
+            blocks=[BlockSpec(name="k_0", type="Константа"),
+                    BlockSpec(name="kx_0", type="Усилитель")],
+            wires=[WireSpec(src="k_0:out:0", dst="kx_0:in:0")],
+        ),
+        layout=True,
+    )
+
+    layout = [c for c in calls if c[0] == "layout_place"]
+    assert layout and not layout[0][2].get("normalize_only")
 
 
 def test_inspect_model_uses_only_read_tools(monkeypatch):
@@ -268,6 +359,7 @@ def test_build_model_fit_failure_is_warning(monkeypatch):
     _patch(monkeypatch, calls, "list_blocks",
            "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
     _patch(monkeypatch, calls, "connect", "соединено")
+    _patch(monkeypatch, calls, "check_wire_endpoints", [])
     _patch(monkeypatch, calls, "layout_place", "расставлено")
 
     def fail(*args, **kwargs):

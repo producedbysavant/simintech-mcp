@@ -27,10 +27,12 @@ _DEFAULT_POINTS = [(0.0, 0.0), (16.0, 0.0), (0.0, -16.0), (0.0, 32.0)]
 
 
 class WireSpec(BaseModel):
-    """Провод: концы в формате блок:out:N и блок:in:N."""
+    """Провод: концы в формате блок:out:N и блок:in:N, N с нуля."""
 
-    src: str = Field(description="Источник: имя:out:индекс")
-    dst: str = Field(description="Приёмник: имя:in:индекс")
+    src: str = Field(
+        description="Источник: имя:out:индекс (индекс порта с нуля)")
+    dst: str = Field(
+        description="Приёмник: имя:in:индекс (индекс порта с нуля)")
 
 
 class BlockSpec(BaseModel):

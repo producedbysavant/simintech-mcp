@@ -21,6 +21,14 @@ async def test_visible_surface_is_core_plus_search():
 
 
 @pytest.mark.anyio
+async def test_project_lifecycle_tools_are_visible_without_search():
+    """save_project/close_project доступны без search_tools (issue #267)."""
+    tools = await mcp.list_tools()
+    names = {tool.name for tool in tools}
+    assert {"save_project", "close_project"} <= names
+
+
+@pytest.mark.anyio
 async def test_catalog_still_has_all_tools():
     tools = await surface.catalog_tools(mcp)
     assert len(tools) == 71
