@@ -42,7 +42,7 @@ def help_text() -> str:
     core = ", ".join(surface.CORE_TOOLS)
     return (
         "Видимое ядро: `tools/list`; полный каталог: simintech://tools и\n"
-        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает все 69.\n"
+        "search_tools; SIMINTECH_MCP_DISCOVERY=all возвращает полный каталог.\n"
         "\n"
         f"Видимое ядро: {core}.\n"
         "Нестандартные операции: search_tools; полные описания:\n"

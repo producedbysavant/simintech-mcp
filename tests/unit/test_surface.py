@@ -24,7 +24,8 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 #: вывод из кода: будь оно выводом, проверка повторяла бы декоратор.
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
-    "get_model_manifest", "query_model",
+    "get_model_manifest", "query_model", "record_experiment",
+    "forget_experiment",
     "help_text", "project_network_role", "create_pack",
     "search_language_functions", "get_language_function",
 }
@@ -107,7 +108,7 @@ _READ_ONLY_TOOLS = {
 #: перезапись файла проекта, откат несохранённых правок.
 _DESTRUCTIVE_TOOLS = {
     "remove_block", "disconnect_wire", "disconnect", "close_project",
-    "close_pack", "save_project", "reload_project",
+    "close_pack", "save_project", "reload_project", "forget_experiment",
 }
 
 
@@ -200,7 +201,8 @@ async def test_all_tools_registered():
         "save_screenshot", "fit_view", "set_block_center",
         "doctor", "build_model", "build_and_verify", "inspect_model",
         "simulate", "format_model", "load_model", "get_model_manifest",
-        "query_model", "inspect_submodel",
+        "query_model", "record_experiment", "forget_experiment",
+        "inspect_submodel",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "
@@ -243,6 +245,33 @@ async def test_readme_lists_every_tool():
     names = {t.name for t in await all_tools()}
 
     assert not names - listed, f"README не перечисляет: {names - listed}"
+
+
+def test_readme_install_tag_matches_pin():
+    """README называет тот же тег simintech-api, что и pyproject."""
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    pin = re.search(
+        r"simintech-api @ git\+[^@\"]+@(v\d+\.\d+\.\d+)", pyproject)
+    install = re.search(r"`@(v\d+\.\d+\.\d+)`", readme)
+
+    assert pin and install, "не разобрали тег установки"
+    assert install.group(1) == pin.group(1)
+
+
+def test_readme_com_free_row_lists_all_plain_tools():
+    """Строка «Без COM» перечисляет все инструменты без COM."""
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(
+        encoding="utf-8")
+    section = readme.split("## Инструменты", 1)[1].split("\n## ", 1)[0]
+    row = next(line for line in section.splitlines()
+               if line.startswith("| Без COM"))
+    listed = set(re.findall(r"`([a-z][a-z0-9_]*)`", row))
+    missing = _PLAIN_TOOLS - listed
+
+    assert not missing, f"README не перечисляет: {missing}"
 
 
 def test_server_version_is_package_version():

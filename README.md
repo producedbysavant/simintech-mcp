@@ -83,7 +83,7 @@ pip install -e ".[test]"
 
 Зависимость `simintech-api` берётся из
 [`simintech-code`](https://github.com/producedbysavant/simintech-code) по
-**релизному тегу** выпуска (`@v0.15.0`). Неизменяемость тега держат три вещи
+**релизному тегу** выпуска (`@v0.20.0`). Неизменяемость тега держат три вещи
 (политика владельца, 2026-10-01):
 
 * ruleset `protect-release-tags` в репозитории библиотеки: удаление и
@@ -133,18 +133,26 @@ claude mcp add simintech -- simintech-mcp
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
 | Результаты | `read_output_file`, `summarize_output_file` |
 | Текст модели | `export_model_text`, `import_model_text`, `list_annotations` |
-| Model IR | `load_model`, `get_model_manifest`, `query_model`, `inspect_submodel` |
+| Model IR | `load_model`, `get_model_manifest`, `query_model`, `record_experiment`, `forget_experiment`, `inspect_submodel` |
 | SystemSpec | `build_and_verify` |
 | Языковой слой | `get_page_script`, `set_page_script`, `get_block_script`, `set_block_script`, `run_page_script`, `inject_submodel_script` |
-| Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role`, `read_output_file`, `summarize_output_file`, `help_text`, `search_language_functions`, `get_language_function`, `create_pack` |
+| Без COM (в т.ч. Linux) | `inspect_project_file`, `project_network_role`, `read_output_file`, `summarize_output_file`, `get_model_manifest`, `query_model`, `record_experiment`, `forget_experiment`, `help_text`, `search_language_functions`, `get_language_function`, `create_pack` |
 | Layout | `layout_place`, `fit_view`, `audit_routing`, `check_model_layout`, `set_block_center` |
 | Снимок схемы | `save_screenshot` (кадр подгоняется сам; `fit=False` — текущий вид) |
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 | Композиты | `doctor`, `build_model`, `build_and_verify`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 71. Видимое ядро в `tools/list`; полный каталог в
+Всего инструментов: 73. Видимое ядро в `tools/list`; полный каталог в
 `simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
-возвращает все 71.
+возвращает все 73.
+
+`record_experiment` прикрепляет запись `experiment-record/1` к снимку по
+полным `structure_hash` и `content_hash`. Ledger живёт в памяти сервера,
+переживает новый `load_model` и очищается при перезапуске; в нём не больше
+100 записей на модель и 8 моделей. Записи читает
+`query_model(query="experiments")`, а `query_model(influence)` применяет их;
+`forget_experiment` очищает одну запись или пару хешей. Отрицательное
+наблюдение не доказывает отсутствие влияния.
 
 `build_model(spec=...)` принимает Pydantic `ModelSpec`: блоки и субмодели
 импортируются текстом, верхнеуровневые провода создаются `connect` по

@@ -2,10 +2,10 @@
 
 ## Видимое ядро
 
-`doctor`, `create_project`, `open_project`, `build_model`,
-`build_and_verify`, `inspect_model`, `load_model`, `get_model_manifest`,
-`query_model`, `inspect_submodel`, `simulate`, `format_model`,
-`read_output_file`, `help_text`.
+`doctor`, `create_project`, `open_project`, `save_project`, `close_project`,
+`build_model`, `build_and_verify`, `inspect_model`, `load_model`,
+`get_model_manifest`, `query_model`, `record_experiment`, `inspect_submodel`,
+`simulate`, `format_model`, `read_output_file`, `help_text`.
 
 Плюс `search_tools` и `call_tool`.
 
@@ -105,6 +105,19 @@ MCP принимает журнал только от процесса mmain т�
 `known_absences` идут отдельным списком. `semantic_coverage` отдаёт полное
 покрытие семантики. `get_model_manifest` добавляет секцию `semantics`, если
 она помещается в бюджет.
+
+`record_experiment` прикрепляет наблюдение `experiment-record/1` к снимку.
+Ключ ledger - полные `structure_hash` и `content_hash`, а не `model_ref`:
+запись переживает новый `load_model`, вытеснение снимка, смену проекта и
+`disconnect`, но очищается при перезапуске сервера. `goal` хранится в
+ledger, `scenario`/`run`/`observation` проверяет ядро. Явно заданные хеши
+обязаны совпасть со снимком, иначе `record_experiment` отказывает.
+`query_model(query="experiments")` читает записи (`id` - полная запись,
+иначе компактный список), `query_model(influence)` применяет их и по
+умолчанию включает статус `experiment`. Отрицательное наблюдение не
+создаёт `known_absences` и не доказывает отсутствие влияния. В ledger не
+больше 100 записей на модель и 8 моделей; `forget_experiment` удаляет одну
+запись или все записи пары хешей, записи других `content_hash` остаются.
 
 `inspect_submodel` показывает содержимое субмодели: объекты с портами,
 провода (`from`/`to`), границы вложенных субмоделей, покрытие и

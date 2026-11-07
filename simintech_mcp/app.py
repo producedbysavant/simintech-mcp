@@ -35,6 +35,8 @@ mcp = FastMCP(
         "ответ несёт вердикт, partial не маскируется. "
         "Полная модель: load_model -> get_model_manifest -> query_model; "
         "XML в обычный ответ не попадает. "
+        "Свидетельства экспериментов: record_experiment -> query_model; "
+        "ledger привязан к structure_hash и content_hash. "
         "Размеры блоков с nport и повторная раскладка после смены числа "
         "входов: simintech://guides/block-sizing. "
         "Нестандартные операции ищутся search_tools; полные описания "
