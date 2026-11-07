@@ -159,53 +159,66 @@ def connect(src: str, dst: str,
     return f"Соединено {src_name} -> {dst_name} (wire={wire.id})"
 
 
-def _out_port_count(block: Any) -> int:
-    """Сколько у блока направленных выходов (перебором `GetOutPort`)."""
+def _as_port_id(value: Any) -> int:
+    """COM-значение в int: comtypes может вернуть вариант с `.value`."""
+    if hasattr(value, "value"):
+        value = value.value
+    return int(value)
+
+
+def _raw_port_id(block: Any, method: str, index: int) -> Optional[int]:
+    """Id порта через сырой COM-вызов; None, если клиента нет.
+
+    В отличие от `Block.get_out_port`, сырой `GetOutPort` не вызывает
+    `BlockAfterEdit`: preflight только читает и не трогает порты.
+    """
+    client = getattr(block, "client", None)
+    if client is None:
+        return None
+    return _as_port_id(client.call(method, block.id, index))
+
+
+def _port_exists(block: Any, index: int, output: bool) -> bool:
+    """Есть ли направленный порт с таким индексом, без мутаций."""
+    method = "GetOutPort" if output else "GetInPort"
+    raw = _raw_port_id(block, method, index)
+    if raw is not None:
+        return raw != 0
+    getter = block.get_out_port if output else block.get_in_port
+    try:
+        getter(index)
+        return True
+    except PortError:
+        return False
+
+
+def _port_count(block: Any, output: bool) -> Optional[int]:
+    """Сколько направленных портов; None, если счёт прочитать нельзя."""
     try:
         total = int(block.get_port_count())
+        return sum(1 for index in range(total)
+                   if _port_exists(block, index, output))
     except Exception:                                          # noqa: BLE001
-        return 0
-    found = 0
-    for index in range(total):
-        try:
-            block.get_out_port(index)
-        except PortError:
-            continue
-        found += 1
-    return found
+        return None
 
 
 def _endpoint_error(block: Any, name: str, index: int,
                     output: bool) -> Optional[str]:
-    """Почему порт не годится для `connect`; None — годится."""
-    getter = block.get_out_port if output else block.get_in_port
-    try:
-        getter(index)
+    """Почему порт не годится для `connect`; None: годится."""
+    if _port_exists(block, index, output):
         return None
-    except PortError:
-        pass
     kind = "выходных" if output else "входных"
-    try:
-        count = (_out_port_count(block) if output
-                 else int(block.get_in_port_count()))
-    except Exception:                                          # noqa: BLE001
-        count = None
     detail = f"у блока {name!r} нет {kind} портов с индексом {index}"
-    if count is not None:
+    count = _port_count(block, output)
+    if count is None:
+        detail += f"; количество {kind} портов прочитать не удалось"
+    else:
         detail += f"; доступно {kind} портов: {count} (индексы 0-based"
         if count:
             detail += f", допустимо 0..{count - 1}"
         detail += ")"
-    # Порт с тем же сквозным индексом мог существовать, но быть
-    # ненаправленным (электрическая клемма): подсказка ведёт к connect_ports.
-    try:
-        block.get_block_port(index)
-    except Exception:                                          # noqa: BLE001
-        pass
-    else:
-        detail += ("; порт с этим индексом существует, но не является "
-                   "направленным. Для ненаправленных и электрических портов "
-                   "используйте connect_ports")
+    detail += ("; если порт ненаправленный или электрический, используйте "
+               "connect_ports")
     return detail
 
 
@@ -214,11 +227,21 @@ def check_wire_endpoints(
         endpoints: List[Tuple[str, int, str, int]]) -> List[str]:
     """Проверить концы проводов до создания линий.
 
-    Возвращает список отказов; пустой список — все порты разрешаются.
+    Возвращает список отказов; пустой список: все порты разрешаются.
     Проверка идёт до `connect`, чтобы `build_model` не создавал часть
     проводов, а потом молча сообщал «0 из N» (issue #264).
+
+    Карта блоков строится один раз через `Page.get_blocks`: поиск по имени
+    на каждый конец был бы O(блоки × концы) и упирался бы в COM-таймаут.
     """
     page = session.ensure_project().get_main_page()
+    by_token: dict[str, Any] = {}
+    for block in page.get_blocks():
+        try:
+            by_token.setdefault(block.get_name(), block)
+        except Exception:                                      # noqa: BLE001
+            pass
+        by_token.setdefault(str(block.id), block)
     errors: List[str] = []
     seen: set[Tuple[str, int, bool]] = set()
     for src, out_index, dst, in_index in endpoints:
@@ -228,7 +251,7 @@ def check_wire_endpoints(
             if key in seen:
                 continue
             seen.add(key)
-            block = resolve_block(page, name)
+            block = by_token.get(name)
             if block is None:
                 errors.append(f"блок {name!r} не найден на странице")
                 continue

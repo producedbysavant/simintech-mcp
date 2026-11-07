@@ -126,6 +126,83 @@ def test_build_model_preflight_rejects_ports_before_connect(monkeypatch):
     assert called == [], "build_model создал провод после отказа preflight"
 
 
+def test_build_model_mixed_points_refuses_before_import(monkeypatch):
+    """points у части блоков: отказ до импорта, без свалки в (0,0)."""
+    called = []
+    monkeypatch.setattr(
+        workflows, "create_project",
+        lambda *args, **kwargs: called.append("create") or "проект создан")
+
+    with pytest.raises(ToolError, match="points"):
+        workflows.build_model(
+            spec=ModelSpec(
+                blocks=[
+                    BlockSpec(name="k_0", type="Константа",
+                              points=[(100.0, 100.0)]),
+                    BlockSpec(name="kx_0", type="Усилитель"),
+                ],
+                wires=[],
+            ),
+            layout=True,
+        )
+
+    assert called == [], "смешанные points должны отказывать до импорта"
+
+
+def test_build_model_list_blocks_failure_keeps_cause(monkeypatch):
+    """Сбой list_blocks не выдаётся за неверные имена блоков."""
+    calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
+
+    def fail_listing(*args, **kwargs):
+        raise ToolError("COM-поток занят")
+
+    monkeypatch.setattr(workflows, "list_blocks", fail_listing)
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    with pytest.raises(ToolError, match="COM-поток занят"):
+        workflows.build_model(
+            spec=ModelSpec(
+                blocks=[BlockSpec(name="k_0", type="Константа"),
+                        BlockSpec(name="kx_0", type="Усилитель")],
+                wires=[WireSpec(src="k_0:out:0", dst="kx_0:in:0")],
+            ),
+            layout=False,
+        )
+
+
+def test_build_model_preflight_failure_names_com(monkeypatch):
+    """Сбой preflight по COM не выдаётся за неверный индекс."""
+    calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
+    _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
+    _patch(monkeypatch, calls, "list_blocks",
+           "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
+    _patch(monkeypatch, calls, "fit_port_blocks", "подогнано")
+
+    def fail_preflight(*args, **kwargs):
+        raise ToolError("COM-поток занят")
+
+    monkeypatch.setattr(workflows, "check_wire_endpoints", fail_preflight)
+    monkeypatch.setattr(workflows.session, "current_project", lambda: None)
+
+    with pytest.raises(ToolError) as excinfo:
+        workflows.build_model(
+            spec=ModelSpec(
+                blocks=[BlockSpec(name="k_0", type="Константа"),
+                        BlockSpec(name="kx_0", type="Усилитель")],
+                wires=[WireSpec(src="k_0:out:0", dst="kx_0:in:0")],
+            ),
+            layout=False,
+        )
+
+    message = str(excinfo.value)
+    assert "Проверка портов не выполнена" in message
+    assert "0-based" not in message
+
+
 def test_build_model_with_points_keeps_layout(monkeypatch):
     """points из спеки не перезаписываются раскладкой (issue #265)."""
     calls = []
