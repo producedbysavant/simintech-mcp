@@ -129,6 +129,7 @@ def test_build_model_preflight_rejects_ports_before_connect(monkeypatch):
 def test_build_model_with_points_keeps_layout(monkeypatch):
     """points из спеки не перезаписываются раскладкой (issue #265)."""
     calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
     _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
     _patch(monkeypatch, calls, "list_blocks",
            "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")
@@ -159,6 +160,7 @@ def test_build_model_with_points_keeps_layout(monkeypatch):
 def test_build_model_without_points_uses_layout(monkeypatch):
     """Без points сохраняется прежняя полная раскладка."""
     calls = []
+    _patch(monkeypatch, calls, "create_project", "проект создан")
     _patch(monkeypatch, calls, "import_model_text", "блоки импортированы")
     _patch(monkeypatch, calls, "list_blocks",
            "Блоки:\n  k_0 [Константа] (id=1)\n  kx_0 [Усилитель] (id=2)")

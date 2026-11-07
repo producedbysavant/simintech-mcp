@@ -259,7 +259,7 @@ def build_model(spec: Optional[ModelSpec] = None,
                 endpoints.append((src, out_index, dst, in_index))
             except ToolError as exc:
                 preflight.append(f"провод {wire.src} -> {wire.dst}: {exc}")
-        if not preflight:
+        if endpoints and not preflight:
             try:
                 preflight = check_wire_endpoints(endpoints)
             except ToolError as exc:
