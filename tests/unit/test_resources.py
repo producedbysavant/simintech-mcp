@@ -27,6 +27,8 @@ async def test_resource_model_ir_guide_covers_semantics():
     assert "experiments" in text
     assert "experiment-record/1" in text
     assert "forget_experiment" in text
+    assert "query_model(experiments)" in text
+    assert "query_model(influence)" in text
 
 
 @pytest.mark.anyio
@@ -49,6 +51,8 @@ async def test_resource_workflow_guide_covers_sources():
         "unknown",
         "record_experiment",
         "experiments",
+        "query_model(experiments)",
+        "query_model(influence)",
     ):
         assert needle in text
 

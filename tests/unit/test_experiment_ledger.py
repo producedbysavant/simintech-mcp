@@ -73,6 +73,19 @@ def _key(model):
     return (model.meta.structure_hash, model.meta.content_hash)
 
 
+def test_is_negative_excludes_unknown():
+    model = _model()
+    positive = _record(model)
+    negative = _record(model, id="exp-2")
+    negative.observation["changed"] = False
+    unknown = _record(model, id="exp-3", status="unknown")
+    unknown.observation["changed"] = False
+
+    assert experiment_ledger.is_negative(positive) is False
+    assert experiment_ledger.is_negative(negative) is True
+    assert experiment_ledger.is_negative(unknown) is False
+
+
 def test_attach_and_read():
     model = _model()
     entry = _attach(_record(model))

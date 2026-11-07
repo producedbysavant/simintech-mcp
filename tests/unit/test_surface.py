@@ -247,6 +247,33 @@ async def test_readme_lists_every_tool():
     assert not names - listed, f"README не перечисляет: {names - listed}"
 
 
+def test_readme_install_tag_matches_pin():
+    """README называет тот же тег simintech-api, что и pyproject."""
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    pin = re.search(
+        r"simintech-api @ git\+[^@\"]+@(v\d+\.\d+\.\d+)", pyproject)
+    install = re.search(r"`@(v\d+\.\d+\.\d+)`", readme)
+
+    assert pin and install, "не разобрали тег установки"
+    assert install.group(1) == pin.group(1)
+
+
+def test_readme_com_free_row_lists_all_plain_tools():
+    """Строка «Без COM» перечисляет все инструменты без COM."""
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(
+        encoding="utf-8")
+    section = readme.split("## Инструменты", 1)[1].split("\n## ", 1)[0]
+    row = next(line for line in section.splitlines()
+               if line.startswith("| Без COM"))
+    listed = set(re.findall(r"`([a-z][a-z0-9_]*)`", row))
+    missing = _PLAIN_TOOLS - listed
+
+    assert not missing, f"README не перечисляет: {missing}"
+
+
 def test_server_version_is_package_version():
     """Клиент видит версию пакета, а не версию fastmcp.
 

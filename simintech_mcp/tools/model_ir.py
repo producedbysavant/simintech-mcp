@@ -338,37 +338,52 @@ def _ledger_payload(snapshot: model_store.Snapshot,
     entries = experiment_ledger.entries_for(structure_hash, content_hash)
     current = model_store.generation()
     wanted = str(args.get("id", "")).strip()
+    other_version = False
     if wanted:
         selected = [entry for entry in entries if entry.record.id == wanted]
-        if not selected:
-            raise ToolError(
-                f"experiments: запись {wanted!r} не найдена")
-        items = [selected[0].to_dict(current)]
+        if selected:
+            entry = selected[0]
+        else:
+            found = experiment_ledger.entry_for(wanted)
+            if found is None:
+                raise ToolError(
+                    f"experiments: запись {wanted!r} не найдена")
+            entry = found
+            other_version = True
+        items = [entry.to_dict(current)]
         shown = 1
+        total = 1
+        negative = 1 if experiment_ledger.is_negative(entry.record) else 0
     else:
         try:
             limit = int(args.get("max_items", 50))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ToolError(
                 "experiments: max_items должен быть числом") from exc
         limit = max(0, min(limit, MAX_QUERY_ITEMS))
         items = [_ledger_item(entry, current) for entry in entries[:limit]]
         shown = len(items)
-    total = len(entries)
-    negative = sum(1 for entry in entries if not entry.record.observed)
+        total = len(entries)
+        negative = sum(
+            1 for entry in entries
+            if experiment_ledger.is_negative(entry.record))
     ledger = experiment_ledger.summary(structure_hash, content_hash)
     notes: List[str] = []
-    if not entries:
+    if other_version:
         notes.append(
-            "Записей нет; это не доказывает отсутствие влияния.")
-    elif negative:
+            "Запись относится к другой версии модели; к текущему снимку "
+            "не применена.")
+    if negative:
         notes.append(
             "Отрицательные наблюдения не доказывают отсутствие влияния.")
+    elif not wanted and not entries:
+        notes.append(
+            "Записей нет; это не доказывает отсутствие влияния.")
     other = int(ledger.get("other_content_versions", 0) or 0)
     if other:
         notes.append(
-            f"Есть записи для другой версии content_hash: {other}; "
-            f"они не применены.")
+            f"Есть другие версии content_hash: {other}; "
+            f"их записи не применены.")
     return {
         "query": "experiments",
         "scope": "ledger",
@@ -382,6 +397,7 @@ def _ledger_payload(snapshot: model_store.Snapshot,
             "records_shown": shown,
             "records_limit": experiment_ledger.MAX_RECORDS_PER_MODEL,
             "negative": negative,
+            "other_version": other_version,
             "ledger": ledger,
         },
         "notes": notes,

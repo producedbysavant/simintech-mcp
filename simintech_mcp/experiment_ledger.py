@@ -77,6 +77,16 @@ class LedgerEntry:
         return data
 
 
+def is_negative(record: ExperimentRecord) -> bool:
+    """Отрицательное свидетельство: changed=false и статус не unknown.
+
+    Ядро отбрасывает `status=unknown` до проверки наблюдения, поэтому такая
+    запись неприменима, а не отрицательна. Один предикат держит счётчики
+    `record_experiment`, `query_model(experiments)` и `influence` согласованными.
+    """
+    return record.status != "unknown" and not record.observed
+
+
 @dataclass(frozen=True, slots=True)
 class _StoredEntry:
     """Канонический JSON записи: копия без общих вложенных словарей."""
@@ -162,6 +172,7 @@ def attach(record: ExperimentRecord, *, goal: str,
         generation=generation,
         attached_at=attached_at,
     )
+    entry = stored.entry()
     key = (record.structure_hash, record.content_hash)
     with _lock:
         if record.id in _ids:
@@ -182,7 +193,7 @@ def attach(record: ExperimentRecord, *, goal: str,
                 f"удалите ненужные через forget_experiment")
         bucket[record.id] = stored
         _ids[record.id] = key
-    return stored.entry()
+    return entry
 
 
 def entries_for(structure_hash: str, content_hash: str

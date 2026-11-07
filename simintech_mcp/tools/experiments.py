@@ -32,12 +32,16 @@ def _generated_id() -> str:
 
 def _hash_error(tool: str, name: str, provided: str,
                 actual: str) -> ToolError:
+    reason = ("свидетельство относится к другой модели: "
+              if tool == "record_experiment"
+              else "хеши не совпадают со снимком: ")
     return ToolError(
-        f"{tool}: свидетельство относится к другой модели: "
-        f"{name} {provided[:12]} не совпадает со снимком {actual[:12]}")
+        f"{tool}: {reason}{name} {provided[:12]} не совпадает со снимком "
+        f"{actual[:12]}")
 
 
-def _resolve_hashes(snapshot: model_store.Snapshot, structure_hash: str,
+def _resolve_hashes(tool: str, snapshot: model_store.Snapshot,
+                    structure_hash: str,
                     content_hash: str) -> tuple[str, str]:
     """Сверить явные хеши со снимком и заполнить отсутствующие."""
     provided_structure = structure_hash.strip()
@@ -45,11 +49,11 @@ def _resolve_hashes(snapshot: model_store.Snapshot, structure_hash: str,
     actual_structure = snapshot.model.meta.structure_hash
     actual_content = snapshot.model.meta.content_hash
     if provided_structure and provided_structure != actual_structure:
-        raise _hash_error("record_experiment", "structure_hash",
-                          provided_structure, actual_structure)
+        raise _hash_error(tool, "structure_hash", provided_structure,
+                          actual_structure)
     if provided_content and provided_content != actual_content:
-        raise _hash_error("record_experiment", "content_hash",
-                          provided_content, actual_content)
+        raise _hash_error(tool, "content_hash", provided_content,
+                          actual_content)
     return (provided_structure or actual_structure,
             provided_content or actual_content)
 
@@ -93,7 +97,8 @@ def record_experiment(
     снимком, иначе отказ: свидетельство относится к другой модели.
     `status` - `observed`, `experiment` или `unknown`; `limitations` - до
     20 строк по 500 символов. Запись после JSON-канонизации ограничена
-    16 КиБ, id - 120 символами; на модель хранится не больше 100 записей.
+    16 КиБ, id - 120 символами; на модель хранится не больше 100 записей,
+    в ledger - не больше 8 различных пар хешей.
 
     Снимок может быть устаревшим: запись принимается по его неизменяемым
     хешам, ответ несёт `stale: true`. Отрицательное наблюдение
@@ -111,7 +116,8 @@ def record_experiment(
         limitations: ограничения эксперимента.
         status: статус свидетельства ядра.
         recorded_at: время записи; пусто - серверное UTC.
-        structure_hash: ожидаемый хеш структуры; пусто - из снимка.
+        structure_hash: ожидаемый хеш структуры (`model_hash` из
+            `load_model`); пусто - из снимка.
         content_hash: ожидаемый хеш содержимого; пусто - из снимка.
     """
     ref = model_ref.strip()
@@ -119,7 +125,7 @@ def record_experiment(
         raise ToolError("record_experiment: нужен model_ref")
     snapshot = model_store.get(ref)
     expected_structure, expected_content = _resolve_hashes(
-        snapshot, structure_hash, content_hash)
+        "record_experiment", snapshot, structure_hash, content_hash)
     data: Dict[str, Any] = {
         "schema": EXPERIMENT_SCHEMA,
         "id": experiment_id.strip() or _generated_id(),
@@ -145,12 +151,13 @@ def record_experiment(
         raise ToolError(f"record_experiment: {exc}") from exc
     current = model_store.generation()
     stale = entry.stale(current)
+    negative = experiment_ledger.is_negative(record)
     notes: List[str] = []
     if stale:
         notes.append(
             "Снимок устарел: хеши относятся к состоянию на момент "
             "load_model, а проект уже менялся.")
-    if not record.observed:
+    if negative:
         notes.append(
             "Эффект не наблюдался; один сценарий не доказывает отсутствие "
             "влияния.")
@@ -164,7 +171,7 @@ def record_experiment(
         "id": record.id,
         "goal": entry.goal,
         "stale": stale,
-        "negative": not record.observed,
+        "negative": negative,
         "experiment": entry.to_dict(current),
         "ledger": experiment_ledger.summary(
             expected_structure, expected_content),
@@ -196,8 +203,10 @@ def forget_experiment(
     проверяются: чужой id даёт отказ. Без них id удаляется глобально, потому
     что идентификаторы свидетельств уникальны в процессе.
 
-    `all_records=True` удаляет все записи модели; тогда обязательны
-    `model_ref` или оба хеша. `experiment_id` и `all_records` не сочетаются.
+    `all_records=True` удаляет все записи пары `structure_hash`/`content_hash`,
+    а не все версии модели: записи других `content_hash` остаются. Тогда
+    обязательны `model_ref` или оба хеша. `experiment_id` и `all_records` не
+    сочетаются.
 
     Args:
         experiment_id: id записи; пусто только при `all_records=True`.
@@ -211,16 +220,9 @@ def forget_experiment(
     provided_content = content_hash.strip()
     if ref:
         snapshot = model_store.get(ref)
-        actual_structure = snapshot.model.meta.structure_hash
-        actual_content = snapshot.model.meta.content_hash
-        if provided_structure and provided_structure != actual_structure:
-            raise _hash_error("forget_experiment", "structure_hash",
-                              provided_structure, actual_structure)
-        if provided_content and provided_content != actual_content:
-            raise _hash_error("forget_experiment", "content_hash",
-                              provided_content, actual_content)
-        provided_structure = actual_structure
-        provided_content = actual_content
+        provided_structure, provided_content = _resolve_hashes(
+            "forget_experiment", snapshot, provided_structure,
+            provided_content)
     elif bool(provided_structure) != bool(provided_content):
         raise ToolError(
             "forget_experiment: задайте оба хеша или model_ref")
@@ -242,10 +244,20 @@ def forget_experiment(
     except experiment_ledger.LedgerError as exc:
         raise ToolError(f"forget_experiment: {exc}") from exc
     if not removed:
-        target = ("записи этой модели" if all_records
-                  else f"запись {ident!r}")
+        if all_records:
+            raise ToolError(
+                "forget_experiment: записи этой пары хешей не найдены "
+                "в ledger")
         raise ToolError(
-            f"forget_experiment: {target} не найдена в ledger")
+            f"forget_experiment: запись {ident!r} не найдена в ledger")
+    ledger = experiment_ledger.summary(
+        provided_structure, provided_content)
+    notes: List[str] = []
+    other = int(ledger.get("other_content_versions", 0) or 0)
+    if other:
+        notes.append(
+            f"Остались записи других версий content_hash: {other}; "
+            f"они не удалены.")
     payload = {
         "schema": experiment_ledger.LEDGER_SCHEMA,
         "forgotten": list(removed),
@@ -254,7 +266,7 @@ def forget_experiment(
         "model_ref": ref,
         "structure_hash": provided_structure,
         "content_hash": provided_content,
-        "ledger": experiment_ledger.summary(
-            provided_structure, provided_content),
+        "ledger": ledger,
+        "notes": notes,
     }
     return json.dumps(payload, ensure_ascii=False)

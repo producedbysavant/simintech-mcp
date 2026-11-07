@@ -34,6 +34,10 @@ MODEL = """<Header><project><page>
 </page></project></Header>"""
 
 MODEL_B = MODEL.replace("`K`", "`K2`").replace("`G`", "`G2`")
+MODEL_CONTENT = MODEL.replace(
+    "<obj_type>`100`</obj_type>",
+    "<obj_type>`100`</obj_type><custom_props><data><name>`a`</name>"
+    "<value>`[2]`</value></data></custom_props>")
 
 
 class _FakeSimulation:
@@ -367,3 +371,56 @@ async def test_status_unknown_is_inapplicable(monkeypatch, tmp_path):
     result = await _influence(data["model_ref"])
     assert result["evidence"]["experiments"]["inapplicable"] == 1
     assert result["evidence"]["experiments"]["applied"] == 0
+
+
+@pytest.mark.anyio
+async def test_unknown_negative_is_not_counted_negative(monkeypatch, tmp_path):
+    data = await _load(tmp_path, monkeypatch)
+    response = await _record(
+        data["model_ref"], status="unknown",
+        observation={"target": "main::G:0", "changed": False})
+
+    assert response["negative"] is False
+    listing = await _experiments(data["model_ref"])
+    assert listing["evidence"]["negative"] == 0
+    result = await _influence(data["model_ref"])
+    assert result["evidence"]["experiments"]["negative"] == 0
+    assert result["evidence"]["experiments"]["inapplicable"] == 1
+
+
+@pytest.mark.anyio
+async def test_query_experiments_reads_other_version_by_id(
+        monkeypatch, tmp_path):
+    first = await _load(tmp_path, monkeypatch, "a.xprt", MODEL)
+    record = await _record(first["model_ref"])
+    other = await _load(tmp_path, monkeypatch, "a2.xprt", MODEL_CONTENT)
+
+    detail = await _experiments(other["model_ref"], id=record["id"])
+
+    assert len(detail["items"]) == 1
+    assert detail["items"][0]["structure_hash"] == first["model_hash"]
+    assert detail["items"][0]["content_hash"] == first["content_hash"]
+    assert detail["evidence"]["other_version"] is True
+    assert any("другой версии" in note for note in detail["notes"])
+
+    result = await mcp.call_tool(
+        "forget_experiment", {"experiment_id": record["id"]})
+    assert json.loads(_text(result))["removed"] == 1
+
+
+@pytest.mark.anyio
+async def test_forget_all_notes_other_versions(monkeypatch, tmp_path):
+    first = await _load(tmp_path, monkeypatch, "a.xprt", MODEL)
+    await _record(first["model_ref"])
+    other = await _load(tmp_path, monkeypatch, "a2.xprt", MODEL_CONTENT)
+    await _record(other["model_ref"])
+
+    result = await mcp.call_tool(
+        "forget_experiment", {"all_records": True,
+                              "model_ref": first["model_ref"]})
+    payload = json.loads(_text(result))
+
+    assert payload["removed"] == 1
+    assert payload["ledger"]["other_content_versions"] == 1
+    assert any("других версий" in note for note in payload["notes"])
+    assert (await _experiments(other["model_ref"]))["items"]
