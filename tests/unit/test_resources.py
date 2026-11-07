@@ -26,6 +26,35 @@ async def test_resource_model_ir_guide_covers_semantics():
 
 
 @pytest.mark.anyio
+async def test_resource_workflow_guide_covers_sources():
+    """Универсальный порядок называет источники, границы и хеши."""
+    text = await _resource_text("simintech://guides/workflow")
+
+    for needle in (
+        "doctor",
+        "load_model",
+        "get_model_manifest",
+        "export_model_text",
+        "topology",
+        "build_and_verify",
+        "influence",
+        "semantic_coverage",
+        "structure_hash",
+        "content_hash",
+        "SaveProjectXML",
+        "unknown",
+    ):
+        assert needle in text
+
+
+def test_server_instructions_name_workflow_guide():
+    """Инструкции сервера ссылаются на порядок до первого инструмента."""
+    from simintech_mcp.server import mcp
+
+    assert "simintech://guides/workflow" in (mcp.instructions or "")
+
+
+@pytest.mark.anyio
 async def test_resource_blocks_catalog_lists_classes_and_params():
     """В каталоге видно классы и имена их параметров — их и ждёт COM."""
     text = await _resource_text("simintech://blocks/catalog")
