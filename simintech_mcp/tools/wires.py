@@ -236,12 +236,12 @@ def check_wire_endpoints(
     """
     page = session.ensure_project().get_main_page()
     by_token: dict[str, Any] = {}
-    for block in page.get_blocks():
+    for item in page.get_blocks():
         try:
-            by_token.setdefault(block.get_name(), block)
+            by_token.setdefault(item.get_name(), item)
         except Exception:                                      # noqa: BLE001
             pass
-        by_token.setdefault(str(block.id), block)
+        by_token.setdefault(str(item.id), item)
     errors: List[str] = []
     seen: set[Tuple[str, int, bool]] = set()
     for src, out_index, dst, in_index in endpoints:
@@ -251,11 +251,11 @@ def check_wire_endpoints(
             if key in seen:
                 continue
             seen.add(key)
-            block = by_token.get(name)
-            if block is None:
+            candidate = by_token.get(name)
+            if candidate is None:
                 errors.append(f"блок {name!r} не найден на странице")
                 continue
-            error = _endpoint_error(block, name, index, output)
+            error = _endpoint_error(candidate, name, index, output)
             if error is not None:
                 errors.append(error)
     return errors
