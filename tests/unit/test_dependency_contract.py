@@ -84,6 +84,11 @@ REQUIRED = [
     ("simintech_api.model_ir", "BlockContractRegistry"),
     ("simintech_api.model_ir", "load_default_contracts"),
     ("simintech_api.model_ir", "ModelQueryError"),
+    # Экспериментальные свидетельства (experiment_ledger.py, tools/experiments.py).
+    ("simintech_api.model_ir", "ExperimentRecord"),
+    ("simintech_api.model_ir", "parse_experiment_record"),
+    ("simintech_api.model_ir.experiments", "EXPERIMENT_SCHEMA"),
+    ("simintech_api.model_ir.experiments", "MAX_RECORDS"),
     # SystemSpec и верификация (tools/system_spec.py).
     ("simintech_api.model_ir", "compile_system_spec"),
     ("simintech_api.model_ir", "verify_model"),

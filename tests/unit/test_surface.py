@@ -24,7 +24,8 @@ _DENIALS = ("не создаются", "не создаётся", "не созд
 #: вывод из кода: будь оно выводом, проверка повторяла бы декоратор.
 _PLAIN_TOOLS = {
     "read_output_file", "summarize_output_file", "inspect_project_file",
-    "get_model_manifest", "query_model",
+    "get_model_manifest", "query_model", "record_experiment",
+    "forget_experiment",
     "help_text", "project_network_role", "create_pack",
     "search_language_functions", "get_language_function",
 }
@@ -107,7 +108,7 @@ _READ_ONLY_TOOLS = {
 #: перезапись файла проекта, откат несохранённых правок.
 _DESTRUCTIVE_TOOLS = {
     "remove_block", "disconnect_wire", "disconnect", "close_project",
-    "close_pack", "save_project", "reload_project",
+    "close_pack", "save_project", "reload_project", "forget_experiment",
 }
 
 
@@ -200,7 +201,8 @@ async def test_all_tools_registered():
         "save_screenshot", "fit_view", "set_block_center",
         "doctor", "build_model", "build_and_verify", "inspect_model",
         "simulate", "format_model", "load_model", "get_model_manifest",
-        "query_model", "inspect_submodel",
+        "query_model", "record_experiment", "forget_experiment",
+        "inspect_submodel",
     }
     assert expected == names, (
         f"не хватает: {sorted(expected - names)}; "

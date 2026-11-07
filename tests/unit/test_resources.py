@@ -23,6 +23,10 @@ async def test_resource_model_ir_guide_covers_semantics():
     assert "known_absences" in text
     assert "hops" in text
     assert "not_established" in text
+    assert "record_experiment" in text
+    assert "experiments" in text
+    assert "experiment-record/1" in text
+    assert "forget_experiment" in text
 
 
 @pytest.mark.anyio
@@ -43,6 +47,8 @@ async def test_resource_workflow_guide_covers_sources():
         "content_hash",
         "SaveProjectXML",
         "unknown",
+        "record_experiment",
+        "experiments",
     ):
         assert needle in text
 
@@ -52,6 +58,7 @@ def test_server_instructions_name_workflow_guide():
     from simintech_mcp.server import mcp
 
     assert "simintech://guides/workflow" in (mcp.instructions or "")
+    assert "record_experiment" in (mcp.instructions or "")
 
 
 @pytest.mark.anyio
@@ -361,7 +368,7 @@ async def test_tools_resource_lists_catalog():
 
     assert "build_model" in text
     assert "search_tools" in text
-    assert len(await surface.catalog_tools(mcp)) == 71
+    assert len(await surface.catalog_tools(mcp)) == 73
 
 
 @pytest.mark.anyio

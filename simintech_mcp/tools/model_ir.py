@@ -30,7 +30,7 @@ from simintech_api.model_ir import (
 )
 from simintech_api.topology import parse_topology
 
-from .. import model_store, runtime, session, sandbox
+from .. import experiment_ledger, model_store, runtime, session, sandbox
 from ..contracts import check_model_contracts
 from ..app import mcp
 from .model_text import page_export_text
@@ -243,6 +243,8 @@ def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
             "sample": sample,
         },
         "semantics": _semantics_summary(model),
+        "ledger": experiment_ledger.summary(
+            model.meta.structure_hash, model.meta.content_hash),
         "hints": hints,
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -310,6 +312,82 @@ def get_model_manifest(model_ref: str, budget_tokens: int = 3000,
     return build_manifest(snapshot.model, budget_tokens, focus)
 
 
+def _ledger_item(entry: experiment_ledger.LedgerEntry,
+                 current_generation: int) -> Dict[str, Any]:
+    """Компактная строка списка: полная запись выдаётся только по id."""
+    record = entry.record
+    return {
+        "id": record.id,
+        "goal": entry.goal,
+        "status": record.status,
+        "target": record.target,
+        "changed": record.source,
+        "observed": record.observed,
+        "recorded_at": record.recorded_at,
+        "limitations": len(record.limitations),
+        "stale": entry.stale(current_generation),
+        "attached_at": entry.attached_at,
+    }
+
+
+def _ledger_payload(snapshot: model_store.Snapshot,
+                    args: Dict[str, Any]) -> Dict[str, Any]:
+    """Ответ query_model(experiments): список или полная запись по id."""
+    structure_hash = snapshot.model.meta.structure_hash
+    content_hash = snapshot.model.meta.content_hash
+    entries = experiment_ledger.entries_for(structure_hash, content_hash)
+    current = model_store.generation()
+    wanted = str(args.get("id", "")).strip()
+    if wanted:
+        selected = [entry for entry in entries if entry.record.id == wanted]
+        if not selected:
+            raise ToolError(
+                f"experiments: запись {wanted!r} не найдена")
+        items = [selected[0].to_dict(current)]
+        shown = 1
+    else:
+        try:
+            limit = int(args.get("max_items", 50))
+        except (TypeError, ValueError) as exc:
+            raise ToolError(
+                "experiments: max_items должен быть числом") from exc
+        limit = max(0, min(limit, MAX_QUERY_ITEMS))
+        items = [_ledger_item(entry, current) for entry in entries[:limit]]
+        shown = len(items)
+    total = len(entries)
+    negative = sum(1 for entry in entries if not entry.record.observed)
+    ledger = experiment_ledger.summary(structure_hash, content_hash)
+    notes: List[str] = []
+    if not entries:
+        notes.append(
+            "Записей нет; это не доказывает отсутствие влияния.")
+    elif negative:
+        notes.append(
+            "Отрицательные наблюдения не доказывают отсутствие влияния.")
+    other = int(ledger.get("other_content_versions", 0) or 0)
+    if other:
+        notes.append(
+            f"Есть записи для другой версии content_hash: {other}; "
+            f"они не применены.")
+    return {
+        "query": "experiments",
+        "scope": "ledger",
+        "model_hash": structure_hash,
+        "content_hash": content_hash,
+        "items": items,
+        "unknown": [],
+        "truncated": not wanted and total > shown,
+        "evidence": {
+            "records_total": total,
+            "records_shown": shown,
+            "records_limit": experiment_ledger.MAX_RECORDS_PER_MODEL,
+            "negative": negative,
+            "ledger": ledger,
+        },
+        "notes": notes,
+    }
+
+
 @mcp.tool(
     title="Запрос к модели IR",
     annotations={
@@ -327,12 +405,16 @@ def query_model(model_ref: str, query: str,
     Запросы: `inspect_node`, `find_objects`, `trace_signal`, `ancestors`,
     `descendants`, `find_path`, `find_cycles`, `check_connections`,
     `compare_models`, `validate_invariants`, `list_discrepancies`,
-    `coverage`, `influence`, `semantic_coverage`. Для `compare_models` в
-    arguments нужен `other_ref`; для `influence` - `target` (порт или
-    объект), необязательные `max_depth`, `include`, `max_items`.
-    Ответ несёт evidence, покрытие, unknown и truncated; `items` и
-    `unknown` ограничены 200 элементами. `check_connections` добавляет
-    контракты и режет объединённый список тем же пределом.
+    `coverage`, `influence`, `experiments`, `semantic_coverage`. Для
+    `compare_models` в arguments нужен `other_ref`; для `influence` -
+    `target` (порт или объект), необязательные `max_depth`, `include`,
+    `max_items`; для `experiments` - необязательные `id` (полная запись) и
+    `max_items` (компактный список, по умолчанию 50). `influence` по
+    умолчанию включает статус `experiment` и применяет записи ledger,
+    привязанные к обоим хешам снимка. Ответ несёт evidence, покрытие,
+    unknown и truncated; `items` и `unknown` ограничены 200 элементами.
+    `check_connections` добавляет контракты и режет объединённый список тем
+    же пределом.
     """
     snapshot = model_store.get(model_ref)
     model_store.require_fresh(snapshot)
@@ -381,21 +463,32 @@ def query_model(model_ref: str, query: str,
         target = str(args.get("target", "")).strip()
         if not target:
             raise ToolError("influence: нужен target")
-        include = args.get("include") or ("contract", "not_established")
+        include = args.get("include") or (
+            "contract", "not_established", "experiment")
         if not isinstance(include, (list, tuple)):
             raise ToolError("influence: include должен быть списком")
         include_values = tuple(
             str(value) for value in cast(Iterable[object], include))
+        records = experiment_ledger.records_for(
+            snapshot.model.meta.structure_hash,
+            snapshot.model.meta.content_hash)
         try:
             result = influence(
                 snapshot.index, load_default_contracts(), target,
                 max_depth=int(args.get("max_depth", 64)),
                 include=include_values,
                 max_items=min(int(args.get("max_items", MAX_QUERY_ITEMS)),
-                              MAX_QUERY_ITEMS))
+                              MAX_QUERY_ITEMS),
+                experiments=records)
         except ModelQueryError as exc:
             raise ToolError(f"influence: {exc}") from exc
         payload = result.to_dict()
+        payload["content_hash"] = snapshot.model.meta.content_hash
+        payload["evidence"]["ledger"] = experiment_ledger.summary(
+            snapshot.model.meta.structure_hash,
+            snapshot.model.meta.content_hash)
+    elif query == "experiments":
+        payload = _ledger_payload(snapshot, args)
     elif query == "semantic_coverage":
         coverage = _semantics(snapshot.model)
         if "error" in coverage:

@@ -31,7 +31,7 @@ async def test_project_lifecycle_tools_are_visible_without_search():
 @pytest.mark.anyio
 async def test_catalog_still_has_all_tools():
     tools = await surface.catalog_tools(mcp)
-    assert len(tools) == 71
+    assert len(tools) == 73
 
 
 @pytest.mark.anyio

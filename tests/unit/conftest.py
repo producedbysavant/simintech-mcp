@@ -12,6 +12,18 @@ editable-установки, то есть из другого чекаута, �
 import os
 import sys
 
+import pytest
+
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, _ROOT)
 sys.path.insert(0, os.path.join(_ROOT, "scripts"))
+
+
+@pytest.fixture(autouse=True)
+def _clear_experiment_ledger():
+    """Ledger живёт в процессе: каждый тест начинает с пустого состояния."""
+    from simintech_mcp import experiment_ledger
+
+    experiment_ledger.clear()
+    yield
+    experiment_ledger.clear()
