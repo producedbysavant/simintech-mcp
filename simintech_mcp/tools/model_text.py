@@ -253,7 +253,8 @@ def export_model_text() -> str:
             "может быть устаревшим. Переоткройте проект (`reload_project` "
             "или `close_project` + `open_project`) и повторите выгрузку. "
             "Не сохраняйте проект из MCP до перечитывания: `save_project` "
-            "перезапишет правки на диске.\n")
+            "в тот же файл откажет, а копия в другой файл останется "
+            "устаревшей.\n")
     page = session.ensure_project().get_current_page()
     blocks: "List[Block]" = []
     signatures_error = ""

@@ -184,6 +184,7 @@ async def test_export_model_text_warns_when_project_file_changed(
 
     assert "файл проекта изменён на диске" in result
     assert "reload_project" in result
+    assert "откажет" in result, "предупреждение противоречит защите save_project"
     assert result.index("файл проекта изменён") < result.index(
         _BridgeRunsContour.payload), "предупреждение утонуло в тексте модели"
 

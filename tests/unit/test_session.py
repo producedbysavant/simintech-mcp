@@ -638,3 +638,26 @@ def test_note_saved_moves_stamp_to_new_file(tmp_path):
             "прежний файл уже не источник истины"
     finally:
         restore()
+
+
+def test_replace_project_same_id_forgets_file_stamp(tmp_path):
+    """Совпавший id не доказывает, что файл перечитан: отпечаток забыт.
+
+    `replace_project` при совпадении id пропускает закрытие прежнего
+    экземпляра; среда могла вернуть уже открытый проект, а не прочитать файл
+    заново. `file_changed_on_disk` обязан сказать None, а не False.
+    """
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    restore = _with_project(_WireProject({}, project_id=7),
+                            source_path=str(source))
+    try:
+        assert session.file_changed_on_disk() is False
+
+        session.replace_project(_WireProject({}, project_id=7),
+                                source_path=str(source))
+
+        assert session.file_changed_on_disk() is None, \
+            "совпавший id выдан за перечитывание файла"
+    finally:
+        restore()

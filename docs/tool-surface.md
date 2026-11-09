@@ -19,9 +19,9 @@
 
 `export_model_text` и `load_model` читают проект в памяти MCP, а `influence`
 работает по снимку IR. Если файл изменён на диске после открытия, `doctor`
-и `export_model_text` предупреждают, а `save_project` в тот же файл
-отказывает. Перед чтением переоткройте проект: `reload_project` или
-`close_project` + `open_project`.
+и `export_model_text` предупреждают, а `save_project` в тот же или ранее
+сохранённый файл отказывает. Перед чтением переоткройте проект:
+`reload_project` или `close_project` + `open_project`.
 
 ## Поиск
 

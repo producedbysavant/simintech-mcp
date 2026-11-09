@@ -378,6 +378,24 @@ def test_doctor_warns_when_mmain_scan_empty(monkeypatch, tmp_path):
     assert "не прочитан" in text
 
 
+def test_doctor_warns_when_mmain_scan_fails(monkeypatch, tmp_path):
+    """Сбой сканера не выдаётся за отсутствие других экземпляров."""
+    _doctor_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(workflows.sys, "platform", "win32")
+    monkeypatch.setattr(workflows.session, "current_client",
+                        lambda: SimpleNamespace(session_pid=100))
+
+    def fail():
+        raise OSError("scanner failed")
+
+    monkeypatch.setattr(workflows, "get_mmain_pids", fail)
+
+    text = workflows.doctor()
+
+    assert "[WARN] mmain" in text
+    assert "не прочитан" in text
+
+
 def test_doctor_warns_when_project_file_changed(monkeypatch, tmp_path):
     """Расхождение отпечатка файла названо до начала работы с моделью."""
     _doctor_environment(monkeypatch, tmp_path)
