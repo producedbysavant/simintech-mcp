@@ -310,7 +310,8 @@ def test_format_model_rejects_hires_with_zoom():
         workflows.format_model(hires=True, zoom=1.0)
 
 
-def test_doctor_reports_ok(monkeypatch, tmp_path):
+def _doctor_environment(monkeypatch, tmp_path):
+    """Окружение doctor без COM: строки com, каталогов и проекта заданы."""
     monkeypatch.setattr(workflows, "project_status",
                         lambda: "SimInTech подключён (PID=1, ownership=owned)")
     monkeypatch.setattr(workflows.sandbox, "safe_output_root",
@@ -319,12 +320,111 @@ def test_doctor_reports_ok(monkeypatch, tmp_path):
                         lambda: str(tmp_path))
     monkeypatch.setattr(workflows.session, "current_project", lambda: object())
     monkeypatch.setattr(workflows.session, "current_pack", lambda: None)
+    monkeypatch.setattr(workflows.session, "current_client", lambda: None)
+    monkeypatch.setattr(workflows.session, "opened_from", lambda: None)
+
+
+def test_doctor_reports_ok(monkeypatch, tmp_path):
+    _doctor_environment(monkeypatch, tmp_path)
 
     text = workflows.doctor()
 
     assert "[OK] com" in text
     assert "[OK] output_dir" in text
     assert "[WARN] pack" in text
+
+
+def test_doctor_warns_about_parallel_mmain(monkeypatch, tmp_path):
+    """Doctor видит второй mmain.exe: ownership своей сессии его не исключает."""
+    _doctor_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(workflows.sys, "platform", "win32")
+    monkeypatch.setattr(workflows.session, "current_client",
+                        lambda: SimpleNamespace(session_pid=100))
+    monkeypatch.setattr(workflows, "get_mmain_pids", lambda: {100, 200})
+
+    text = workflows.doctor()
+
+    assert "[WARN] mmain" in text
+    assert "200" in text, "чужой PID обязан быть назван"
+    assert "close_project" in text, "нужен исполнимый рецепт перечитывания"
+    assert "не сохраняйте" in text
+
+
+def test_doctor_reports_single_mmain(monkeypatch, tmp_path):
+    """Один свой процесс: не предупреждение."""
+    _doctor_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(workflows.sys, "platform", "win32")
+    monkeypatch.setattr(workflows.session, "current_client",
+                        lambda: SimpleNamespace(session_pid=100))
+    monkeypatch.setattr(workflows, "get_mmain_pids", lambda: {100})
+
+    text = workflows.doctor()
+
+    assert "[OK] mmain" in text
+    assert "других процессов" in text
+
+
+def test_doctor_warns_when_mmain_scan_empty(monkeypatch, tmp_path):
+    """Пустой снимок не выдаётся за «других процессов нет»."""
+    _doctor_environment(monkeypatch, tmp_path)
+    monkeypatch.setattr(workflows.sys, "platform", "win32")
+    monkeypatch.setattr(workflows.session, "current_client",
+                        lambda: SimpleNamespace(session_pid=100))
+    monkeypatch.setattr(workflows, "get_mmain_pids", lambda: set())
+
+    text = workflows.doctor()
+
+    assert "[WARN] mmain" in text
+    assert "не прочитан" in text
+
+
+def test_doctor_warns_when_project_file_changed(monkeypatch, tmp_path):
+    """Расхождение отпечатка файла названо до начала работы с моделью."""
+    _doctor_environment(monkeypatch, tmp_path)
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    monkeypatch.setattr(workflows.session, "opened_from",
+                        lambda: str(source))
+    monkeypatch.setattr(workflows.session, "file_changed_on_disk",
+                        lambda: True)
+
+    text = workflows.doctor()
+
+    assert "[WARN] project_file" in text
+    assert "изменён на диске" in text
+    assert "reload_project" in text
+
+
+def test_doctor_reports_unchanged_project_file(monkeypatch, tmp_path):
+    """Совпавший отпечаток даёт OK, а не предупреждение."""
+    _doctor_environment(monkeypatch, tmp_path)
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    monkeypatch.setattr(workflows.session, "opened_from",
+                        lambda: str(source))
+    monkeypatch.setattr(workflows.session, "file_changed_on_disk",
+                        lambda: False)
+
+    text = workflows.doctor()
+
+    assert "[OK] project_file" in text
+    assert "не менялся" in text
+
+
+def test_doctor_warns_when_project_file_stamp_unknown(monkeypatch, tmp_path):
+    """Отпечаток не снят: актуальность не выдаётся за проверенную."""
+    _doctor_environment(monkeypatch, tmp_path)
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    monkeypatch.setattr(workflows.session, "opened_from",
+                        lambda: str(source))
+    monkeypatch.setattr(workflows.session, "file_changed_on_disk",
+                        lambda: None)
+
+    text = workflows.doctor()
+
+    assert "[WARN] project_file" in text
+    assert "не снят" in text
 
 
 def test_build_model_explains_probe_not_running(monkeypatch):

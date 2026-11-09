@@ -577,3 +577,64 @@ def test_ensure_client_refuses_unknown_session(monkeypatch):
         "рецепт EXTERNAL на UNKNOWN — тупик (ревью #41)")
     assert made and made[0].disconnected
     assert session.current_client() is None
+
+
+# ─── Актуальность файла проекта ────────────────────────────────────
+
+
+def test_file_changed_on_disk_tracks_open_and_save(tmp_path):
+    """Отпечаток ловит чужое сохранение и обновляется своей записью.
+
+    Проект в памяти MCP не перечитывает файл: если человек сохранил его в
+    другом `mmain.exe`, это видно только по отпечатку. `set_project` снимает
+    его при открытии, `note_saved` обновляет после записи.
+    """
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    restore = _with_project(_WireProject({}, project_id=12),
+                            source_path=str(source))
+    try:
+        assert session.file_changed_on_disk() is False
+
+        source.write_text("version-2", encoding="utf-8")
+        assert session.file_changed_on_disk() is True, \
+            "чужое сохранение не замечено"
+
+        session.note_saved(str(source))
+        assert session.file_changed_on_disk() is False, \
+            "своя запись обязана обновить отпечаток"
+
+        source.unlink()
+        assert session.file_changed_on_disk() is True, \
+            "пропавший файл тоже расхождение"
+    finally:
+        restore()
+
+
+def test_file_changed_on_disk_is_unknown_without_file():
+    """Проект из шаблона: файла нет, судить нечем."""
+    restore = _with_project(_WireProject({}, project_id=13))
+    try:
+        assert session.file_changed_on_disk() is None
+    finally:
+        restore()
+
+
+def test_note_saved_moves_stamp_to_new_file(tmp_path):
+    """Сохранение в другой файл переносит отпечаток на новый источник."""
+    first = tmp_path / "a.prt"
+    second = tmp_path / "b.prt"
+    first.write_text("a", encoding="utf-8")
+    second.write_text("b", encoding="utf-8")
+    restore = _with_project(_WireProject({}, project_id=14),
+                            source_path=str(first))
+    try:
+        session.note_saved(str(second))
+        assert session.opened_from() == str(second)
+        assert session.file_changed_on_disk() is False
+
+        first.write_text("a-longer", encoding="utf-8")
+        assert session.file_changed_on_disk() is False, \
+            "прежний файл уже не источник истины"
+    finally:
+        restore()

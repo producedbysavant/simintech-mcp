@@ -99,6 +99,12 @@ def clear_fit_resume(tool: str) -> None:
 #: (роль узла в сетевом расчёте) читается из того же каталога.
 _project_path: Optional[str] = None
 
+#: Отпечаток файла проекта на момент открытия или сохранения:
+#: (время правки в наносекундах, размер). None - файла нет (проект из
+#: шаблона) или отпечаток не снят. Нужен, чтобы отличить проект в памяти
+#: MCP от файла, который мог сохранить человек в другом `mmain.exe`.
+_project_stamp: Optional[Tuple[int, int]] = None
+
 #: Были ли у **текущего** проекта правки, не записанные в файл, за эту сессию.
 #: Ставит `mark_mutated` (обвязка после успешной правки), снимают —
 #: `save_project` (`clear_unsaved`) и смена проекта (`set_project`).
@@ -283,6 +289,24 @@ def ensure_project() -> Project:
     return _project
 
 
+def _file_stamp(path: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Отпечаток файла проекта: (время правки, размер); None - нет файла.
+
+    Хеш здесь не считается: проверка идёт на чтениях, а проект бывает в
+    десятки мегабайт. Метка и размер ловят обычное сохранение; совпадение
+    обеих при изменённом содержимом остаётся непойманным (грубая ФС,
+    сетевой share). Это названо в `file_changed_on_disk`; `save_project`
+    для вердикта о записи считает хеш отдельно.
+    """
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
 def set_project(project: Optional[Project],
                 source_path: Optional[str] = None) -> None:
     """Сделать проект текущим — единственное место, где он меняется.
@@ -301,9 +325,10 @@ def set_project(project: Optional[Project],
         source_path: файл, из которого проект открыт; None — проект создан, а
             не открыт (тогда настроек рядом с ним нет).
     """
-    global _project, _project_path, _unsaved
+    global _project, _project_path, _project_stamp, _unsaved
     _project = project
     _project_path = source_path
+    _project_stamp = _file_stamp(source_path)
     WIRES.clear()
     # Курсор порционного обхода фитов — тоже про страницы проекта: после
     # смены проекта id страниц указывают в никуда.
@@ -320,6 +345,27 @@ def set_project(project: Optional[Project],
 def opened_from() -> Optional[str]:
     """Путь, из которого открыт текущий проект, если он открыт из файла."""
     return _project_path
+
+
+def file_changed_on_disk() -> Optional[bool]:
+    """Изменился ли файл проекта после открытия или сохранения.
+
+    True - время правки или размер разошлись, либо файл пропал: проект в
+    памяти мог отстать от диска. False - отпечаток совпал. None - судить
+    нечем: проект создан из шаблона, файл не назван или отпечаток не снят.
+
+    Это предупреждение, а не гарантия свежести. Правка с той же меткой и
+    размером на ФС с грубым временем не ловится; среда может вернуть уже
+    открытый проект на `OpenProject`, и тогда отпечаток снят с файла, а
+    память осталась прежней. Надёжный рецепт чтения чужой правки -
+    `close_project` и `open_project`.
+    """
+    if not _project_path or _project_stamp is None:
+        return None
+    current = _file_stamp(_project_path)
+    if current is None:
+        return True
+    return current != _project_stamp
 
 
 def forget_wire(wire_id: int) -> None:
@@ -400,8 +446,9 @@ def note_saved(path: str) -> None:
     `save_project`. Реестр линий и снимки Model IR не сбрасываются: проект
     остаётся тем же.
     """
-    global _project_path
+    global _project_path, _project_stamp
     _project_path = path
+    _project_stamp = _file_stamp(path)
 
 
 def mutation_note() -> str:
