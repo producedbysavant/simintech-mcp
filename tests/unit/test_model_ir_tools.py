@@ -130,6 +130,18 @@ async def test_current_project_becomes_stale_after_mutation(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_load_current_project_warns_when_file_changed(monkeypatch):
+    """Снимок IR из памяти предупреждает: файл на диске уже другой."""
+    monkeypatch.setattr(session, "ensure_project", lambda: _FakeProject())
+    monkeypatch.setattr(session, "file_changed_on_disk", lambda: True)
+
+    result = json.loads(_text(await mcp.call_tool(
+        "load_model", {"path": "", "sources": ["xprt"]})))
+
+    assert any("файл проекта изменён" in hint for hint in result["hints"])
+
+
+@pytest.mark.anyio
 async def test_current_project_snapshot_shows_form_before_save(monkeypatch):
     calls = []
 

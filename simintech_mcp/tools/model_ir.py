@@ -195,7 +195,8 @@ def _semantics_summary(model: ModelIR) -> Dict[str, Any]:
     return {key: data[key] for key in keys if key in data}
 
 
-def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
+def _summary(model: ModelIR, ref: str, sources: List[str],
+             extra_hints: Optional[List[str]] = None) -> str:
     coverage = model.coverage
     by_code: Dict[str, int] = {}
     for item in model.discrepancies:
@@ -211,6 +212,8 @@ def _summary(model: ModelIR, ref: str, sources: List[str]) -> str:
                      "модельное время")
     if coverage.source_status.value != "ok":
         hints.append("покрытие частичное: см. coverage и discrepancies")
+    if extra_hints:
+        hints.extend(extra_hints)
     payload = {
         "model_ref": ref,
         "model_hash": model.meta.structure_hash,
@@ -275,6 +278,12 @@ def load_model(path: str = "",
     `semantic_coverage` доступен запросом `query_model`. XML, скрипты и
     полные значения свойств не возвращаются. Снимок живёт в памяти; после
     правки проекта старый `model_ref` устареет.
+
+    **Файл на диске может быть новее.** Для текущего проекта (`path=""`)
+    снимок читается из памяти MCP. Если файл проекта изменён на диске после
+    открытия, в `hints` попадает предупреждение: снимок и его хеши могут
+    быть устаревшими. Переоткройте проект (`reload_project` или
+    `close_project` + `open_project`) и загрузите модель заново.
     """
     chosen = ([_source_from_path(path)] if path and sources is None
               else list(sources or ["xprt"]))
@@ -286,7 +295,13 @@ def load_model(path: str = "",
         raise ToolError("sources пуст: нужен хотя бы один источник")
     model, bound, project_id = read_model(path, chosen, strict)
     ref = model_store.store(model, bound=bound, project_id=project_id)
-    return _summary(model, ref, chosen)
+    extra_hints: List[str] = []
+    if not path and session.file_changed_on_disk() is True:
+        extra_hints.append(
+            "файл проекта изменён на диске после открытия: снимок IR может "
+            "быть устаревшим; переоткройте проект (`reload_project` или "
+            "`close_project` + `open_project`) и загрузите модель заново")
+    return _summary(model, ref, chosen, extra_hints)
 
 
 @mcp.tool(

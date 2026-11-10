@@ -620,6 +620,90 @@ async def test_save_project_refuses_directory_target(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_save_project_refuses_external_change(monkeypatch, tmp_path):
+    """Сохранение поверх чужой правки файла: отказ до COM и до записи.
+
+    `save_project` пишет проект из памяти MCP. Если тот же файл сохранил
+    человек в другом `mmain.exe`, память устарела, и запись потеряла бы его
+    правки. Отказ называют до показа формы, файл не трогается.
+    """
+    target = tmp_path / "m.prt"
+    target.write_text("v1", encoding="utf-8")
+    project = _install_savable(monkeypatch)
+    monkeypatch.setattr(session, "_project_path", str(target))
+    monkeypatch.setattr(session, "_project_stamp", (0, 0))
+
+    text = await _error(
+        "save_project", {"path": str(target), "binary": True})
+
+    assert "изменён на диске" in text
+    assert "Файл не тронут" in text
+    assert "reload_project" in text
+    assert project.calls == [], "COM тронут до проверки актуальности"
+
+
+@pytest.mark.anyio
+async def test_save_project_allows_new_path_after_external_change(
+        monkeypatch, tmp_path):
+    """Сохранение в другой файл не перезаписывает чужую правку."""
+    source = tmp_path / "source.prt"
+    source.write_text("v1", encoding="utf-8")
+    target = tmp_path / "copy.prt"
+    project = _install_savable(monkeypatch)
+    monkeypatch.setattr(session, "_project_path", str(source))
+    monkeypatch.setattr(session, "_project_stamp", (0, 0))
+
+    text = _text(await mcp.call_tool(
+        "save_project", {"path": str(target), "binary": True}))
+
+    assert "сохранён" in text
+    assert project.calls == [("show_form", None),
+                             ("binary", _temp_of(target))]
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_save_back_after_external_change(
+        monkeypatch, tmp_path):
+    """Сохранение в другой файл не снимает защиту с прежнего источника."""
+    source = tmp_path / "source.prt"
+    source.write_text("v1", encoding="utf-8")
+    target = tmp_path / "copy.prt"
+    target.write_text("copy", encoding="utf-8")
+    project = _install_savable(monkeypatch)
+    session.set_project(project, source_path=str(source))
+    session.note_saved(str(target))
+    source.write_text("external", encoding="utf-8")
+
+    text = await _error(
+        "save_project", {"path": str(source), "binary": True})
+
+    assert "изменён на диске" in text
+    assert project.calls == [], "COM тронут до проверки прежнего источника"
+
+
+@pytest.mark.anyio
+async def test_save_project_refuses_hard_link_to_changed_source(
+        monkeypatch, tmp_path):
+    """Другое имя того же файла не обходит запрет перезаписи."""
+    source = tmp_path / "source.prt"
+    source.write_text("v1", encoding="utf-8")
+    alias = tmp_path / "alias.prt"
+    try:
+        os.link(source, alias)
+    except OSError:
+        pytest.skip("жёсткие ссылки не поддерживаются")
+    project = _install_savable(monkeypatch)
+    monkeypatch.setattr(session, "_project_path", str(source))
+    monkeypatch.setattr(session, "_project_stamp", (0, 0))
+
+    text = await _error(
+        "save_project", {"path": str(alias), "binary": True})
+
+    assert "изменён на диске" in text
+    assert project.calls == []
+
+
+@pytest.mark.anyio
 async def test_save_project_description_warns_about_repo_disk():
     """Полная справка называет риск каталога репозитория и рабочий обход."""
     description = await _resource_text("simintech://tools/save_project")
