@@ -27,3 +27,15 @@ def _clear_experiment_ledger():
     experiment_ledger.clear()
     yield
     experiment_ledger.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_session_file_stamps():
+    """Отпечатки файлов проекта: состояние процесса, каждый тест с чистого."""
+    from simintech_mcp import session
+
+    previous = session._project_stamp
+    session._known_stamps.clear()
+    yield
+    session._known_stamps.clear()
+    session._project_stamp = previous

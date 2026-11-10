@@ -99,6 +99,19 @@ def clear_fit_resume(tool: str) -> None:
 #: (роль узла в сетевом расчёте) читается из того же каталога.
 _project_path: Optional[str] = None
 
+#: Отпечаток файла проекта на момент открытия или сохранения:
+#: (время правки в наносекундах, размер). None - файла нет (проект из
+#: шаблона) или отпечаток не снят. Нужен, чтобы отличить проект в памяти
+#: MCP от файла, который мог сохранить человек в другом `mmain.exe`.
+_project_stamp: Optional[Tuple[int, int]] = None
+
+#: Известные файлы сессии: нормализованный путь -> отпечаток. Текущий
+#: источник хранится ещё и в `_project_path`/`_project_stamp`; карта нужна
+#: `save_project`, чтобы защита не снималась после сохранения в другой файл:
+#: прежний открытый файл остаётся известным и его правку нельзя затереть.
+MAX_KNOWN_FILE_PATHS = 8
+_known_stamps: Dict[str, Tuple[int, int]] = {}
+
 #: Были ли у **текущего** проекта правки, не записанные в файл, за эту сессию.
 #: Ставит `mark_mutated` (обвязка после успешной правки), снимают —
 #: `save_project` (`clear_unsaved`) и смена проекта (`set_project`).
@@ -283,6 +296,56 @@ def ensure_project() -> Project:
     return _project
 
 
+def _file_stamp(path: Optional[str]) -> Optional[Tuple[int, int]]:
+    """Отпечаток файла проекта: (время правки, размер); None - нет файла.
+
+    Хеш здесь не считается: проверка идёт на чтениях, а проект бывает в
+    десятки мегабайт. Метка и размер ловят обычное сохранение; совпадение
+    обеих при изменённом содержимом остаётся непойманным (грубая ФС,
+    сетевой share). Это названо в `file_changed_on_disk`; `save_project`
+    для вердикта о записи считает хеш отдельно.
+    """
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _path_key(path: str) -> str:
+    """Ключ пути для отпечатков: абсолютный и без регистра на Windows."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _remember_path(path: str,
+                   stamp: Optional[Tuple[int, int]] = None) -> None:
+    """Запомнить отпечаток известного файла сессии (не больше восьми путей)."""
+    if stamp is None:
+        stamp = _file_stamp(path)
+    if stamp is None:
+        return
+    key = _path_key(path)
+    _known_stamps.pop(key, None)
+    _known_stamps[key] = stamp
+    while len(_known_stamps) > MAX_KNOWN_FILE_PATHS:
+        _known_stamps.pop(next(iter(_known_stamps)))
+
+
+def _forget_file_stamp() -> None:
+    """Забыть отпечаток текущего файла: перечитывание не доказано.
+
+    `replace_project` вызывает это при совпавшем COM id: отличить «файл
+    перечитан» от «вернулся уже открытый проект» нечем, и отпечаток,
+    снятый с файла, выдавал бы память за свежую.
+    """
+    global _project_stamp
+    _project_stamp = None
+    if _project_path:
+        _known_stamps.pop(_path_key(_project_path), None)
+
+
 def set_project(project: Optional[Project],
                 source_path: Optional[str] = None) -> None:
     """Сделать проект текущим — единственное место, где он меняется.
@@ -301,9 +364,13 @@ def set_project(project: Optional[Project],
         source_path: файл, из которого проект открыт; None — проект создан, а
             не открыт (тогда настроек рядом с ним нет).
     """
-    global _project, _project_path, _unsaved
+    global _project, _project_path, _project_stamp, _unsaved
     _project = project
     _project_path = source_path
+    _project_stamp = _file_stamp(source_path)
+    _known_stamps.clear()
+    if source_path:
+        _remember_path(source_path, _project_stamp)
     WIRES.clear()
     # Курсор порционного обхода фитов — тоже про страницы проекта: после
     # смены проекта id страниц указывают в никуда.
@@ -320,6 +387,44 @@ def set_project(project: Optional[Project],
 def opened_from() -> Optional[str]:
     """Путь, из которого открыт текущий проект, если он открыт из файла."""
     return _project_path
+
+
+def file_changed_on_disk() -> Optional[bool]:
+    """Изменился ли файл проекта после открытия или сохранения.
+
+    True - время правки или размер разошлись, либо файл пропал: проект в
+    памяти мог отстать от диска. False - отпечаток совпал. None - судить
+    нечем: проект создан из шаблона, файл не назван или отпечаток не снят.
+
+    Это предупреждение, а не гарантия свежести. Правка с той же меткой и
+    размером на ФС с грубым временем не ловится; среда может вернуть уже
+    открытый проект на `OpenProject`, и тогда `replace_project` при
+    совпавшем id забывает отпечаток, а функция возвращает None, а не False.
+    Надёжный рецепт чтения чужой правки - `close_project` и `open_project`.
+    """
+    if not _project_path or _project_stamp is None:
+        return None
+    current = _file_stamp(_project_path)
+    if current is None:
+        return True
+    return current != _project_stamp
+
+
+def path_changed_on_disk(path: str) -> Optional[bool]:
+    """Изменился ли известный файл сессии: открытый или сохранённый.
+
+    `save_project` зовёт это для целевого пути: после сохранения в другой
+    файл текущий источник меняется, но прежний открытый файл остаётся
+    известным, и сохранять поверх него без перечитывания нельзя. None -
+    путь не входит в известные или отпечаток не снят.
+    """
+    stamp = _known_stamps.get(_path_key(path))
+    if stamp is None:
+        return None
+    current = _file_stamp(path)
+    if current is None:
+        return True
+    return current != stamp
 
 
 def forget_wire(wire_id: int) -> None:
@@ -400,8 +505,10 @@ def note_saved(path: str) -> None:
     `save_project`. Реестр линий и снимки Model IR не сбрасываются: проект
     остаётся тем же.
     """
-    global _project_path
+    global _project_path, _project_stamp
     _project_path = path
+    _project_stamp = _file_stamp(path)
+    _remember_path(path, _project_stamp)
 
 
 def mutation_note() -> str:
@@ -505,6 +612,7 @@ def replace_project(project: Project,
         # `FormShow` (0x15B2C70 — инструментный слой; в api-репро 0x15B2C08,
         # полоса 15B2Cxx). Закрытие пропускаем и говорим об этом:
         # молчание вернуло бы тот же отказ без объяснения.
+        _forget_file_stamp()
         return ReplaceNote(
             switch + (f" Прежний проект имеет тот же id ({project.id}), "
                       "что новый: среда переиспользовала идентификатор — "

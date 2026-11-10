@@ -735,10 +735,44 @@ def _check_save_target(path: str) -> None:
             f"на место. Файл не тронут.")
 
 
+def _same_file(left: str, right: str) -> bool:
+    """Ссылаются ли пути на один файл (регистр Windows, ссылки, hard link)."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return (os.path.normcase(os.path.abspath(left))
+                == os.path.normcase(os.path.abspath(right)))
+
+
+def _refuse_external_change(path: str) -> None:
+    """Отказ, если целевой файл изменён после открытия проекта.
+
+    `save_project` пишет проект из памяти MCP. Если тот же файл сохранил
+    человек в другом `mmain.exe`, память устарела, и запись перезаписала бы
+    его правки. `session.file_changed_on_disk` возвращает None, когда судить
+    нечем (проект из шаблона, отпечаток не снят): тогда отказа нет, потому
+    что «неизвестно» здесь не доказательство расхождения.
+    """
+    source = session.opened_from()
+    changed = session.path_changed_on_disk(path)
+    if changed is None and source and _same_file(source, path):
+        changed = session.file_changed_on_disk()
+    if changed is not True:
+        return
+    raise ToolError(
+        f"Файл проекта изменён на диске после открытия или сохранения, либо "
+        f"больше не доступен: «{path}». Проект в памяти MCP устарел, и "
+        "сохранение перезаписало бы правки, сделанные в другом экземпляре "
+        "SimInTech. Файл не тронут. Переоткройте проект (`reload_project` "
+        "или `close_project` + `open_project`) и повторите правки; "
+        "сохранить в другой файл можно и без перечитывания.")
+
+
 def _save_preflight(path: str, binary: bool = False) -> None:
     """Проверки `save_project` до постановки в COM-поток."""
     _refuse_format_extension_mismatch(path, binary)
     _check_save_target(path)
+    _refuse_external_change(path)
 
 
 def _remove_quietly(path: str) -> None:
@@ -915,6 +949,14 @@ def save_project(path: str, binary: bool = False) -> str:
     обновиться — меткой правки, размером или содержимым (у ФС с грубым
     временем одной метки мало), иначе — отказ с диагнозом. Нулевая длина
     файла — отказ и при «успехе» среды: так выглядит оборванная запись.
+
+    **Чужое сохранение не перезаписывается.** Если известный файл сессии
+    (открытый или сохранённый) изменился на диске после того, как сессия
+    сняла его отпечаток, сохранение в этот путь отказывает: проект в памяти
+    MCP устарел, и запись потеряла бы правки, сделанные в другом экземпляре
+    SimInTech. Файл не тронут. Переоткройте проект (`reload_project` или
+    `close_project` + `open_project`) и повторите правки; сохранить в
+    другой файл можно и без перечитывания.
 
     **Обрыв записи не трогает боевой файл.** Среда пишет проект, открывая
     файл, — оборванная запись (зависание, AV, убийство процесса) оставляет

@@ -171,6 +171,42 @@ async def test_export_model_text_returns_dump_from_results_dir(monkeypatch, tmp_
 
 
 @pytest.mark.anyio
+async def test_export_model_text_warns_when_project_file_changed(
+        monkeypatch, tmp_path):
+    """Чужое сохранение видно до текста: выгрузка читает память, а не файл."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    monkeypatch.setattr(session, "_project_path", str(source))
+    monkeypatch.setattr(session, "_project_stamp", (0, 0))
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert "файл проекта изменён на диске" in result
+    assert "reload_project" in result
+    assert "откажет" in result, "предупреждение противоречит защите save_project"
+    assert result.index("файл проекта изменён") < result.index(
+        _BridgeRunsContour.payload), "предупреждение утонуло в тексте модели"
+
+
+@pytest.mark.anyio
+async def test_export_model_text_does_not_warn_when_file_unchanged(
+        monkeypatch, tmp_path):
+    """Совпавший отпечаток не даёт ложного предупреждения."""
+    _install(monkeypatch, tmp_path, _BridgeRunsContour)
+    source = tmp_path / "m.prt"
+    source.write_text("v1", encoding="utf-8")
+    stat = source.stat()
+    monkeypatch.setattr(session, "_project_path", str(source))
+    monkeypatch.setattr(session, "_project_stamp",
+                        (stat.st_mtime_ns, stat.st_size))
+
+    result = _text(await mcp.call_tool("export_model_text", {}))
+
+    assert "файл проекта изменён" not in result
+
+
+@pytest.mark.anyio
 async def test_export_model_text_strips_bom(monkeypatch, tmp_path):
     """BOM снимается: с ним текст не вклеивается обратно через `eval`.
 

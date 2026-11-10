@@ -16,6 +16,7 @@ from importlib.metadata import PackageNotFoundError, version
 from typing import Dict, List, Literal, Optional
 
 from fastmcp.exceptions import ToolError
+from simintech_api.utils.processes import get_mmain_pids
 
 from .. import __version__, runtime, sandbox, session, skills, surface
 from ..app import mcp
@@ -146,7 +147,22 @@ def _api_version() -> str:
 )
 @runtime.workflow_tool
 def doctor() -> str:
-    """Проверить окружение SimInTech и назвать следующие шаги."""
+    """Проверить окружение SimInTech и назвать следующие шаги.
+
+    Кроме версий и каталогов называет две вещи, из-за которых проект в
+    памяти может отстать от диска:
+
+    * другие процессы `mmain.exe`: `ownership=owned` подтверждает только
+      свою COM-сессию, но не отсутствие экземпляра, в котором человек правит
+      тот же файл;
+    * расхождение отпечатка файла проекта, снятого при открытии или
+      сохранении: файл изменился на диске или пропал.
+
+    Оба случая дают `WARN`, а не отказ: они не блокируют работу, но перед
+    чтением требуют переоткрыть проект (`reload_project` или
+    `close_project` + `open_project`), а до перечитывания не сохранять
+    его из MCP.
+    """
     rows: List[tuple[str, str, str]] = []
 
     def add(name: str, state: str, detail: str) -> None:
@@ -163,6 +179,31 @@ def doctor() -> str:
     except ToolError as exc:
         add("com", "FAIL", str(exc))
 
+    client = session.current_client()
+    if client is not None and sys.platform == "win32":
+        own = client.session_pid
+        try:
+            pids = get_mmain_pids()
+        except Exception:                                     # noqa: BLE001
+            pids = set()
+        if not pids:
+            add("mmain", "WARN",
+                "список процессов mmain.exe не прочитан: параллельный "
+                "экземпляр не исключён")
+        else:
+            others = sorted(pid for pid in pids if pid != own)
+            if others:
+                add("mmain", "WARN",
+                    f"наш PID {own if own else 'не назван'}; другие процессы "
+                    f"mmain.exe: {', '.join(map(str, others))}. Если человек "
+                    "правит тот же файл, перед чтением переоткройте проект "
+                    "(`reload_project` или `close_project` + "
+                    "`open_project`), а до этого не сохраняйте из MCP.")
+            else:
+                add("mmain", "OK",
+                    f"наш PID {own if own else 'не назван'}; других процессов "
+                    "mmain.exe нет")
+
     root = sandbox.safe_output_root()
     add("output_dir", "OK" if os.path.isdir(root) else "FAIL", root)
     add("output_writable", "OK" if os.access(root, os.W_OK) else "FAIL", root)
@@ -174,6 +215,23 @@ def doctor() -> str:
     project = session.current_project()
     add("project", "OK" if project is not None else "WARN",
         "проект открыт" if project is not None else "проекта нет")
+    source = session.opened_from() if project is not None else None
+    if source:
+        changed = session.file_changed_on_disk()
+        if changed is True:
+            add("project_file", "WARN",
+                f"файл «{source}» изменён на диске после открытия или больше "
+                "не доступен: проект в памяти может быть устаревшим. "
+                "Переоткройте его (`reload_project` или `close_project` + "
+                "`open_project`) перед чтением; не сохраняйте из MCP до "
+                "перечитывания.")
+        elif changed is False:
+            add("project_file", "OK",
+                f"файл не менялся с открытия: {source}")
+        else:
+            add("project_file", "WARN",
+                f"отпечаток файла «{source}» не снят: актуальность не "
+                "проверена")
     pack = session.current_pack()
     add("pack", "OK" if pack is not None else "WARN",
         "пакет открыт" if pack is not None else "пакета нет")
