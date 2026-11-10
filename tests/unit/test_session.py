@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from fastmcp.exceptions import ToolError
-from simintech_api import ComConnectionError, SessionOwnership
+from simintech_api import ComCallError, ComConnectionError, SessionOwnership
 
 from simintech_mcp.server import mcp
 
@@ -577,6 +577,51 @@ def test_ensure_client_refuses_unknown_session(monkeypatch):
         "рецепт EXTERNAL на UNKNOWN — тупик (ревью #41)")
     assert made and made[0].disconnected
     assert session.current_client() is None
+
+
+# ─── Фатальный сбой COM ──────────────────────────────────────────
+
+
+def test_fatal_com_error_recognizes_e_unexpected():
+    """E_UNEXPECTED «Разрушительный сбой» фатален, обычный отказ нет."""
+    fatal = ComCallError("CloseProject", hr=-2147418113,
+                         message="Разрушительный сбой")
+    assert session.is_fatal_com_error(fatal) is True
+    assert session.is_fatal_com_error(
+        ComCallError("OpenProject", hr=0x8000FFFF,
+                     message="Разрушительный сбой")) is True
+    assert session.is_fatal_com_error(RuntimeError("среда занята")) is False
+    assert session.is_fatal_com_error(
+        ComCallError("SaveProjectXML", hr=-2147024770,
+                     message="Файл не найден")) is False
+
+
+def test_degraded_state_can_be_set_and_cleared():
+    """Отметка «сессия небезопасна» живёт до disconnect."""
+    session.clear_com_degraded()
+    try:
+        assert session.com_degraded() is None
+        session.mark_com_degraded("CloseProject: E_UNEXPECTED")
+        assert "E_UNEXPECTED" in (session.com_degraded() or "")
+        session.clear_com_degraded()
+        assert session.com_degraded() is None
+    finally:
+        session.clear_com_degraded()
+
+
+@pytest.mark.anyio
+async def test_disconnect_clears_degraded(monkeypatch):
+    """disconnect: единственный выход из небезопасной сессии."""
+    session.set_project(None)
+    session.clear_client()
+    session.mark_com_degraded("CloseProject: E_UNEXPECTED")
+    try:
+        text = _text(await mcp.call_tool("disconnect", {}))
+
+        assert "Без изменений" in text
+        assert session.com_degraded() is None
+    finally:
+        session.clear_com_degraded()
 
 
 # ─── Актуальность файла проекта ────────────────────────────────────

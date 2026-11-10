@@ -95,9 +95,9 @@ def diagnose_error(exc: BaseException) -> str:
     if "module" in text and "not registered" in text:
         return (" Подсказка: модуль не лицензирован; проверьте лицензию "
                 "и профиль библиотек.")
-    if "access violation" in text:
-        return (" Подсказка: среда упала. Вызовите doctor и disconnect; "
-                "при необходимости перезапустите mmain.exe.")
+    if "access violation" in text or "разрушительный сбой" in text:
+        return (" Подсказка: среда упала. Вызовите disconnect и откройте "
+                "проект в свежем процессе; doctor покажет состояние.")
     return ""
 
 
@@ -180,6 +180,42 @@ def _stuck_gate(tool: str, *, rescue: bool) -> "Optional[str]":
             f"выполнится, когда поток освободится).")
 
 
+def _degraded_gate(rescue: bool) -> "Optional[str]":
+    """Мгновенный отказ, если COM-сессия помечена небезопасной; иначе `None`.
+
+    Фатальный сбой (`E_UNEXPECTED`, AV) оставляет mmain в неизвестном
+    состоянии: прежний проект мог остаться открытым, сцена повреждена.
+    Продолжать в этой сессии нельзя: следующий же `CloseProject` или
+    страничный вызов может упасть снова. Спасательный `disconnect` отказа не
+    получает: только он снимает отметку и завершает процесс.
+    """
+    if rescue:
+        return None
+    try:
+        from . import session as _session
+        reason = _session.com_degraded()
+    except Exception:                                         # noqa: BLE001
+        return None
+    if not reason:
+        return None
+    return (
+        f"COM-сессия mmain небезопасна после фатального сбоя: {reason}. "
+        "Следующий шаг: `disconnect` (он сбросит сессию и снимет свой "
+        "процесс), затем откройте проект заново в свежем процессе. "
+        "Продолжать в этом процессе небезопасно: страничные вызовы и "
+        "`CloseProject` могут снова упасть.")
+
+
+def _mark_fatal(exc: BaseException) -> None:
+    """Запомнить фатальный COM-сбой: дальше сессия mmain небезопасна."""
+    try:
+        from . import session as _session
+        if _session.is_fatal_com_error(exc):
+            _session.mark_com_degraded(f"{type(exc).__name__}: {exc}")
+    except Exception:                                         # noqa: BLE001
+        pass
+
+
 def _remember_stuck(tool: str, future: "Future[Any]") -> None:
     """Запомнить зависший вызов (future уже завершился — не запоминать)."""
     global _stuck_call
@@ -204,6 +240,7 @@ def _call_guarded(fn: Callable[..., Any], args: Tuple[Any, ...],
     except ToolError:
         raise
     except Exception as exc:
+        _mark_fatal(exc)
         raise ToolError(
             f"{type(exc).__name__}: {exc}{diagnose_error(exc)}") from exc
     if isinstance(result, str):
@@ -429,6 +466,8 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
 
     def invoke(*args: Any, **kwargs: Any) -> Any:
         refusal = _stuck_gate(fn.__name__, rescue=rescue)
+        if refusal is None:
+            refusal = _degraded_gate(rescue=rescue)
         if refusal is not None:
             raise ToolError(refusal)
         if preflight is not None:

@@ -6,6 +6,7 @@ import json
 
 import pytest
 from fastmcp.exceptions import ToolError
+from simintech_api import ComCallError
 
 from simintech_mcp.server import mcp
 
@@ -398,3 +399,59 @@ def test_diagnose_error_names_session_loss():
 
     assert "disconnect" in hint
     assert "doctor" in hint
+
+
+# ─── Фатальный сбой: сессия небезопасна ─────────────────────────
+
+
+def test_com_threaded_refuses_after_fatal_com():
+    """После AV COM-инструменты сразу отказывают, а не падают по одному."""
+    calls = []
+
+    @runtime.com_threaded
+    def tool():
+        calls.append("ran")
+        return "ok"
+
+    session.mark_com_degraded("CloseProject: E_UNEXPECTED")
+    try:
+        with pytest.raises(ToolError) as excinfo:
+            tool()
+
+        text = str(excinfo.value)
+        assert "небезопасна" in text
+        assert "disconnect" in text
+        assert calls == [], "COM-тело не должно выполняться после AV"
+    finally:
+        session.clear_com_degraded()
+
+
+def test_rescue_tool_runs_after_fatal_com():
+    """disconnect остаётся исполнимым: иначе сессию не сбросить."""
+
+    @runtime.com_threaded(rescue=True)
+    def rescue():
+        return "ok"
+
+    session.mark_com_degraded("CloseProject: E_UNEXPECTED")
+    try:
+        assert rescue() == "ok"
+    finally:
+        session.clear_com_degraded()
+
+
+def test_com_threaded_marks_session_degraded_on_fatal_com():
+    """Фатальный COM-сбой сам помечает сессию небезопасной."""
+
+    @runtime.com_threaded
+    def tool():
+        raise ComCallError("CloseProject", hr=-2147418113,
+                           message="Разрушительный сбой")
+
+    session.clear_com_degraded()
+    try:
+        with pytest.raises(ToolError):
+            tool()
+        assert session.com_degraded() is not None
+    finally:
+        session.clear_com_degraded()
