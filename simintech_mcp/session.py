@@ -114,6 +114,47 @@ _unsaved: bool = False
 #: соединение или не прошедший вызов. По ним `ensure_client` переподключается.
 _COM_DEAD_ERRORS = (ComConnectionError, ComCallError)
 
+#: HRESULT E_UNEXPECTED (0x8000FFFF): «Разрушительный сбой», за которым
+#: обычно стоит access violation в mmain.
+_FATAL_HRESULT = 0x8000FFFF
+
+#: Причина, по которой COM-сессия признана небезопасной после фатального
+#: сбоя. None - сессия рабочая; снимает только `disconnect`.
+_degraded: Optional[str] = None
+
+
+def is_fatal_com_error(exc: BaseException) -> bool:
+    """Фатальный сбой COM: продолжать в этой сессии mmain нельзя.
+
+    E_UNEXPECTED (0x8000FFFF), «Разрушительный сбой», за которым обычно
+    стоит access violation в mmain: прежний проект мог остаться открытым,
+    сцена повреждена, и следующий же страничный вызов или `CloseProject`
+    способен упасть снова. Текст проверяется на случай, когда comtypes не
+    отдал hr: сбой всё равно нельзя выдать за обычный отказ.
+    """
+    if isinstance(exc, ComCallError) and exc.hr is not None:
+        if (int(exc.hr) & 0xFFFFFFFF) == _FATAL_HRESULT:
+            return True
+    text = str(exc).lower()
+    return "разрушительный сбой" in text or "access violation" in text
+
+
+def mark_com_degraded(reason: str) -> None:
+    """Запомнить, что COM-сессия mmain небезопасна после фатального сбоя."""
+    global _degraded
+    _degraded = reason
+
+
+def com_degraded() -> Optional[str]:
+    """Причина непригодности COM-сессии; None - сессия рабочая."""
+    return _degraded
+
+
+def clear_com_degraded() -> None:
+    """Снять отметку: сессия сброшена (`disconnect`)."""
+    global _degraded
+    _degraded = None
+
 
 def current_project() -> Optional[Project]:
     """Текущий проект сессии (может быть None) — без проверки живости COM.
@@ -528,6 +569,16 @@ def replace_project(project: Project,
     try:
         previous.close()
     except Exception as exc:                                  # noqa: BLE001
+        if is_fatal_com_error(exc):
+            mark_com_degraded(
+                f"CloseProject прежнего проекта {previous_label}: {exc}")
+            raise ToolError(
+                f"Прежний проект не закрылся: {exc}. Новый проект "
+                f"{project_label()} открыт, но сессия mmain небезопасна: "
+                "старый проект мог остаться открытым, сцена повреждена, и "
+                "следующие COM-вызовы могут снова упасть. Выполните "
+                "`disconnect` и откройте новый проект в свежем процессе."
+            ) from exc
         warning = (f" ВНИМАНИЕ: предыдущий проект закрыть не удалось "
                    f"({type(exc).__name__}: {exc}) — он мог остаться открытым "
                    f"в SimInTech.")

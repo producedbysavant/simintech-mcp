@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastmcp.exceptions import ToolError
+from simintech_api import ComCallError, ProjectError
 
 from simintech_mcp.server import mcp
 
@@ -1093,3 +1094,98 @@ def test_status_names_ownership(monkeypatch):
 
     assert "PID=4242" in text
     assert "ownership=owned" in text
+
+
+# ─── Фатальный CloseProject при переключении ─────────────────────
+
+
+class _FatalCloseProject(_WireProject):
+    """Прежний проект, CloseProject которого даёт E_UNEXPECTED (AV)."""
+
+    def close(self) -> None:
+        raise ComCallError("CloseProject", hr=-2147418113,
+                           message="Разрушительный сбой")
+
+
+@pytest.mark.anyio
+async def test_open_project_close_av_degrades_session(monkeypatch, tmp_path):
+    """AV при закрытии прежнего: новый открыт, но сессия небезопасна.
+
+    Предупреждение в успешном ответе повторялось на каждом переключении.
+    Теперь отказ называет обе стороны: новый проект открыт, прежний не
+    закрылся, дальше нужен `disconnect` и свежий процесс.
+    """
+    target = tmp_path / "next.prt"
+    target.write_text("x", encoding="utf-8")
+    previous = _FatalCloseProject({}, project_id=12)
+    opened = _WireProject({}, project_id=17)
+    monkeypatch.setattr(project_tools.Project, "open",
+                        staticmethod(lambda client, path: opened))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    session.set_project(previous, source_path=str(tmp_path / "prev.prt"))
+    session.clear_com_degraded()
+    try:
+        text = await _error("open_project", {"path": str(target)})
+
+        assert "Прежний проект не закрылся" in text
+        assert "Новый проект" in text
+        assert "disconnect" in text
+        assert session.com_degraded() is not None
+        assert session.current_project() is opened
+    finally:
+        session.set_project(None)
+        session.clear_com_degraded()
+
+
+@pytest.mark.anyio
+async def test_open_project_failure_keeps_previous(monkeypatch, tmp_path):
+    """Новый проект не открылся: прежний остался текущим, сессия рабочая."""
+
+    def fail(client, path):
+        raise ProjectError("OpenProject не удалось открыть")
+
+    target = tmp_path / "next.prt"
+    target.write_text("x", encoding="utf-8")
+    previous = _WireProject({}, project_id=12)
+    monkeypatch.setattr(project_tools.Project, "open", staticmethod(fail))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    session.set_project(previous, source_path=str(tmp_path / "prev.prt"))
+    session.clear_com_degraded()
+    try:
+        text = await _error("open_project", {"path": str(target)})
+
+        assert "Новый проект не открыт" in text
+        assert "остался текущим" in text
+        assert session.current_project() is previous
+        assert session.com_degraded() is None
+    finally:
+        session.set_project(None)
+        session.clear_com_degraded()
+
+
+@pytest.mark.anyio
+async def test_open_project_fatal_opens_degrades_session(monkeypatch, tmp_path):
+    """Фатальный сбой OpenProject: сессия небезопасна, прежний не потерян."""
+
+    def fail(client, path):
+        raise ComCallError("OpenProject", hr=-2147418113,
+                           message="Разрушительный сбой")
+
+    target = tmp_path / "next.prt"
+    target.write_text("x", encoding="utf-8")
+    previous = _WireProject({}, project_id=12)
+    monkeypatch.setattr(project_tools.Project, "open", staticmethod(fail))
+    monkeypatch.setattr(session, "ensure_client", lambda: object())
+    session.set_project(previous, source_path=str(tmp_path / "prev.prt"))
+    session.clear_com_degraded()
+    try:
+        text = await _error("open_project", {"path": str(target)})
+
+        assert "Новый проект не открыт" in text
+        assert "Сессия mmain небезопасна" in text
+        assert "disconnect" in text
+        assert session.current_project() is previous
+        assert session.com_degraded() is not None
+    finally:
+        session.set_project(None)
+        session.clear_com_degraded()

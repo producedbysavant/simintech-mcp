@@ -73,6 +73,11 @@ def disconnect() -> str:
     тогда, когда COM уже не отвечает (репорт fdd002 08.10.2026: `add_block`
     залип на 120 с, mmain мёртв).
 
+    **Единственный выход из небезопасной сессии.** После фатального
+    `CloseProject`/`OpenProject` (E_UNEXPECTED, AV) остальные COM-инструменты
+    отказывают и требуют `disconnect`; он снимает отметку и завершает свой
+    процесс. Открывать проект после этого нужно в свежем процессе.
+
     Пакет закрывается первым: его участники закрываются вместе с ним (живой
     замер 01.10.2026), поэтому текущий проект-участник отдельно не
     закрывается — он уже закрыт вместе с пакетом.
@@ -88,6 +93,7 @@ def disconnect() -> str:
     жив»). Повторное сканирование снимков процессов не делается: исход
     возвращает сама библиотека.
     """
+    session.clear_com_degraded()
     if (session.current_client() is None and session.current_project() is None
             and session.current_pack() is None):
         return "Без изменений: соединения не было — сбрасывать нечего"
@@ -272,6 +278,14 @@ def open_project(path: str) -> str:
     0, и библиотека отказывает (живой замер 03.10.2026), — поэтому проверки
     существования и абсолютности достаточно.
 
+    **Фатальный сбой закрытия.** Если `CloseProject` прежнего проекта вернул
+    E_UNEXPECTED (0x8000FFFF, «Разрушительный сбой», обычно AV), новый
+    проект уже открыт, но сессия mmain небезопасна: старый мог остаться
+    открытым, сцена повреждена. Ответ: отказ, а не предупреждение в успехе:
+    дальше нужен `disconnect` и открытие в свежем процессе, повторять
+    переключение в этом процессе нельзя. Если не открылся новый проект,
+    прежний остаётся текущим, и отказ называет это отдельно.
+
     Args:
         path: путь к файлу .prt/.xprt (абсолютный, на машине сервера).
     """
@@ -293,7 +307,22 @@ def open_project(path: str) -> str:
             f"существовать на машине сервера (среда на такой вызов "
             f"показывает ошибку, но через COM она не видна, и инструмент "
             f"молча открыл бы пустой проект).")
-    prj = Project.open(session.ensure_client(), path)
+    current = session.project_label()
+    client = session.ensure_client()
+    try:
+        prj = Project.open(client, path)
+    except Exception as exc:                                  # noqa: BLE001
+        if session.is_fatal_com_error(exc):
+            session.mark_com_degraded(f"OpenProject {path}: {exc}")
+            raise ToolError(
+                f"Новый проект не открыт: {exc}. Сессия mmain небезопасна: "
+                "OpenProject упал фатально. Выполните `disconnect` и "
+                "откройте проект в свежем процессе.") from exc
+        kept = (f"Текущий проект {current} остался текущим"
+                if current else "Текущего проекта не было")
+        raise ToolError(
+            f"Новый проект не открыт: {exc}. {kept}; файл не изменён. "
+            "Проверьте путь и повторите open_project.") from exc
     replaced = session.replace_project(prj, source_path=path)
     return f"Проект открыт: {session.project_label()}" + replaced
 
@@ -326,6 +355,11 @@ def reload_project() -> str:
     топологию» портов после серии удалений (`disconnect_wire`) и страхует от
     деградации сцены после `save_project` (подробности — в его докстринге):
     сохранили — переоткрыли, и только потом page-вызовы.
+
+    **Фатальный сбой не является откатом.** E_UNEXPECTED при `OpenProject` или
+    `CloseProject` означает повреждённую сессию mmain; ответ требует
+    `disconnect` и свежий процесс. Обычный сбой открытия оставляет прежний
+    проект текущим и назван отдельно.
 
     Отказы называют выход:
 
@@ -384,7 +418,20 @@ def reload_project() -> str:
             f"(`open_project`).")
     had_unsaved = session.unsaved_changes()
     previous = session.current_project()
-    prj = Project.open(session.ensure_client(), source)
+    current = session.project_label()
+    try:
+        prj = Project.open(session.ensure_client(), source)
+    except Exception as exc:                                  # noqa: BLE001
+        if session.is_fatal_com_error(exc):
+            session.mark_com_degraded(f"OpenProject {source}: {exc}")
+            raise ToolError(
+                f"Проект не переоткрыт: {exc}. Сессия mmain небезопасна: "
+                "OpenProject упал фатально. Выполните `disconnect` и "
+                "откройте проект в свежем процессе.") from exc
+        raise ToolError(
+            f"Проект не переоткрыт: {exc}. Текущий проект {current} "
+            "остался текущим; файл не изменён. Проверьте путь и повторите "
+            "reload_project.") from exc
     replaced = session.replace_project(
         prj, source_path=source,
         header="ТЕКУЩИЙ ПРОЕКТ ПЕРЕОТКРЫТ ИЗ ФАЙЛА")
