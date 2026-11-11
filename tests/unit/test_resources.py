@@ -395,6 +395,17 @@ async def test_model_text_guide_exists():
 
 
 @pytest.mark.anyio
+async def test_model_text_guide_names_reference_submodel_rule():
+    """Ссылочная субмодель: одна и последней, хвост теряется."""
+    text = await _resource_text("simintech://guides/model-text")
+
+    assert "filename=" in text
+    assert "последней" in text
+    assert "not-compiled" in text
+    assert "subsystem:" in text
+
+
+@pytest.mark.anyio
 async def test_wire_geometry_guide_exists():
     """Руководство по геометрии проводов содержит живой вердикт."""
     text = await _resource_text("simintech://guides/wire-geometry")
