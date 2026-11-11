@@ -39,6 +39,7 @@ mcp = FastMCP(
         "ledger привязан к structure_hash и content_hash. "
         "Размеры блоков с nport и повторная раскладка после смены числа "
         "входов: simintech://guides/block-sizing. "
+        "Декларативный текст и ссылочные субмодели: simintech://guides/model-text. "
         "Нестандартные операции ищутся search_tools; полные описания "
         "инструментов: simintech://tools/<name>. "
         "Имена параметров блоков: simintech://blocks/catalog. "
