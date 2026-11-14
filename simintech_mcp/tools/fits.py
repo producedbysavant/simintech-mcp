@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+import uuid
 from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
@@ -22,7 +23,7 @@ from ..geometry import CHAR_WIDTH_ESTIMATE
 from ..rules import (MEMORY_WIDTH_CLASSES, NPORT_BLOCK_WIDTH,
                      NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
                      PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES, required_height)
-from .blocks import read_port_names, resolve_block
+from .blocks import read_port_counts, read_port_names, resolve_block
 from .layout import first_point, overlap_report
 from .page_script import (
     activate_or_refuse,
@@ -30,8 +31,14 @@ from .page_script import (
     return_main_active,
     run_contour,
 )
+from .autosize import (install_body, parse_install, script_state,
+                       script_text, verify_installed)
 from .block_size import size_pair_lines, size_value
 from .model_text import page_export_text
+
+
+#: Сколько имён называть в строке отчёта о скриптах саморазмера.
+MAX_REPORTED = 10
 
 
 #: Классы, которым `fit_port_blocks` подгоняет **ширину** по подписям
@@ -193,11 +200,15 @@ def _plan_in_rows_height(block: Block, class_name: str, where: str,
                          lines: List[str], plan: List[_SizeFix]) -> None:
     """Запланировать высоту блока с построчными входами — 16 px на **вход**.
 
-    Правило владельца (07.10.2026): «16 px (2 квадратика) на 1 порт» —
-    считаются входные контакты; у субмодели с единственным выходом это его
-    формула «(число портов − 1) × 16» (выход уходит на правую сторону рамки
-    и строки не занимает). Прежняя формула «× все порты» давала +16 всем
-    девяти субмоделям боевой модели — владелец откатил их вручную.
+    Правило владельца (07.10.2026): «16 px (2 квадратика) на 1 порт».
+    Высота берётся по сетке 8 px (`rules.grid_height`): среда раскладывает
+    порты стороны равномерно (позиции `H*(2k+1)/(2N)`, живые замеры
+    14.11.2026), поэтому при равном числе входов и выходов остаётся прежняя
+    формула «входы × 16», а при разном высота `16*НОК(входы, выходы)`,
+    иначе порты меньшей стороны встают мимо сетки. Оба числа читаются до
+    правки; у субмодели с единственным выходом `НОК(N,1) = N`, то есть
+    поведение прежнее. Прежняя формула «× все порты» давала +16 всем девяти
+    субмоделям боевой модели, и владелец откатил их вручную.
 
     Тот же счёт - **nport-классам** (`NPORT_SIZE_CLASSES`): их параметр
     `nport` и есть число входов (выход один), поэтому высота `nport × 16`
@@ -214,12 +225,12 @@ def _plan_in_rows_height(block: Block, class_name: str, where: str,
     except Exception:                                         # noqa: BLE001
         name = f"id={block.id}"
     try:
-        in_ports = int(block.get_in_port_count())
+        in_ports, out_ports = read_port_counts(block)
     except Exception as exc:                                  # noqa: BLE001
         lines.append(f"{where}: {name}: порты не читаются "
                      f"({type(exc).__name__}: {exc}) — высота не проверена.")
         return
-    height_rule = required_height(class_name, in_ports)
+    height_rule = required_height(class_name, (in_ports, out_ports))
     if height_rule is None:
         return
     want_height = float(height_rule)
@@ -246,7 +257,10 @@ def _plan_in_rows_height(block: Block, class_name: str, where: str,
         plan.append(_SizeFix(
             block=block, name=name, prop="Height", before=height,
             want=want_height,
-            note=f"{in_ports} вход(ов) × {PORT_ROW_HEIGHT:g}"))
+            note=(f"{in_ports} вход(ов) × {PORT_ROW_HEIGHT:g}"
+                  if out_ports in (0, 1, in_ports) else
+                  f"входов {in_ports}, выходов {out_ports}: "
+                  f"высота по сетке {PORT_ROW_HEIGHT:g} px")))
     # Тронутый блок приводится к «Значению» по обеим осям.
     if width_fix and not height_fix:
         plan.append(_SizeFix(
@@ -273,7 +287,10 @@ def _size_fixes_body(plan: List[_SizeFix]) -> str:
 
 
 def _apply_size_plan(page: Page, where: str, lines: List[str],
-                     plan: List[_SizeFix]) -> Tuple[set[int], set[str], bool]:
+                     plan: List[_SizeFix],
+                     script_targets: Optional[
+                         List[Tuple[Any, str]]] = None
+                     ) -> Tuple[set[int], set[str], bool]:
     """Применить план правок одним контурным прогоном; вернуть имена и отказ.
 
     Одним прогоном — не оптимизация, а условие: контур перезапускает расчёт,
@@ -296,7 +313,10 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
     `check_model_layout`.
     """
     activate_or_refuse(page, action="габариты не записаны", where=where)
-    outcome, _restored = run_contour(_size_fixes_body(plan),
+    token = "AUTO" + uuid.uuid4().hex[:12]
+    body = (_size_fixes_body(plan)
+            + install_body(script_targets or [], token))
+    outcome, _restored = run_contour(body,
                                      failed="записать габариты не удалось")
     refuse_contour_failure(
         outcome, failed="габариты не записаны",
@@ -304,6 +324,19 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
         aborted_hint=("Часть правок могла примениться — проверьте габариты "
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
+    installed = parse_install(outcome.lines, token)
+    verify_installed(script_targets or [], installed.installed, where=where)
+    if installed.installed:
+        shown = ", ".join(installed.installed[:MAX_REPORTED])
+        more = (f" (и ещё {len(installed.installed) - MAX_REPORTED})"
+                if len(installed.installed) > MAX_REPORTED else "")
+        lines.append(f"{where}: скрипт саморазмера поставлен: {shown}{more}.")
+    if installed.skipped:
+        shown = ", ".join(installed.skipped[:MAX_REPORTED])
+        more = (f" (и ещё {len(installed.skipped) - MAX_REPORTED})"
+                if len(installed.skipped) > MAX_REPORTED else "")
+        lines.append(f"{where}: скрипт саморазмера не поставлен: "
+                     f"OnInitScript занят: {shown}{more}.")
     changed_blocks: set[int] = set()
     changed_names: set[str] = set()
     rejected = False
@@ -585,6 +618,7 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
                      f"({type(exc).__name__}: {exc}).")
         return 0, False
     plan: List[_SizeFix] = []
+    scripts: List[Tuple[Any, str]] = []
     for block in blocks:
         try:
             class_name = str(block.class_name).strip()
@@ -594,10 +628,13 @@ def _fit_page_sizes(page: Page, where: str, affected: List[Any],
             _plan_signal_width(block, where, lines, plan)
         elif class_name in ROW_HEIGHT_CLASSES:
             _plan_in_rows_height(block, class_name, where, lines, plan)
-    if not plan:
+        if (script_text(class_name) is not None
+                and script_state(block) == "empty"):
+            scripts.append((block, class_name))
+    if not plan and not scripts:
         return 0, False
     changed_blocks, changed_names, rejected = _apply_size_plan(
-        page, where, lines, plan)
+        page, where, lines, plan, scripts)
     if changed_blocks:
         if page not in affected:
             affected.append(page)
@@ -627,15 +664,16 @@ def fit_port_blocks() -> str:
     * **высота порт-блоков** - `PORT_ROW_HEIGHT` px на строку `PortNames`:
       импорт ставит двум именам 64×16, и высота 32 чинится здесь, а не
       только через `set_block_size`;
-    * **высота субмодели и nport-классов** - `PORT_ROW_HEIGHT` px на
-      **входной** контакт: считаются входы, не все порты (у субмодели с
-      единственным выходом — «все порты − 1»; выход уходит на правую сторону
-      рамки и строки не занимает — правило владельца 07.10.2026). Импорт
-      ставит субмоделям 48×32, nport-классам - 32×32 независимо от
-      `nport` (его `nport` и есть число входов; входы ложатся с шагом
-      `32 / nport`: при `nport = 8` это 4 px), и фит даёт шаг 16, как у
-      соседей. Ширина nport-класса поднимается до штатной 32, но вручную
-      расширенный блок не сужается; ширина субмодели не меняется;
+    * **высота субмодели и nport-классов** - `rules.grid_height`: при
+      равном числе входов и выходов это прежние `PORT_ROW_HEIGHT` px на
+      вход (правило владельца 07.10.2026), при разном - `16*НОК(входы,
+      выходы)`, иначе порты меньшей стороны встают мимо сетки 8 px (замер
+      14.11.2026: 3 входа / 2 выхода дают высоту 96). Импорт ставит
+      субмоделям 48×32, nport-классам - 32×32 независимо от `nport` (его
+      `nport` и есть число входов; входы ложатся с шагом `32 / nport`: при
+      `nport = 8` это 4 px), и фит даёт шаг 16, как у соседей. Ширина
+      nport-класса поднимается до штатной 32, но вручную расширенный блок
+      не сужается; ширина субмодели не меняется;
     * **пин на месте** — при смене ширины порт-блока центр компенсируется
       так, чтобы координата порта не сдвинулась: владелец держит пин на
       фиксированном X и меняет ширину «влево от пина» — иначе связи

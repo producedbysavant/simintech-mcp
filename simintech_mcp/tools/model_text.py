@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.block import Block
@@ -1116,5 +1116,58 @@ def import_model_text(model_text: str) -> str:
         f"{describe_outcome(outcome, what='Вердикт')}\n"
         f"{change_report(before, after, restored)}\n"
         f"{_trace_note(wires_before, wires_after, roles)}"
+        f"{_install_autosize_scripts(set(after) - set(before))}"
         f"{_place_imported_value_labels(model_text)}"
     )
+
+
+def _install_autosize_scripts(new_names: set[str]) -> str:
+    """Поставить скрипты саморазмера **новым** блокам импорта.
+
+    Импорт создаёт порт-блоки и субмодели без `OnInitScript`: без скрипта
+    высота держится только до первой правки числа сигналов. Трогаются
+    только объекты этого импорта (`new_names`): контракт инструмента -
+    «старые не трогаются», и молчаливая миграция всей страницы его ломала
+    бы (находка ревью PR #276). Слоты занятых блоков не перетираются, и
+    это называется в ответе. Сбой установки импорт не отменяет: объекты
+    уже созданы, и отказ выглядел бы как неудавшаяся сборка.
+    """
+    from .autosize import install_scripts, script_text
+
+    try:
+        page = session.ensure_project().get_main_page()
+        targets: List[Tuple[Any, str]] = []
+        for block in page.get_blocks():
+            try:
+                name = block.get_name()
+                class_name = str(block.class_name).strip()
+            except Exception:                                  # noqa: BLE001
+                continue
+            if name in new_names and script_text(class_name) is not None:
+                targets.append((block, class_name))
+        if not targets:
+            return ""
+        result = install_scripts(
+            page, targets, where="импорт модели",
+            project_note=("Объекты уже созданы импортом; скрипт "
+                          "саморазмера не поставлен."))
+    except Exception as exc:                                   # noqa: BLE001
+        return (f"\nСкрипты саморазмера не поставлены "
+                f"({type(exc).__name__}: {exc}).")
+    parts: List[str] = []
+    if result.installed:
+        parts.append(f"скрипт саморазмера поставлен: "
+                     f"{len(result.installed)} блок(ов)")
+    if result.sized:
+        parts.append("высота сразу: " + "; ".join(result.sized))
+    if result.skipped:
+        shown = ", ".join(result.skipped[:10])
+        more = (f" и ещё {len(result.skipped) - 10}"
+                if len(result.skipped) > 10 else "")
+        parts.append(f"не поставлен, OnInitScript занят: {shown}{more}")
+    if result.unreadable:
+        shown = ", ".join(result.unreadable[:10])
+        more = (f" и ещё {len(result.unreadable) - 10}"
+                if len(result.unreadable) > 10 else "")
+        parts.append(f"не поставлен, OnInitScript не читается: {shown}{more}")
+    return ("\n" + "; ".join(parts) + ".") if parts else ""

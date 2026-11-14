@@ -18,7 +18,8 @@ from simintech_api.constants import standard_block_size
 from .. import catalog, runtime, session
 from ..app import mcp
 from ..rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES, NPORT_PARAM,
-                     NPORT_SIZE_CLASSES, PORT_ROW_HEIGHT)
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT,
+                     required_height)
 from .block_size import size_value, write_block_size
 
 
@@ -294,8 +295,42 @@ def add_block(class_name: str, name_hint: str = "",
     if ignored:
         notes.append(f"параметры без '=' пропущены: {', '.join(ignored)}")
     tail = (" " + "; ".join(notes) + ".") if notes else ""
+    autosize_note = ""
+    try:
+        # Импорт здесь: `autosize` тянет `block_script`, а он этот же модуль.
+        from .autosize import install_scripts, script_text
+
+        if script_text(class_name) is not None:
+            installed = install_scripts(
+                page, [(block, class_name)],
+                where=f"блок '{actual}'",
+                project_note="Блок создан; скрипт саморазмера не поставлен.")
+            if installed.installed:
+                autosize_note = (
+                    " В OnInitScript поставлен скрипт саморазмера: высота "
+                    "встанет по сетке 8 px при старте расчёта.")
+                if installed.sized:
+                    autosize_note += (" Высота сразу: "
+                                      + "; ".join(installed.sized) + ".")
+            elif installed.unreadable:
+                autosize_note = (
+                    " Скрипт саморазмера не поставлен: OnInitScript блока "
+                    "не читается, запись наугад не делается.")
+                if installed.sized:
+                    autosize_note += (" Высота сразу: "
+                                      + "; ".join(installed.sized) + ".")
+            elif installed.skipped:
+                autosize_note = (
+                    " Скрипт саморазмера не поставлен: OnInitScript блока "
+                    "уже занят, чужой скрипт не перетирается.")
+                if installed.sized:
+                    autosize_note += (" Высота сразу: "
+                                      + "; ".join(installed.sized) + ".")
+    except Exception as exc:                                   # noqa: BLE001
+        autosize_note = (f" Скрипт саморазмера не поставлен "
+                         f"({type(exc).__name__}: {exc}).")
     return (f"Блок '{class_name}' создан (id={block.id}, name={actual})."
-            f"{tail}")
+            f"{tail}{autosize_note}")
 
 
 def block_by_id(page: Page, block_id: int) -> Optional[Block]:
@@ -357,6 +392,65 @@ def read_port_names(block: Block) -> Optional[List[str]]:
     if not value:
         return []
     return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _raw_port_count(block: Block, method: str) -> Optional[int]:
+    """Число портов через сырой COM-перебор; `None` - клиента нет.
+
+    `Block.get_in_port`/`get_out_port` на промахе зовут `BlockAfterEdit`
+    (пересоздание портов), то есть **чтение** правила высоты правила бы
+    сцену. Сырой `GetInPort`/`GetOutPort` только читает (тот же приём, что
+    у preflight проводов в `wires._raw_port_id`).
+    """
+    client = getattr(block, "client", None)
+    if client is None:
+        return None
+    try:
+        total = int(block.get_port_count())
+    except Exception:                                          # noqa: BLE001
+        return None
+    found = 0
+    for index in range(total + 1):
+        try:
+            value = client.call(method, block.id, index)
+        except Exception:                                      # noqa: BLE001
+            break
+        if hasattr(value, "value"):
+            value = value.value
+        try:
+            port_id = int(value)
+        except Exception:                                      # noqa: BLE001
+            break
+        if port_id == 0:
+            break
+        found += 1
+    return found
+
+
+def read_port_counts(block: Block) -> tuple[int, int]:
+    """Число входных и выходных портов блока; исключение - не читается.
+
+    Отдельного счётчика в API нет (как у `get_in_port_count`), поэтому
+    порты перебираются. При живом клиенте перебор идёт сырым COM и сцену не
+    трогает; без клиента (подделки в тестах) - через API, где промах
+    различается по `PortError`, а прочий сбой пробрасывается: «не читается»
+    и «нет портов» здесь не одно и то же.
+    """
+    from simintech_api.exceptions import PortError
+
+    raw_in = _raw_port_count(block, "GetInPort")
+    raw_out = _raw_port_count(block, "GetOutPort")
+    if raw_in is not None and raw_out is not None:
+        return raw_in, raw_out
+    in_ports = int(block.get_in_port_count())
+    out_ports = 0
+    for index in range(int(block.get_port_count()) + 1):
+        try:
+            block.get_out_port(index)
+        except PortError:
+            break
+        out_ports += 1
+    return in_ports, out_ports
 
 
 def resolved_name(block: Block, fallback: str) -> str:
@@ -762,6 +856,12 @@ def set_block_param(block: str, param: str, value: str,
         return f"ERROR: {exc}"
     if param.strip().lower() == NPORT_PARAM and class_name in NPORT_SIZE_CLASSES:
         return _set_nport(page, target, class_name, block, value, notes)
+    if (param.strip().lower() == "portnames"
+            and class_name in PORT_HEIGHT_CLASSES):
+        # COM-путь для PortNames молча не применяется (замер 14.11.2026),
+        # рабочий путь - `setpropasstring` в контуре; высота по новому числу
+        # строк пишется тем же прогоном.
+        return _set_portnames(page, target, class_name, block, value)
     if param.strip().lower() == NPORT_PARAM and class_name in NPORT_OTHER_CLASSES:
         notes.append("класс вне правила высоты: nport здесь не число входных "
                      "контактов, пины и размер не пересобираются")
@@ -823,6 +923,75 @@ def set_block_param(block: str, param: str, value: str,
                     "прочитанная форма отличается; сверьте выгрузкой.")
     tail = f" {'; '.join(notes)}" if notes else ""
     return f"{block}.{param} = {actual}" + tail
+
+
+def _set_portnames(page: Page, target: Block, class_name: str,
+                   token: str, value: str) -> str:
+    """Записать `PortNames` контуром и сразу выставить высоту по правилу.
+
+    `SetBlockProp` для этого свойства принимается без ошибки и не
+    применяется (живой замер 14.11.2026), поэтому запись идёт
+    `setpropasstring` в контуре страницы. Высота по новому числу строк
+    пишется тем же прогоном: контур стоит ~14 с, и второй ради размера был
+    бы дороже правки. Правило считает `rules.required_height`, то же, что у
+    скрипта саморазмера и подгонки, иначе блок спорил бы сам с собой.
+
+    Проверка - перечитывание `PortNames` через COM: расхождение - отказ с
+    названным прежним значением, а не «записано» на слово.
+    """
+    from .block_script import normalize_script, runtime_literal
+    from .block_size import size_pair_lines
+    from .page_script import refuse_contour_failure, run_contour
+
+    try:
+        before = target.get_property("PortNames") or ""
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"{token}.PortNames не записан: прежнее значение не читается "
+            f"({type(exc).__name__}: {exc}).") from exc
+    normalized = normalize_script(value)
+    lines = len([line for line in normalized.splitlines() if line.strip()])
+    try:
+        before_size = target.get_size()
+    except Exception:                                          # noqa: BLE001
+        before_size = None
+    body = (f"obj = {target.id};\n"
+            f'setpropasstring(obj, "PortNames", {runtime_literal(normalized)});\n')
+    want = required_height(class_name, lines) if lines else None
+    if (want is not None and before_size is not None
+            and float(before_size[1]) != float(want)):
+        body += ("\n".join(size_pair_lines(target.id, "Height",
+                                           float(want))) + "\n")
+    outcome, _restored = run_contour(
+        body, failed=f"{token}: записать PortNames не удалось")
+    refuse_contour_failure(
+        outcome, failed="PortNames не записан",
+        unsure="запись PortNames не подтверждена",
+        project_note="Проект не изменён.")
+    try:
+        after = target.get_property("PortNames") or ""
+        after_size = target.get_size()
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"{token}.PortNames записан контуром, но перечитать не удалось "
+            f"({type(exc).__name__}: {exc}); сверьте блок в GUI."
+        ) from exc
+    if normalize_script(after) != normalized:
+        raise ToolError(
+            f"{token}.PortNames не записан: в блоке осталось {before!r}, а "
+            f"запрошено {value!r}. Среда запись не приняла; повторите "
+            f"вызов, а если не помогает - сообщите среду и версию.")
+    notes: List[str] = []
+    if lines and before_size is not None:
+        if float(after_size[1]) == float(want or 0):
+            notes.append(f"высота по правилу: {size_value(before_size[1])} → "
+                         f"{size_value(after_size[1])} (сетка 8 px)")
+        else:
+            notes.append(
+                f"высота {size_value(after_size[1])}, а по правилу "
+                f"{want}: среда приняла не то значение")
+    tail = f" {'; '.join(notes)}" if notes else ""
+    return f"{token}.PortNames = {after.strip()}{tail}"
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).

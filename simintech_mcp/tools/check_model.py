@@ -54,7 +54,7 @@ from ..geometry import (
     CHAR_WIDTH_ESTIMATE, STUB, WIRE_PITCH, channel_width, collinear_overlap,
     cut_sizes, overlaps, predicted_polyline, proper_crossing, rect_of,
     segment_hits_rect, segments_of)
-from .blocks import read_port_names
+from .blocks import read_port_counts, read_port_names
 from .page_script import fresh_name
 
 #: Базы имён контурных файлов проверки. Отчёт — свой файл, как в живых
@@ -407,20 +407,21 @@ def check_model_layout() -> str:
                         f"{required} ({PORT_ROW_HEIGHT} px на строку)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
-                in_ports = int(block.get_in_port_count())
+                in_ports, out_ports = read_port_counts(block)
             except Exception:                                  # noqa: BLE001
                 height_skipped.append(name)
                 if class_name in NPORT_SIZE_CLASSES:
                     # Сверка nport с пинами без числа входов невозможна.
                     nport_skipped.append(name)
             else:
-                required = required_height(class_name, in_ports)
+                required = required_height(class_name, (in_ports, out_ports))
                 if required is not None:
                     height_checked += 1
                     if float(height) != float(required):
                         height_warnings.append(
                             f"{name}: высота {height:g}, входов {in_ports}, "
-                            f"нужно {required} ({PORT_ROW_HEIGHT} px на вход)")
+                            f"выходов {out_ports}, нужно {required} "
+                            f"({PORT_ROW_HEIGHT} px × НОК сторон, сетка 8)")
                 if class_name in NPORT_SIZE_CLASSES:
                     try:
                         nport = block.get_property(NPORT_PARAM)
