@@ -191,9 +191,11 @@ def install_body(targets: Iterable[Tuple[Any, str]], token: str) -> str:
             'if getpropasstring(obj, "OnInitScript") = "" then begin',
             f"  setprop(obj, \"OnInitScript\", "
             f"{_runtime_literal(_normalize_script(text))});",
-            f'  writelnutf8(fid, "{token}_SET {name}");',
+            f'  writelnutf8(fid, '
+            f'{_runtime_literal(f"{token}_SET {name}")});',
             "end else begin",
-            f'  writelnutf8(fid, "{token}_BUSY {name}");',
+            f'  writelnutf8(fid, '
+            f'{_runtime_literal(f"{token}_BUSY {name}")});',
             "end;",
         ]
     return "\n".join(lines) + ("\n" if lines else "")

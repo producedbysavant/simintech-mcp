@@ -849,9 +849,6 @@ class _NPortParamBlock:
         self.inited = True
         return self
 
-    def get_port_count(self):
-        return self._in_ports + 1
-
     def get_points(self):
         return f"[({self._size[0]:g} , 0)]"
 
