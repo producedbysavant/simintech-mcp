@@ -120,19 +120,20 @@ class InstallResult(NamedTuple):
     installed: List[str]
     skipped: List[str]
     sized: Tuple[str, ...] = ()
+    unreadable: Tuple[str, ...] = ()
 
 
 def script_state(block: Any) -> str:
-    """Состояние слота `OnInitScript`: `empty`, `ours`, `foreign`.
+    """Состояние слота `OnInitScript`: `empty`, `ours`, `foreign`, `unreadable`.
 
-    Нечитаемый слот - `foreign`: сомнение решается в пользу «не трогать».
-    Перетереть чужой скрипт хуже, чем оставить блок без саморазмера; блок
-    всё равно получит высоту по правилу, а причина называется в ответе.
+    Нечитаемый слот отделён от чужого: решение одинаковое (не трогать), но
+    ответ обязан называть причину правдиво - «слот занят человеком» и «слот
+    не читается» это разные состояния блока.
     """
     try:
         value = str(block.get_property("OnInitScript") or "")
     except Exception:                                          # noqa: BLE001
-        return "foreign"
+        return "unreadable"
     if not value.strip():
         return "empty"
     if MARKER in value:
@@ -216,6 +217,33 @@ def parse_install(lines: List[str], token: str) -> InstallResult:
     return InstallResult(installed=installed, skipped=skipped)
 
 
+def verify_installed(targets: Iterable[Tuple[Any, str]],
+                     installed: Iterable[str], *, where: str) -> None:
+    """Перечитать слоты установленных скриптов и сверить с текстом.
+
+    Молча не применённая запись не должна вернуться успехом (канон
+    `set_block_script`). Общая точка для `install_scripts` и контура
+    подгонки: два пути установки не должны расходиться в проверке.
+    """
+    installed = set(installed)
+    for block, class_name in targets:
+        text = script_text(class_name)
+        if text is None:
+            continue
+        name = _block_name(block)
+        if name not in installed:
+            continue
+        try:
+            actual = block.get_property("OnInitScript") or ""
+        except Exception:                                      # noqa: BLE001
+            continue
+        if normalize_script(actual) != normalize_script(text):
+            raise ToolError(
+                f"{where}: скрипт саморазмера записан, но перечитанный текст "
+                f"блока '{name}' не совпал с запрошенным - среда запись не "
+                f"приняла. Повторите вызов.")
+
+
 def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
                     where: str, project_note: str = "Проект не изменён.",
                     size_now: bool = True) -> InstallResult:
@@ -224,31 +252,36 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
     Контур стоит ~14 с, поэтому установка скрипта и немедленная правка высоты
     идут вместе: скрипт лечит размер при каждом старте расчёта, а `size_now`
     ставит его сразу, чтобы раскладка до первого старта не работала по
-    устаревшему габариту. Чужой `OnInitScript` при этом не трогается, но
-    высоту блок получает всё равно - правило размера от владельца слота не
-    зависит.
+    устаревшему габариту.
 
-    Проверка - перечитывание слота: молча не применённая запись не должна
-    вернуться успехом (тот же канон, что у `set_block_script`).
+    **Высоту получают все блоки правила**, независимо от состояния слота:
+    чужой или нечитаемый `OnInitScript` не трогается, но правило размера от
+    владельца слота не зависит, и обещание «высота сразу» иначе было бы
+    ложью. В контур идёт работа, только если что-то есть: пусть все слоты
+    заняты и высоты совпадают, прогон не запускается.
+
+    Проверка - перечитывание слота (`verify_installed`).
     """
+    eligible: List[Tuple[Any, str]] = []
     selected: List[Tuple[Any, str]] = []
     skipped: List[str] = []
+    unreadable: List[str] = []
     for block, class_name in targets:
         if script_text(class_name) is None:
             continue
+        eligible.append((block, class_name))
         state = script_state(block)
         if state == "empty":
             selected.append((block, class_name))
         elif state == "foreign":
             skipped.append(_block_name(block))
-    targets = selected
-    if not targets:
-        return InstallResult([], skipped)
+        elif state == "unreadable":
+            unreadable.append(_block_name(block))
     token = "AUTO" + uuid.uuid4().hex[:12]
-    body = install_body(targets, token)
+    body = install_body(selected, token)
     sized: List[str] = []
     if size_now:
-        for block, class_name in targets:
+        for block, class_name in eligible:
             try:
                 height = float(block.get_size()[1])
             except Exception:                                  # noqa: BLE001
@@ -259,6 +292,8 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
             body += ("\n".join(
                 size_pair_lines(block.id, "Height", float(want))) + "\n")
             sized.append(f"{_block_name(block)}: {height:g} → {want:g}")
+    if not body.strip():
+        return InstallResult([], skipped, (), tuple(unreadable))
     activate_or_refuse(page, action=where, project_note=project_note)
     outcome, _restored = run_contour(
         body, failed=f"{where}: установить скрипт саморазмера не удалось")
@@ -266,24 +301,6 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
         outcome, failed=where, unsure="установка скрипта не подтверждена",
         project_note=project_note)
     result = parse_install(outcome.lines, token)
-    expected = {}
-    for block, class_name in targets:
-        text = script_text(class_name)
-        if text is None:
-            continue
-        expected[_block_name(block)] = normalize_script(text)
-    for block, class_name in targets:
-        name = _block_name(block)
-        if name not in result.installed:
-            continue
-        try:
-            actual = block.get_property("OnInitScript") or ""
-        except Exception:                                      # noqa: BLE001
-            continue
-        if normalize_script(actual) != expected[name]:
-            raise ToolError(
-                f"{where}: скрипт саморазмера записан, но перечитанный текст "
-                f"блока '{name}' не совпал с запрошенным - среда запись не "
-                f"приняла. Повторите вызов.")
+    verify_installed(selected, result.installed, where=where)
     return InstallResult(result.installed, skipped + result.skipped,
-                         tuple(sized))
+                         tuple(sized), tuple(unreadable))

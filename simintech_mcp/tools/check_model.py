@@ -421,7 +421,7 @@ def check_model_layout() -> str:
                         height_warnings.append(
                             f"{name}: высота {height:g}, входов {in_ports}, "
                             f"выходов {out_ports}, нужно {required} "
-                            f"({PORT_ROW_HEIGHT} px на вход, сетка 8)")
+                            f"({PORT_ROW_HEIGHT} px × НОК сторон, сетка 8)")
                 if class_name in NPORT_SIZE_CLASSES:
                     try:
                         nport = block.get_property(NPORT_PARAM)

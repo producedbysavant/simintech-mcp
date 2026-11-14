@@ -269,10 +269,12 @@ class _PortedSubmodelBlock(_SizeBlock):
                 else self._in_ports + 1)
 
     def get_out_port(self, index):
-        # Выход один: «выход уходит на правую сторону рамки».
+        # Выходов столько, сколько портов сверх входных: у субмодели 3/2 их
+        # два, и правило сетки считает обе стороны.
         from simintech_api.exceptions import PortError
 
-        if index == 0 and self.get_port_count() > self._in_ports:
+        outs = max(0, self.get_port_count() - self._in_ports)
+        if 0 <= index < outs:
             return object()
         raise PortError("нет выходного порта")
 
@@ -291,6 +293,25 @@ async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
     assert block.graph_writes == []
     assert "высота 32 → 96 (6 вход(ов) × 16)" in text
     assert "ширина 48 — приведена к «Значению»" in text
+
+
+@pytest.mark.anyio
+async def test_fit_unequal_sides_puts_ports_on_grid(monkeypatch, tmp_path):
+    """3 входа / 2 выхода: высота 16*НОК = 96, иначе выходы мимо сетки.
+
+    Среда раскладывает порты стороны равномерно (замер 14.11.2026), поэтому
+    высота 16*3 = 48 дала бы выходам шаг H/2 = 24 при первом на 12: мимо
+    сетки 8 px. Девяносто шесть даёт входы 16/48/80 и выходы 24/72.
+    """
+    block = _PortedSubmodelBlock(ports=3, in_ports=3, total_ports=5)
+    project = _FakeProject({"sub_1": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert block.value_writes == [("Height", "96"), ("Width", "48")]
+    assert "входов 3, выходов 2: высота по сетке 16 px" in text
 
 
 @pytest.mark.anyio

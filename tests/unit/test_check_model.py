@@ -1026,6 +1026,25 @@ async def test_check_model_warns_nport_height(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_check_model_warns_unequal_sides_grid_height(monkeypatch,
+                                                           tmp_path):
+    """3 входа / 2 выхода: правило сетки даёт 96, высота 48 - предупреждение.
+
+    Среда раскладывает порты стороны равномерно, и при равном счёте «16 на
+    вход» выходы встают мимо сетки 8 px. Проверка обязана ждать те же 96,
+    что ставит подгонка и скрипт саморазмера.
+    """
+    block = _CheckBlock("sub_0", center=(0, 0), class_name="Субмодель",
+                        ports=5, width=48.0, height=48.0, in_ports=3)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "ВНИМАНИЕ: высота не по правилу" in text
+    assert "входов 3, выходов 2, нужно 96" in text
+
+
+@pytest.mark.anyio
 async def test_check_model_nport_height_ok_is_quiet(monkeypatch, tmp_path):
     """Правильная высота 64 при 4 входах предупреждения не даёт."""
     block = _CheckBlock("or_0", center=(0, 0), class_name="Оператор ИЛИ",

@@ -32,7 +32,7 @@ from .page_script import (
     run_contour,
 )
 from .autosize import (install_body, parse_install, script_state,
-                       script_text)
+                       script_text, verify_installed)
 from .block_size import size_pair_lines, size_value
 from .model_text import page_export_text
 
@@ -325,6 +325,7 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
     installed = parse_install(outcome.lines, token)
+    verify_installed(script_targets or [], installed.installed, where=where)
     if installed.installed:
         shown = ", ".join(installed.installed[:MAX_REPORTED])
         more = (f" (и ещё {len(installed.installed) - MAX_REPORTED})"
@@ -663,15 +664,16 @@ def fit_port_blocks() -> str:
     * **высота порт-блоков** - `PORT_ROW_HEIGHT` px на строку `PortNames`:
       импорт ставит двум именам 64×16, и высота 32 чинится здесь, а не
       только через `set_block_size`;
-    * **высота субмодели и nport-классов** - `PORT_ROW_HEIGHT` px на
-      **входной** контакт: считаются входы, не все порты (у субмодели с
-      единственным выходом — «все порты − 1»; выход уходит на правую сторону
-      рамки и строки не занимает — правило владельца 07.10.2026). Импорт
-      ставит субмоделям 48×32, nport-классам - 32×32 независимо от
-      `nport` (его `nport` и есть число входов; входы ложатся с шагом
-      `32 / nport`: при `nport = 8` это 4 px), и фит даёт шаг 16, как у
-      соседей. Ширина nport-класса поднимается до штатной 32, но вручную
-      расширенный блок не сужается; ширина субмодели не меняется;
+    * **высота субмодели и nport-классов** - `rules.grid_height`: при
+      равном числе входов и выходов это прежние `PORT_ROW_HEIGHT` px на
+      вход (правило владельца 07.10.2026), при разном - `16*НОК(входы,
+      выходы)`, иначе порты меньшей стороны встают мимо сетки 8 px (замер
+      14.11.2026: 3 входа / 2 выхода дают высоту 96). Импорт ставит
+      субмоделям 48×32, nport-классам - 32×32 независимо от `nport` (его
+      `nport` и есть число входов; входы ложатся с шагом `32 / nport`: при
+      `nport = 8` это 4 px), и фит даёт шаг 16, как у соседей. Ширина
+      nport-класса поднимается до штатной 32, но вручную расширенный блок
+      не сужается; ширина субмодели не меняется;
     * **пин на месте** — при смене ширины порт-блока центр компенсируется
       так, чтобы координата порта не сдвинулась: владелец держит пин на
       фиксированном X и меняет ширину «влево от пина» — иначе связи
