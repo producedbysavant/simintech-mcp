@@ -8,7 +8,8 @@
 
 from __future__ import annotations
 
-from typing import List, Union
+import uuid
+from typing import List, Optional, Union
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
@@ -247,20 +248,18 @@ def set_portnames(page: Page, target: Block, class_name: str,
             f"{token}.PortNames не записан: проект не в остановленном "
             f"состоянии (состояние {state}; 0 - остановлен). Остановите "
             f"расчёт (`stop`) и повторите.")
-    try:
-        before = target.get_property("PortNames") or ""
-    except Exception as exc:                                   # noqa: BLE001
-        raise ToolError(
-            f"{token}.PortNames не записан: прежнее значение не читается "
-            f"({type(exc).__name__}: {exc}).") from exc
     normalized = normalize_script(value)
     lines = len([line for line in normalized.splitlines() if line.strip()])
     try:
         before_size = target.get_size()
     except Exception:                                          # noqa: BLE001
         before_size = None
+    pn_token = "PN" + uuid.uuid4().hex[:12]
     body = (f"obj = {target.id};\n"
-            f'setpropasstring(obj, "PortNames", {runtime_literal(normalized)});\n')
+            f'setpropasstring(obj, "PortNames", {runtime_literal(normalized)});\n'
+            f'writelnutf8(fid, "{pn_token}_BEGIN");\n'
+            'writelnutf8(fid, getpropasstring(obj, "PortNames"));\n'
+            f'writelnutf8(fid, "{pn_token}_END");\n')
     want = required_height(class_name, lines) if lines else None
     if (want is not None and before_size is not None
             and float(before_size[1]) != float(want)):
@@ -273,21 +272,31 @@ def set_portnames(page: Page, target: Block, class_name: str,
         unsure="запись PortNames не подтверждена",
         project_note=(f"Проект уже изменён: {token}.PortNames мог записаться, "
                       f"высота не записана - сверьте значение."))
+    # Значение читается **внутри** контура: COM-чтение сразу после контура
+    # отдаёт прежнее значение до `InitBlock` (живой замер 14.11.2026),
+    # и проверка объявила бы состоявшуюся запись отказом.
+    written = _between(outcome.lines, f"{pn_token}_BEGIN", f"{pn_token}_END")
+    if written is None:
+        try:
+            written = target.get_property("PortNames") or ""
+        except Exception as exc:                               # noqa: BLE001
+            raise ToolError(
+                f"{token}.PortNames записан контуром, но перечитать не "
+                f"удалось ({type(exc).__name__}: {exc}); сверьте блок в GUI."
+            ) from exc
     try:
-        after = target.get_property("PortNames") or ""
         after_size = target.get_size()
-    except Exception as exc:                                   # noqa: BLE001
+    except Exception:                                          # noqa: BLE001
+        after_size = None
+    if (normalize_script(written).rstrip("\r\n")
+            != normalized.rstrip("\r\n")):
         raise ToolError(
-            f"{token}.PortNames записан контуром, но перечитать не удалось "
-            f"({type(exc).__name__}: {exc}); сверьте блок в GUI."
-        ) from exc
-    if normalize_script(after) != normalized:
-        raise ToolError(
-            f"{token}.PortNames не записан: в блоке осталось {before!r}, а "
+            f"{token}.PortNames не записан: в блоке осталось {written!r}, а "
             f"запрошено {value!r}. Среда запись не приняла; повторите "
             f"вызов, а если не помогает - сообщите среду и версию.")
+    after = written.strip()
     notes: List[str] = []
-    if lines and before_size is not None:
+    if lines and before_size is not None and after_size is not None:
         if float(after_size[1]) == float(want or 0):
             notes.append(f"высота по правилу: {size_value(before_size[1])} → "
                          f"{size_value(after_size[1])} (сетка 8 px)")
@@ -296,7 +305,19 @@ def set_portnames(page: Page, target: Block, class_name: str,
                 f"высота {size_value(after_size[1])}, а по правилу "
                 f"{want}: среда приняла не то значение")
     tail = f" {'; '.join(notes)}" if notes else ""
-    return f"{token}.PortNames = {after.strip()}{tail}"
+    return f"{token}.PortNames = {after}{tail}"
+
+
+def _between(lines: List[str], begin: str, end: str) -> Optional[str]:
+    """Строки между маркерами контура; `None` - маркеров нет."""
+    try:
+        first = lines.index(begin)
+        last = lines.index(end)
+    except ValueError:
+        return None
+    if last < first:
+        return None
+    return "\n".join(lines[first + 1:last])
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).
