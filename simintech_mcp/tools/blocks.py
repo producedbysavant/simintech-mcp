@@ -943,6 +943,22 @@ def _set_portnames(page: Page, target: Block, class_name: str,
     from .block_size import size_pair_lines
     from .page_script import refuse_contour_failure, run_contour
 
+    # Тот же гейт, что у `_set_nport`: контурная запись на идущем расчёте
+    # отвергается средой, и частично применённая правка выглядела бы отказом.
+    project = session.ensure_project()
+    try:
+        state = project.simulation().get_state()
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"{token}.PortNames не записан: состояние проекта не прочитано "
+            f"({type(exc).__name__}: {exc}); в идущем расчёте запись "
+            f"отвергается. Остановите расчёт (`stop`) и повторите."
+        ) from exc
+    if state != 0:
+        raise ToolError(
+            f"{token}.PortNames не записан: проект не в остановленном "
+            f"состоянии (состояние {state}; 0 - остановлен). Остановите "
+            f"расчёт (`stop`) и повторите.")
     try:
         before = target.get_property("PortNames") or ""
     except Exception as exc:                                   # noqa: BLE001
@@ -967,7 +983,8 @@ def _set_portnames(page: Page, target: Block, class_name: str,
     refuse_contour_failure(
         outcome, failed="PortNames не записан",
         unsure="запись PortNames не подтверждена",
-        project_note="Проект не изменён.")
+        project_note=(f"Проект уже изменён: {token}.PortNames мог записаться, "
+                      f"высота не записана - сверьте значение."))
     try:
         after = target.get_property("PortNames") or ""
         after_size = target.get_size()

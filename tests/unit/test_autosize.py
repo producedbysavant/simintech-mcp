@@ -69,14 +69,14 @@ def test_install_body_writes_only_rule_blocks():
     assert "obj = 11;" in body
     assert "obj = 12;" not in body
     assert "OnInitScript" in body
-    assert "TOK_SET p_1" in body
-    assert "TOK_BUSY p_1" in body
+    assert "TOK_SET 11 p_1" in body
+    assert "TOK_BUSY 11 p_1" in body
 
 
 def test_parse_install_reads_marks():
     """Строки контура разбираются по маркерам, чужие строки игнорируются."""
     result = autosize.parse_install(
-        ["TOK_SET a", "шум", "TOK_BUSY b", "TOK_SET c"], "TOK")
+        ["TOK_SET 1 a", "шум", "TOK_BUSY 2 b", "TOK_SET 3 c"], "TOK")
     assert result.installed == ["a", "c"]
     assert result.skipped == ["b"]
 
@@ -145,10 +145,10 @@ def _run_stub(monkeypatch, blocks):
             if block is None:
                 continue
             if block._script.strip() == "":
-                lines.append(f"{token}_SET {block.get_name()}")
+                lines.append(f"{token}_SET {block.id} {block.get_name()}")
                 block._script = autosize.script_text("Субмодель")
             else:
-                lines.append(f"{token}_BUSY {block.get_name()}")
+                lines.append(f"{token}_BUSY {block.id} {block.get_name()}")
         return _Outcome(lines), ""
 
     monkeypatch.setattr(autosize, "run_contour", fake_contour)

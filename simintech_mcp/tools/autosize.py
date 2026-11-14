@@ -121,6 +121,7 @@ class InstallResult(NamedTuple):
     skipped: List[str]
     sized: Tuple[str, ...] = ()
     unreadable: Tuple[str, ...] = ()
+    installed_ids: Tuple[int, ...] = ()
 
 
 def script_state(block: Any) -> str:
@@ -193,50 +194,69 @@ def install_body(targets: Iterable[Tuple[Any, str]], token: str) -> str:
             f"  setprop(obj, \"OnInitScript\", "
             f"{runtime_literal(normalize_script(text))});",
             f'  writelnutf8(fid, '
-            f'{runtime_literal(f"{token}_SET {name}")});',
+            f'{runtime_literal(f"{token}_SET {block.id} {name}")});',
             "end else begin",
             f'  writelnutf8(fid, '
-            f'{runtime_literal(f"{token}_BUSY {name}")});',
+            f'{runtime_literal(f"{token}_BUSY {block.id} {name}")});',
             "end;",
         ]
     return "\n".join(lines) + ("\n" if lines else "")
 
 
 def parse_install(lines: List[str], token: str) -> InstallResult:
-    """Разобрать строки контура: `TOKEN_SET имя` и `TOKEN_BUSY имя`."""
+    """Разобрать строки контура: `TOKEN_SET id имя` и `TOKEN_BUSY id имя`.
+
+    Id идёт в метке ради проверки: блок адресуется им, а не именем (у пары
+    «В память»/«Из памяти» имя одно на два блока).
+    """
     installed: List[str] = []
     skipped: List[str] = []
+    installed_ids: List[int] = []
     for line in lines:
-        parts = line.strip().split(" ", 1)
-        if len(parts) != 2:
+        parts = line.strip().split(" ", 2)
+        if len(parts) != 3:
             continue
-        if parts[0] == f"{token}_SET":
-            installed.append(parts[1])
-        elif parts[0] == f"{token}_BUSY":
-            skipped.append(parts[1])
-    return InstallResult(installed=installed, skipped=skipped)
+        kind, raw_id, name = parts
+        try:
+            block_id = int(raw_id)
+        except ValueError:
+            continue
+        if kind == f"{token}_SET":
+            installed.append(name)
+            installed_ids.append(block_id)
+        elif kind == f"{token}_BUSY":
+            skipped.append(name)
+    return InstallResult(installed=installed, skipped=skipped,
+                         installed_ids=tuple(installed_ids))
 
 
 def verify_installed(targets: Iterable[Tuple[Any, str]],
-                     installed: Iterable[str], *, where: str) -> None:
+                     installed_ids: Iterable[int], *, where: str) -> None:
     """Перечитать слоты установленных скриптов и сверить с текстом.
 
     Молча не применённая запись не должна вернуться успехом (канон
     `set_block_script`). Общая точка для `install_scripts` и контура
     подгонки: два пути установки не должны расходиться в проверке.
+
+    Адресация по id, а не по имени: имя не уникально (пара «В память» /
+    «Из памяти»). Нечитаемый при перечитывании слот **не пропускается**:
+    «записан» без подтверждения недопустим - это отказ.
     """
-    installed = set(installed)
+    ids = set(installed_ids)
     for block, class_name in targets:
+        if block.id not in ids:
+            continue
         text = script_text(class_name)
         if text is None:
             continue
         name = _block_name(block)
-        if name not in installed:
-            continue
         try:
             actual = block.get_property("OnInitScript") or ""
-        except Exception:                                      # noqa: BLE001
-            continue
+        except Exception as exc:                               # noqa: BLE001
+            raise ToolError(
+                f"{where}: скрипт саморазмера записан, но перечитать слот "
+                f"блока '{name}' не удалось ({type(exc).__name__}: {exc}) - "
+                f"запись не подтверждена. Повторите вызов.") from exc
         if normalize_script(actual) != normalize_script(text):
             raise ToolError(
                 f"{where}: скрипт саморазмера записан, но перечитанный текст "
@@ -301,6 +321,7 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
         outcome, failed=where, unsure="установка скрипта не подтверждена",
         project_note=project_note)
     result = parse_install(outcome.lines, token)
-    verify_installed(selected, result.installed, where=where)
+    verify_installed(selected, result.installed_ids, where=where)
     return InstallResult(result.installed, skipped + result.skipped,
-                         tuple(sized), tuple(unreadable))
+                         tuple(sized), tuple(unreadable),
+                         result.installed_ids)

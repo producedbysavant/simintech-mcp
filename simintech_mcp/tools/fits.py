@@ -325,7 +325,8 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                       "(`get_block_params` размер не читает; смотрите снимок "
                       "или повторите `fit_port_blocks`)."))
     installed = parse_install(outcome.lines, token)
-    verify_installed(script_targets or [], installed.installed, where=where)
+    verify_installed(script_targets or [], installed.installed_ids,
+                     where=where)
     if installed.installed:
         shown = ", ".join(installed.installed[:MAX_REPORTED])
         more = (f" (и ещё {len(installed.installed) - MAX_REPORTED})"
