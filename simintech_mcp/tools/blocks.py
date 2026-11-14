@@ -394,16 +394,54 @@ def read_port_names(block: Block) -> Optional[List[str]]:
     return [line.strip() for line in value.splitlines() if line.strip()]
 
 
+def _raw_port_count(block: Block, method: str) -> Optional[int]:
+    """Число портов через сырой COM-перебор; `None` - клиента нет.
+
+    `Block.get_in_port`/`get_out_port` на промахе зовут `BlockAfterEdit`
+    (пересоздание портов), то есть **чтение** правила высоты правила бы
+    сцену. Сырой `GetInPort`/`GetOutPort` только читает (тот же приём, что
+    у preflight проводов в `wires._raw_port_id`).
+    """
+    client = getattr(block, "client", None)
+    if client is None:
+        return None
+    try:
+        total = int(block.get_port_count())
+    except Exception:                                          # noqa: BLE001
+        return None
+    found = 0
+    for index in range(total + 1):
+        try:
+            value = client.call(method, block.id, index)
+        except Exception:                                      # noqa: BLE001
+            break
+        if hasattr(value, "value"):
+            value = value.value
+        try:
+            port_id = int(value)
+        except Exception:                                      # noqa: BLE001
+            break
+        if port_id == 0:
+            break
+        found += 1
+    return found
+
+
 def read_port_counts(block: Block) -> tuple[int, int]:
     """Число входных и выходных портов блока; исключение - не читается.
 
-    Выходные порты перебираются `get_out_port` до первого отказа: отдельного
-    счётчика в API нет (как у `get_in_port_count`). Отказ различается по
-    `PortError` («портов столько нет»); прочий сбой COM пробрасывается,
-    потому что «не читается» и «нет портов» здесь не одно и то же.
+    Отдельного счётчика в API нет (как у `get_in_port_count`), поэтому
+    порты перебираются. При живом клиенте перебор идёт сырым COM и сцену не
+    трогает; без клиента (подделки в тестах) - через API, где промах
+    различается по `PortError`, а прочий сбой пробрасывается: «не читается»
+    и «нет портов» здесь не одно и то же.
     """
     from simintech_api.exceptions import PortError
 
+    raw_in = _raw_port_count(block, "GetInPort")
+    raw_out = _raw_port_count(block, "GetOutPort")
+    if raw_in is not None and raw_out is not None:
+        return raw_in, raw_out
     in_ports = int(block.get_in_port_count())
     out_ports = 0
     for index in range(int(block.get_port_count()) + 1):
