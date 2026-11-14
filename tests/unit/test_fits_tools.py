@@ -268,6 +268,14 @@ class _PortedSubmodelBlock(_SizeBlock):
         return (self._total if self._total is not None
                 else self._in_ports + 1)
 
+    def get_out_port(self, index):
+        # Выход один: «выход уходит на правую сторону рамки».
+        from simintech_api.exceptions import PortError
+
+        if index == 0 and self.get_port_count() > self._in_ports:
+            return object()
+        raise PortError("нет выходного порта")
+
 
 @pytest.mark.anyio
 async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):

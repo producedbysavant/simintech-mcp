@@ -811,6 +811,16 @@ class _NPortParamBlock:
     def get_in_port_count(self):
         return self._in_ports
 
+    def get_port_count(self):
+        return self._in_ports + 1
+
+    def get_out_port(self, index):
+        from simintech_api.exceptions import PortError
+
+        if index == 0:
+            return object()
+        raise PortError("нет выходного порта")
+
     def set_in_port_count(self, count):
         if self.rebuild:
             self._in_ports = count

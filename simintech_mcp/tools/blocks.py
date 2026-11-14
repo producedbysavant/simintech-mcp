@@ -18,7 +18,7 @@ from simintech_api.constants import standard_block_size
 from .. import catalog, runtime, session
 from ..app import mcp
 from ..rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES, NPORT_PARAM,
-                     NPORT_SIZE_CLASSES, PORT_ROW_HEIGHT)
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT)
 from .block_size import size_value, write_block_size
 
 
@@ -294,8 +294,35 @@ def add_block(class_name: str, name_hint: str = "",
     if ignored:
         notes.append(f"параметры без '=' пропущены: {', '.join(ignored)}")
     tail = (" " + "; ".join(notes) + ".") if notes else ""
+    autosize_note = ""
+    try:
+        # Импорт здесь: `autosize` тянет `block_script`, а он этот же модуль.
+        from .autosize import install_scripts, script_text
+
+        if script_text(class_name) is not None:
+            installed = install_scripts(
+                page, [(block, class_name)],
+                where=f"блок '{actual}'",
+                project_note="Блок создан; скрипт саморазмера не поставлен.")
+            if installed.installed:
+                autosize_note = (
+                    " В OnInitScript поставлен скрипт саморазмера: высота "
+                    "встанет по сетке 8 px при старте расчёта.")
+                if installed.sized:
+                    autosize_note += (" Высота сразу: "
+                                      + "; ".join(installed.sized) + ".")
+            elif installed.skipped:
+                autosize_note = (
+                    " Скрипт саморазмера не поставлен: OnInitScript блока "
+                    "уже занят, чужой скрипт не перетирается.")
+                if installed.sized:
+                    autosize_note += (" Высота сразу: "
+                                      + "; ".join(installed.sized) + ".")
+    except Exception as exc:                                   # noqa: BLE001
+        autosize_note = (f" Скрипт саморазмера не поставлен "
+                         f"({type(exc).__name__}: {exc}).")
     return (f"Блок '{class_name}' создан (id={block.id}, name={actual})."
-            f"{tail}")
+            f"{tail}{autosize_note}")
 
 
 def block_by_id(page: Page, block_id: int) -> Optional[Block]:
@@ -357,6 +384,27 @@ def read_port_names(block: Block) -> Optional[List[str]]:
     if not value:
         return []
     return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def read_port_counts(block: Block) -> tuple[int, int]:
+    """Число входных и выходных портов блока; исключение - не читается.
+
+    Выходные порты перебираются `get_out_port` до первого отказа: отдельного
+    счётчика в API нет (как у `get_in_port_count`). Отказ различается по
+    `PortError` («портов столько нет»); прочий сбой COM пробрасывается,
+    потому что «не читается» и «нет портов» здесь не одно и то же.
+    """
+    from simintech_api.exceptions import PortError
+
+    in_ports = int(block.get_in_port_count())
+    out_ports = 0
+    for index in range(int(block.get_port_count()) + 1):
+        try:
+            block.get_out_port(index)
+        except PortError:
+            break
+        out_ports += 1
+    return in_ports, out_ports
 
 
 def resolved_name(block: Block, fallback: str) -> str:
@@ -821,8 +869,46 @@ def set_block_param(block: str, param: str, value: str,
                 notes.append(
                     "таблица была пуста: запись могла примениться, но "
                     "прочитанная форма отличается; сверьте выгрузкой.")
+    if (param.strip().lower() == "portnames"
+            and class_name in PORT_HEIGHT_CLASSES and reread
+            and str(actual) == str(value)):
+        # Смена сигналов у порт-блока меняет высоту по правилу. Скрипт
+        # саморазмера поправит её при старте расчёта, но раскладка до старта
+        # шла бы по старому габариту, поэтому сразу.
+        _auto_height_now(page, target, class_name, block, notes)
     tail = f" {'; '.join(notes)}" if notes else ""
     return f"{block}.{param} = {actual}" + tail
+
+
+def _auto_height_now(page: Page, target: Block, class_name: str,
+                     token: str, notes: List[str]) -> None:
+    """Выставить высоту правила сразу после смены `PortNames`.
+
+    Высота считается `autosize.rule_height`, тем же правилом, что у скрипта
+    саморазмера и подгонки: иначе блок спорил бы сам с собой на каждом
+    старте. Нечитаемые данные и неизменившийся размер: примечание, а не
+    отказ: параметр уже записан.
+    """
+    from .autosize import rule_height
+
+    want = rule_height(target, class_name)
+    if want is None:
+        notes.append("высота не пересчитана: PortNames не читается")
+        return
+    try:
+        before = target.get_size()
+    except Exception as exc:                                   # noqa: BLE001
+        notes.append(f"высота не пересчитана: размер не читается ({exc})")
+        return
+    if float(before[1]) == float(want):
+        return
+    result = write_block_size(
+        page, target, float(before[0]), float(want),
+        action="высота не записана",
+        project_note=(f"Проект уже изменён: {token}.PortNames записан, "
+                      f"высота {want} не записана."))
+    notes.append(f"высота по правилу: {size_value(before[1])} → "
+                 f"{size_value(result.after[1])} (сетка 8 px)")
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).

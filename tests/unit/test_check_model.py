@@ -96,6 +96,14 @@ class _CheckBlock:
     def get_port_count(self):
         return self._ports
 
+    def get_out_port(self, index):
+        # Выходных портов: сколько осталось сверх входных.
+        from simintech_api.exceptions import PortError
+
+        if 0 <= index < max(0, self._ports - self._in_ports):
+            return object()
+        raise PortError("нет выходного порта")
+
 
 class _FakeWire:
     def __init__(self, wire_id):
