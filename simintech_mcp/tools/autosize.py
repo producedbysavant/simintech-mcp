@@ -25,7 +25,7 @@ from typing import Any, Iterable, List, NamedTuple, Tuple
 
 from fastmcp.exceptions import ToolError
 
-from .block_script import _normalize_script, _runtime_literal
+from .block_script import normalize_script, runtime_literal
 from .block_size import size_pair_lines
 from .page_script import (
     activate_or_refuse,
@@ -190,12 +190,12 @@ def install_body(targets: Iterable[Tuple[Any, str]], token: str) -> str:
             f"obj = {block.id};",
             'if getpropasstring(obj, "OnInitScript") = "" then begin',
             f"  setprop(obj, \"OnInitScript\", "
-            f"{_runtime_literal(_normalize_script(text))});",
+            f"{runtime_literal(normalize_script(text))});",
             f'  writelnutf8(fid, '
-            f'{_runtime_literal(f"{token}_SET {name}")});',
+            f'{runtime_literal(f"{token}_SET {name}")});',
             "end else begin",
             f'  writelnutf8(fid, '
-            f'{_runtime_literal(f"{token}_BUSY {name}")});',
+            f'{runtime_literal(f"{token}_BUSY {name}")});',
             "end;",
         ]
     return "\n".join(lines) + ("\n" if lines else "")
@@ -271,7 +271,7 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
         text = script_text(class_name)
         if text is None:
             continue
-        expected[_block_name(block)] = _normalize_script(text)
+        expected[_block_name(block)] = normalize_script(text)
     for block, class_name in targets:
         name = _block_name(block)
         if name not in result.installed:
@@ -280,7 +280,7 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
             actual = block.get_property("OnInitScript") or ""
         except Exception:                                      # noqa: BLE001
             continue
-        if _normalize_script(actual) != expected[name]:
+        if normalize_script(actual) != expected[name]:
             raise ToolError(
                 f"{where}: скрипт саморазмера записан, но перечитанный текст "
                 f"блока '{name}' не совпал с запрошенным - среда запись не "

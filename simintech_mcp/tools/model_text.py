@@ -27,7 +27,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api.core.block import Block
@@ -1135,7 +1135,7 @@ def _install_autosize_scripts() -> str:
 
     try:
         page = session.ensure_project().get_main_page()
-        targets = []
+        targets: List[Tuple[Any, str]] = []
         for block in page.get_blocks():
             try:
                 class_name = str(block.class_name).strip()
@@ -1149,7 +1149,7 @@ def _install_autosize_scripts() -> str:
     except Exception as exc:                                   # noqa: BLE001
         return (f"\nСкрипты саморазмера не поставлены "
                 f"({type(exc).__name__}: {exc}).")
-    parts = []
+    parts: List[str] = []
     if result.installed:
         parts.append(f"скрипт саморазмера поставлен: "
                      f"{len(result.installed)} блок(ов)")
