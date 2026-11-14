@@ -14,7 +14,7 @@ from simintech_mcp.server import mcp
 
 from simintech_mcp import catalog, session
 from simintech_mcp.tools import block_size
-from simintech_mcp.tools import blocks as blocks_module
+from simintech_mcp.tools import block_param_write
 from simintech_mcp.tools.blocks import (
     MAX_BLOCK_IN_PORTS,
     MAX_BLOCK_PROPS,
@@ -869,9 +869,9 @@ def _install_nport_block(monkeypatch, block, state=0, wires=None):
             before=before, after=target.get_size(), tail_note="",
             overlaps="\nНаложений блоков нет.")
 
-    # `_set_nport` импортирует функцию на уровне модуля: патчим имя в
-    # `blocks`, иначе реальный контур ушёл бы в COM.
-    monkeypatch.setattr(blocks_module, "write_block_size", fake_write)
+    # `set_nport` живёт в `block_param_write` и импортирует функцию на
+    # уровне модуля: патчим имя там, иначе реальный контур ушёл бы в COM.
+    monkeypatch.setattr(block_param_write, "write_block_size", fake_write)
     return project
 
 
@@ -969,7 +969,7 @@ async def test_set_block_param_nport_size_failure_reports_changed_project(
                       project_note="Проект не изменён."):
         raise ToolError(project_note)
 
-    monkeypatch.setattr(blocks_module, "write_block_size", failing_write)
+    monkeypatch.setattr(block_param_write, "write_block_size", failing_write)
 
     text = await _error("set_block_param",
                         {"block": "or_0", "param": "nport", "value": "4"})
