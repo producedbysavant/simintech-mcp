@@ -14,6 +14,7 @@ from simintech_mcp.server import mcp
 
 from simintech_mcp import session
 from simintech_mcp.tools import project as project_tools
+from simintech_mcp.tools import project_save as project_save_tools
 
 from _support import (
     _OwnedClientStub,
@@ -847,7 +848,7 @@ async def test_save_project_keeps_temp_when_visibility_unreadable(
     def _locked(path, binary):
         raise project_tools._UnverifiedSave("файл занят")
 
-    monkeypatch.setattr(project_tools, "_visible_flag", _locked)
+    monkeypatch.setattr(project_save_tools, "visible_flag", _locked)
 
     text = await _error("save_project", {"path": str(target)})
 
