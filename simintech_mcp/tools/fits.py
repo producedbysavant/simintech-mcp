@@ -370,9 +370,19 @@ def _apply_size_plan(page: Page, where: str, lines: List[str],
                 # здесь не утверждается.
             else:
                 rejected = True
+                hint = ""
+                if (fix.prop == "Height"
+                        and script_state(fix.block) == "foreign"):
+                    # Живая приёмка 14.11.2026: чужой OnInitScript сам
+                    # задаёт высоту при старте расчёта, и запись фита
+                    # перекрывается им. Это не отказ среды, и диагноз
+                    # «среда не приняла» увёл бы в сторону.
+                    hint = (" Скрипт блока в OnInitScript, возможно, сам "
+                            "задаёт высоту: слот занят, записи фита он не "
+                            "подчиняется.")
                 lines.append(f"{where}: {fix.name}: {word} не изменилась "
                              f"({size_value(fix.before)}) — среда не приняла "
-                             f"запись.")
+                             f"запись.{hint}")
             continue
         if float(after) != float(fix.want):
             # Среда могла принять не то значение (округление, предел класса):
