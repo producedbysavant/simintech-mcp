@@ -266,8 +266,12 @@ def install_scripts(page: Any, targets: List[Tuple[Any, str]], *,
         outcome, failed=where, unsure="установка скрипта не подтверждена",
         project_note=project_note)
     result = parse_install(outcome.lines, token)
-    expected = {_block_name(block): _normalize_script(script_text(class_name))
-                for block, class_name in targets}
+    expected = {}
+    for block, class_name in targets:
+        text = script_text(class_name)
+        if text is None:
+            continue
+        expected[_block_name(block)] = _normalize_script(text)
     for block, class_name in targets:
         name = _block_name(block)
         if name not in result.installed:
