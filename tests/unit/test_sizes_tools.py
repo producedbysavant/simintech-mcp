@@ -52,6 +52,16 @@ class _NPortBlock(_SizeBlock):
             raise OSError("COM недоступен")
         return self._in_ports
 
+    def get_port_count(self):
+        return self._in_ports + 1
+
+    def get_out_port(self, index):
+        from simintech_api.exceptions import PortError
+
+        if index == 0:
+            return object()
+        raise PortError("нет выходного порта")
+
     def get_points(self):
         return f"[({self._size[0]:g} , 0)]"
 
@@ -520,5 +530,5 @@ async def test_set_block_size_nport_refuses_unreadable_ports(monkeypatch,
     text = await _error("set_block_size",
                         {"block": "or_0", "width": 32, "height": 64})
 
-    assert "число входов не читается" in text
+    assert "число портов не читается" in text
     assert bridge.body == ""

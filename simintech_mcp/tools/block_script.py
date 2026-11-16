@@ -181,6 +181,21 @@ def _parse_script_reply(lines: List[str], token: str) -> _ScriptReply:
                         ports_before=ports_before, ports_after=ports_after)
 
 
+def runtime_literal(text: str) -> str:
+    """Литерал рантайма встроенного языка (публичное имя для `autosize`).
+
+    Сборка литерала живёт здесь одна: скрипт блока и скрипт саморазмера
+    обязаны экранировать кавычки и переводы строк одинаково, иначе запись
+    одного инструмента ломала бы разбор другого.
+    """
+    return _runtime_literal(text)
+
+
+def normalize_script(text: str) -> str:
+    """Нормализация переводов строк к CRLF (публичное имя для `autosize`)."""
+    return _normalize_script(text)
+
+
 def _set_block_script_body(block_name: str, script: str, token: str) -> str:
     """Тело записи скрипта блока — форма, проверенная живым прогоном.
 

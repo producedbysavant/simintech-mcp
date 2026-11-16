@@ -482,6 +482,17 @@ class _RenamingBlock:
     def get_in_port_count(self):
         return self.in_ports
 
+    def get_port_count(self):
+        return self.in_ports + 1
+
+    def get_out_port(self, index):
+        # У правил-классов выход один (nport-классы, субмодель с выходом).
+        if index == 0:
+            return object()
+        from simintech_api.exceptions import PortError
+
+        raise PortError("нет выходного порта")
+
     def set_position(self, x, y, *, width=None, height=None):
         self.position = (x, y, width, height)
         return self

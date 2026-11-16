@@ -6,18 +6,71 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
-import re
 import sys
-import zlib
-from typing import Optional, Tuple
+from typing import Optional
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Project
 
 from .. import runtime, session
 from ..app import mcp
+
+from .project_save import (
+    FileState as _FileState,
+    PRT_VISIBLE_OFFSET as _PRT_VISIBLE_OFFSET,
+    VISIBLE_HEAD_BYTES as _VISIBLE_HEAD_BYTES,
+    WINDOWS_INVALID as _WINDOWS_INVALID,
+    WINDOWS_RESERVED as _WINDOWS_RESERVED,
+    XPRT_VISIBLE_RE as _XPRT_VISIBLE_RE,
+    UnverifiedSave as _UnverifiedSave,
+    check_save_target as _check_save_target,
+    file_state as _file_state,
+    refuse_external_change as _refuse_external_change,
+    refuse_format_extension_mismatch as _refuse_format_extension_mismatch,
+    remove_quietly as _remove_quietly,
+    require_visible as _require_visible,
+    same_file as _same_file,
+    save_preflight as _save_preflight,
+    temp_save_path as _temp_save_path,
+    verify_saved as _verify_saved,
+    visible_flag as _visible_flag,
+)
+
+#: Реэкспорт помощников сохранения (они живут в `project_save`): прежние
+#: точки импорта и атрибуты модуля остаются на месте. Имена в `__all__`
+#: pyright и pyflakes не считают неиспользованным импортом.
+__all__ = [
+    "close_project",
+    "create_project",
+    "disconnect",
+    "get_project_config",
+    "open_project",
+    "project_network_role",
+    "reload_project",
+    "save_project",
+    "set_calc_time",
+    "set_project_config",
+    "status",
+    "_FileState",
+    "_PRT_VISIBLE_OFFSET",
+    "_VISIBLE_HEAD_BYTES",
+    "_WINDOWS_INVALID",
+    "_WINDOWS_RESERVED",
+    "_XPRT_VISIBLE_RE",
+    "_UnverifiedSave",
+    "_check_save_target",
+    "_file_state",
+    "_refuse_external_change",
+    "_refuse_format_extension_mismatch",
+    "_remove_quietly",
+    "_require_visible",
+    "_same_file",
+    "_save_preflight",
+    "_temp_save_path",
+    "_verify_saved",
+    "_visible_flag",
+]
 
 
 # ─── Подключение ──────────────────────────────────────────────────
@@ -584,377 +637,6 @@ def set_project_config(param: str, value: str) -> str:
             "(`ProjectStart`); она сбрасывает модельное время к `starttime` "
             "(по умолчанию 0). `run` и `step` из остановленного состояния "
             "начинают с этого значения.")
-
-
-#: Состояние файла для проверки записи: метка правки, размер и хеш
-#: содержимого (`None` — содержимое прочитать не удалось; файла нет — `None`
-#: целиком). Хеш — не избыточность: у файловых систем с грубым разрешением
-#: времени (FAT — 2 с, сетевые shares — 1 с) успешная перезапись в ту же
-#: секунду не меняет ни метку, ни размер, и вердикт по ним одним ложно
-#: отказывал бы в записи, которая состоялась (замечание ревью mcp#26,
-#: 01.10.2026); содержимое же меняется — и только его видит хеш.
-_FileState = Optional[Tuple[int, int, Optional[str]]]
-
-
-def _file_state(path: str, *, want_hash: bool = True) -> _FileState:
-    """Снять состояние файла (до или после записи); `None` — файла нет.
-
-    Нужно, чтобы отличить «файл появился или обновился» от «старый файл
-    остался на месте»: залипшая сессия сообщает об успехе, не записывая
-    ничего, и одна лишь проверка «файл есть» приняла бы прежний файл за
-    результат записи.
-
-    Метка и хеш снимаются с **одного дескриптора** (`open` + `fstat`), и это
-    не педантизм: разнесённые `stat` и чтение могут увидеть два разных
-    поколения файла и выдать смешанный снимок за цельный (находка ревью).
-    Хеш читается потоком (`file_digest`) — проект бывает в десятки мегабайт,
-    а вызов идёт на единственном COM-потоке. `want_hash=False` — когда
-    содержимое заведомо не понадобится: зачем второе полное чтение после
-    записи, если метка или размер уже разошлись (находка ревью).
-    """
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    digest: Optional[str] = None
-    try:
-        with open(path, "rb") as handle:
-            # Снимок с одного дескриптора: fstat главнее успевшего устареть
-            # `stat`, а хеш читается с того же открытого файла.
-            stat = os.fstat(handle.fileno())
-            if want_hash:
-                digest = hashlib.file_digest(handle, "sha256").hexdigest()
-    except OSError:
-        # Файл может быть занят на чтение (его как раз пишет среда) — тогда
-        # вердикт опирается на метку и размер, как раньше.
-        pass
-    return (stat.st_mtime_ns, stat.st_size, digest)
-
-
-def _verify_saved(path: str, before: _FileState) -> None:
-    """Проверить, что запись действительно состоялась.
-
-    `SaveProjectXML` в залипшей сессии сообщает об успехе, **не создавая
-    файл** (simintech-code#21: симптом повторялся трижды подряд, следом
-    `CloseProject` падает с Access violation). Ответ «проект сохранён» по
-    такому вызову — ложь, которую клиент обнаружит только на чтении, и
-    выдавать её нельзя. Поэтому файл должен появиться (не было раньше) или
-    обновиться — меткой правки, размером **или содержимым**.
-
-    Один лишь размер, впрочем, слаб: перезапись другим содержимым той же
-    длины его не двигает. Полный набор такой: метка → размер → хеш; вердикт
-    «записано» выносится, как только разошёлся любой из них. Содержимое
-    после записи читается только при совпавших метке и размере — иначе оно
-    ни на что не влияет (находка ревью), а чтение — полное и на COM-потоке.
-
-    Остатки названы честно, их два. Первый: перезапись **идентичным**
-    содержимым с той же меткой и размером (одна секунда на грубой ФС) от
-    залипания неотличима и отвергается — сообщение говорит «не обновился»,
-    а не «среда не записала». Второй: если содержимое **до** записи прочитать
-    не удалось (файл занят средой), хеша в снимке нет, и на грубой ФС при
-    совпавших метке и размере возможен ложный отказ — отличить нечем.
-    Цена обоих остатков — ложный отказ, а не ложный успех: «сохранено» без
-    доказательства инструмент не выдаёт.
-
-    Отказ называет обе возможные причины: залипшую сессию и несуществующий
-    каталог в пути, — и рецепт от первой: повтор в той же сессии бесполезен,
-    помогает перезапуск.
-    """
-    try:
-        stat = os.stat(path)
-    except OSError:
-        stat = None
-    if stat is None:
-        after: _FileState = None
-    elif before is None or (stat.st_mtime_ns != before[0]
-                            or stat.st_size != before[1]):
-        # Исход уже решён (файл появился или обновился меткой/размером) —
-        # содержимое не читается вовсе.
-        after = (stat.st_mtime_ns, stat.st_size, None)
-    else:
-        after = _file_state(path)
-    written = after is not None and (
-        before is None
-        or after[0] != before[0]
-        or after[1] != before[1]
-        or (after[2] is not None and before[2] is not None
-            and after[2] != before[2]))
-    if written:
-        if after is not None and after[1] == 0:
-            # Нулевая длина — не «записано»: так выглядит оборванная запись
-            # (среда открыла файл и не наполнила его). Раньше это проходило
-            # как успех — размер-то «разошёлся» (репорт 08.10.2026: после
-            # сбоя целевой .prt остался 0 байт).
-            raise ToolError(
-                f"Файл записан нулевой длины: «{path}» — 0 байт. Так "
-                "выглядит оборванная запись: среда открыла файл и не "
-                "наполнила его, проект не сохранён. Повторите после "
-                "`disconnect` и переоткрытия проекта.")
-        return
-    if after is None:
-        state_text = ("не появился: файла по пути не было и нет"
-                      if before is None else
-                      "исчез: файл был, а после записи его по пути нет")
-    else:
-        compared = "метка правки и размер"
-        if before is not None and before[2] is not None and after[2] is not None:
-            compared += ", и содержимое"
-        state_text = f"не обновился (сверены {compared})"
-    raise ToolError(
-        f"Файл не записан: «{path}» " + state_text
-        + ", хотя вызов среды сообщил об успехе. Проверьте, что каталог в "
-          "пути существует; если с путём всё в порядке — это признак залипшей "
-          "сессии (simintech-code#21): сохранение в ней не проходит, и повтор "
-          "бесполезен. Переподключитесь (`disconnect`) и откройте проект "
-          "заново — рабочая сессия запись выполнит.")
-
-
-def _temp_save_path(path: str) -> str:
-    """Временный путь записи: рядом с целевым и с тем же расширением.
-
-    Расширение — не косметика: среда выбирает формат проекта **по нему**
-    (`.prt` — нативный, `.xprt` — XML), и временное имя обещает тот же
-    формат. «Рядом» — потому что `os.replace` атомарен только в пределах
-    одной файловой системы.
-    """
-    stem, ext = os.path.splitext(path)
-    return f"{stem}.tmp{ext}"
-
-
-#: Имена устройств Windows, которые нельзя использовать как файл проекта.
-_WINDOWS_RESERVED = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{number}" for number in range(1, 10)}
-    | {f"LPT{number}" for number in range(1, 10)})
-_WINDOWS_INVALID = frozenset('<>:"|?*')
-
-
-def _check_save_target(path: str) -> None:
-    """Проверить путь до COM: абсолютный, не каталог, родитель существует.
-
-    Проверка идёт в вызывающем потоке (`com_threaded(preflight=...)`), а не в
-    единственном COM-потоке. Она отсекает отсутствующий или заведомо
-    недоступный путь, но не спасает от зависания COM на доступном каталоге:
-    живой случай 05.11.2026 был именно на доступном каталоге репозитория.
-    Пробный файл не создаётся: запись пробы на медленном или сетевом диске
-    сама может зависнуть, а `isdir`/`access` для локального пути быстры.
-    `os.access(W_OK)` на Windows не учитывает ACL, поэтому окончательный
-    отказ даёт запись; проверка остаётся ранней отсечкой очевидных случаев.
-    """
-    if not os.path.isabs(path):
-        raise ToolError(
-            f"Путь «{path}» относительный: сохраняйте по абсолютному пути. "
-            f"COM-среда разрешает относительный путь от своего каталога, а "
-            f"проверка и замена файла идут от каталога сервера: это разные "
-            f"файлы. Укажите абсолютный путь или сохраните в каталог "
-            f"результатов и скопируйте файл на место. Файл не тронут.")
-    if sys.platform == "win32":
-        name = os.path.basename(path)
-        stem = name.split(".", 1)[0].upper()
-        if stem in _WINDOWS_RESERVED:
-            raise ToolError(
-                f"Имя «{name}» зарезервировано Windows: файл проекта не "
-                f"создастся. Выберите другое имя. Файл не тронут.")
-        if any(char in _WINDOWS_INVALID for char in name):
-            raise ToolError(
-                f"Имя «{name}» содержит недопустимые для Windows символы "
-                f"< > : \" | ? *. Выберите другое имя. Файл не тронут.")
-    target = os.path.abspath(path)
-    if os.path.isdir(target):
-        raise ToolError(
-            f"Путь «{path}» указывает на каталог: нужно имя файла проекта. "
-            f"Файл не тронут.")
-    directory = os.path.dirname(target)
-    if os.path.exists(directory) and not os.path.isdir(directory):
-        raise ToolError(
-            f"Путь «{directory}» существует, но это не каталог. Укажите "
-            f"каталог для файла проекта. Файл не тронут.")
-    if not os.path.isdir(directory):
-        raise ToolError(
-            f"Каталог для сохранения «{directory}» не найден. Сохраните "
-            f"проект в каталог результатов (его печатает `doctor`/`help`) "
-            f"и скопируйте файл на место. Файл не тронут.")
-    if not os.access(directory, os.W_OK):
-        raise ToolError(
-            f"Каталог для сохранения «{directory}» недоступен для записи "
-            f"по предварительной проверке. Сохраните проект в каталог "
-            f"результатов (его печатает `doctor`/`help`) и скопируйте файл "
-            f"на место. Файл не тронут.")
-
-
-def _same_file(left: str, right: str) -> bool:
-    """Ссылаются ли пути на один файл (регистр Windows, ссылки, hard link)."""
-    try:
-        return os.path.samefile(left, right)
-    except OSError:
-        return (os.path.normcase(os.path.abspath(left))
-                == os.path.normcase(os.path.abspath(right)))
-
-
-def _refuse_external_change(path: str) -> None:
-    """Отказ, если целевой файл изменён после открытия проекта.
-
-    `save_project` пишет проект из памяти MCP. Если тот же файл сохранил
-    человек в другом `mmain.exe`, память устарела, и запись перезаписала бы
-    его правки. `session.file_changed_on_disk` возвращает None, когда судить
-    нечем (проект из шаблона, отпечаток не снят): тогда отказа нет, потому
-    что «неизвестно» здесь не доказательство расхождения.
-    """
-    source = session.opened_from()
-    changed = session.path_changed_on_disk(path)
-    if changed is None and source and _same_file(source, path):
-        changed = session.file_changed_on_disk()
-    if changed is not True:
-        return
-    raise ToolError(
-        f"Файл проекта изменён на диске после открытия или сохранения, либо "
-        f"больше не доступен: «{path}». Проект в памяти MCP устарел, и "
-        "сохранение перезаписало бы правки, сделанные в другом экземпляре "
-        "SimInTech. Файл не тронут. Переоткройте проект (`reload_project` "
-        "или `close_project` + `open_project`) и повторите правки; "
-        "сохранить в другой файл можно и без перечитывания.")
-
-
-def _save_preflight(path: str, binary: bool = False) -> None:
-    """Проверки `save_project` до постановки в COM-поток."""
-    _refuse_format_extension_mismatch(path, binary)
-    _check_save_target(path)
-    _refuse_external_change(path)
-
-
-def _remove_quietly(path: str) -> None:
-    """Убрать временный файл, не мешая исходной ошибке всплыть."""
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
-#: Смещение признака «окно проекта видимо» в распакованном бинарном `.prt`.
-#: Заголовок общий у файлов поставки: после `FormShow` там 1, без показа
-#: формы - 0 (живой замер 27.10.2026, три файла сохранены с `show_form=false`).
-_PRT_VISIBLE_OFFSET = 8
-
-#: Признак видимости лежит в шапке проекта, поэтому читается только начало
-#: файла: `.xprt` бывает в сотни мегабайт, и полное чтение на COM-потоке
-#: стоило бы дороже самой записи.
-_VISIBLE_HEAD_BYTES = 8192
-
-#: `<visible>`1`</visible>` в XML-шапке. Обратная кавычка или одинарная -
-#: конвенции выгрузок; значение без кавычек тоже допускается.
-_XPRT_VISIBLE_RE = re.compile(
-    rb"<visible>\s*[`']?\s*([01])\s*[`']?\s*</visible>")
-
-
-class _UnverifiedSave(ToolError):
-    """Файл записан, но прочитать его для проверки не удалось.
-
-    Отдельный тип нужен, чтобы не удалять временный файл: запись состоялась,
-    и проект может понадобиться человеку. Сырой `OSError` здесь тоже
-    недопустим: он уходил в `except BaseException` и уносил единственную
-    запись (замечание ревью PR #176).
-    """
-
-
-def _visible_flag(path: str, binary: bool) -> int:
-    """Прочитать признак «окно проекта видимо» из записанного файла.
-
-    `.xprt` - по тегу `<visible>` в шапке, `.prt` - по байту 8
-    распакованного zlib-потока. Оба признака пишет `FormShow`; значение 0
-    означает, что GUI откроет проект без окна модели.
-
-    Нечитаемая шапка - отказ, а не догадка: иначе проверка молча пропускала
-    бы ровно тот файл, ради которого написана.
-    """
-    try:
-        with open(path, "rb") as handle:
-            head = handle.read(_VISIBLE_HEAD_BYTES)
-    except OSError as exc:
-        raise _UnverifiedSave(
-            f"записанный файл не читается для проверки видимости "
-            f"({type(exc).__name__}: {exc}).") from exc
-    if not binary:
-        # Тегов <visible> в выгрузке много (форма, вкладки, объекты), поэтому
-        # ищем первый после начала блока <project>, а не первый в файле.
-        project_start = head.find(b"<project")
-        if project_start < 0:
-            raise ToolError(
-                "в записанном .xprt нет блока <project>: признак видимости "
-                "не к чему привязать.")
-        match = _XPRT_VISIBLE_RE.search(head, project_start)
-        if match is None:
-            raise ToolError(
-                "в записанном .xprt не найден признак видимости "
-                "(`<visible>`): проверить, откроется ли проект с окном "
-                "модели, нельзя.")
-        return int(match.group(1))
-    try:
-        raw = zlib.decompressobj().decompress(
-            head, _PRT_VISIBLE_OFFSET + 1)
-    except zlib.error as exc:
-        raise ToolError(
-            f"записанный .prt не распаковывается как zlib ({exc}): "
-            "признак видимости не прочитать.") from exc
-    if len(raw) <= _PRT_VISIBLE_OFFSET:
-        raise ToolError(
-            "записанный .prt короче заголовка: признак видимости не "
-            "прочитать.")
-    return raw[_PRT_VISIBLE_OFFSET]
-
-
-def _require_visible(path: str, binary: bool) -> None:
-    """Отказ, если записанный проект помечен как невидимый.
-
-    Показ формы обязателен, но полагаться на один вызов нельзя: у сессии без
-    показанной формы в файл уходит признак «окно скрыто», и GUI открывает
-    проект без окна модели. Проверка стоит до `os.replace`: невидимый файл не
-    заменит боевой.
-    """
-    if _visible_flag(path, binary) == 1:
-        return
-    raise ToolError(
-        "Записанный проект помечен как невидимый: GUI откроет его без окна "
-        "модели. Показ формы (`FormShow`) не сработал. Целевой файл не "
-        "тронут, временная запись удалена; повторите сохранение после "
-        "`doctor` и переоткрытия проекта.")
-
-
-def _refuse_format_extension_mismatch(path: str, binary: bool) -> None:
-    """Отказ, если имя файла обещает не тот формат, которым записываем.
-
-    Среда выбирает формат проекта **по расширению**: `.prt` открывается как
-    нативный, `.xprt` — как XML. XML, записанный в файл с именем `.prt`, GUI
-    показал «Ошибка загрузки страницы проекта: data error» (живой случай
-    02.10.2026: тот же текст, сохранённый как `.xprt`, открылся) — то есть
-    промах формата обнаруживается только у пользователя в GUI, а пишущий
-    инструмент о нём молчит. Такой файл инструмент создавать не должен;
-    отказ называет оба выхода.
-
-    Проверка стоит до всякой работы с проектом: ни формы, ни COM-вызова.
-
-    Имя сверяется после нормализации Win32: хвостовые точки и пробелы
-    последнего компонента система отбрасывает сама («m.prt » — это файл
-    «m.prt»), поэтому по сырой строке XML прошёл бы в настоящий `.prt` ровно
-    через ту же дверь, которую здесь закрываем.
-    """
-    # CreateFileW сам сокращает хвостовые точки/пробелы последнего компонента
-    # («m.prt.», «m.prt » → «m.prt») — сверяемся с именем, которое получится
-    # на диске, а не с тем, что пришло строкой.
-    lower = path.rstrip(" .").lower()
-    if lower.endswith(".prt") and not binary:
-        raise ToolError(
-            f"«{path}» назван нативным форматом (.prt), а сохраняем XML: среда "
-            "открывает проект по расширению и покажет «Ошибка загрузки "
-            "страницы проекта: data error» (живой случай 02.10.2026 — тот же "
-            "текст под именем .xprt открылся). Сохраните в .xprt или "
-            "передайте binary=True.")
-    if lower.endswith(".xprt") and binary:
-        raise ToolError(
-            f"«{path}» назван XML-форматом (.xprt), а сохраняем нативный "
-            "бинарный: формат среда выбирает по расширению (тот же замер "
-            "02.10.2026 — XML под именем .prt не открылся как нативный), "
-            "поэтому содержимое под именем .xprt будет разбираться как XML и "
-            "не разберётся. Сохраните в .prt или передайте binary=False.")
 
 
 @mcp.tool(

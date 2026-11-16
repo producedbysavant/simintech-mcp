@@ -18,7 +18,8 @@ from ..app import mcp
 from ..rules import (NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES,
                      PORT_MARGIN, PORT_ROW_HEIGHT, required_height)
 from .block_size import size_value, write_block_size
-from .blocks import missing_block, read_port_names, resolve_block
+from .blocks import (missing_block, read_port_counts, read_port_names,
+                     resolve_block)
 
 
 #: Предел размера блока в пикселях. Это не предел числа COM-вызовов, а
@@ -87,9 +88,11 @@ def _required_height(name: str, target: Block,
       `PortNames` (правило владельца 01.10.2026);
     * блоки с собственным числом входов (`NPORT_SIZE_CLASSES`) - 16 px на
       **входной контакт** (живой замер 23.10.2026: при 4 входах высота 64
-      даёт шаг портов 16 и поля 8 / 8). Субмодель правилом подгонки
-      покрыта, но `set_block_size` её высоту не запирает: у неё бывает
-      собственная ширина и оформление.
+      даёт шаг портов 16 и поля 8 / 8). Высота считается по сетке 8 px
+      (`rules.grid_height`): у nport-класса выход один, и `НОК(входы, 1)`
+      даёт прежнее число. Субмодель правилом подгонки покрыта, но
+      `set_block_size` её высоту не запирает: у неё бывает собственная
+      ширина и оформление.
 
     Нечитаемый класс или число сигналов/входов - отказ (`ToolError`), а не
     пропуск проверки: иначе запись ломающей высоты вернулась бы успехом.
@@ -107,15 +110,15 @@ def _required_height(name: str, target: Block,
         return required_height(class_name, count)
     if class_name in NPORT_SIZE_CLASSES:
         try:
-            in_ports = int(target.get_in_port_count())
+            in_ports, out_ports = read_port_counts(target)
         except Exception as exc:                                  # noqa: BLE001
             raise ToolError(
                 f"Высоту блока '{name}' задать нельзя: у класса "
                 f"«{class_name}» высота подчиняется правилу {PORT_ROW_HEIGHT} "
-                f"px на входной контакт, а число входов не читается "
+                f"px на входной контакт, а число портов не читается "
                 f"({type(exc).__name__}: {exc}) - проверить высоту нечем."
             ) from exc
-        return required_height(class_name, in_ports)
+        return required_height(class_name, (in_ports, out_ports))
     return None
 
 
