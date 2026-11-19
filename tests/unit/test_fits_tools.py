@@ -296,12 +296,12 @@ async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_fit_unequal_sides_puts_ports_on_grid(monkeypatch, tmp_path):
-    """3 входа / 2 выхода: высота 16*НОК = 96, иначе выходы мимо сетки.
+async def test_fit_height_follows_the_larger_side(monkeypatch, tmp_path):
+    """3 входа / 2 выхода: высота 16*3 = 48, приоритет у большей стороны.
 
-    Среда раскладывает порты стороны равномерно (замер 14.11.2026), поэтому
-    высота 16*3 = 48 дала бы выходам шаг H/2 = 24 при первом на 12: мимо
-    сетки 8 px. Девяносто шесть даёт входы 16/48/80 и выходы 24/72.
+    Совпадение сетки у обеих сторон требовало бы 16*НОК = 96, но у 28/26
+    это 5824 px (решение владельца 19.11.2026): высота идёт по большей
+    стороне, меньшая ложится мимо сетки.
     """
     block = _PortedSubmodelBlock(ports=3, in_ports=3, total_ports=5)
     project = _FakeProject({"sub_1": block})
@@ -310,8 +310,8 @@ async def test_fit_unequal_sides_puts_ports_on_grid(monkeypatch, tmp_path):
 
     text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
 
-    assert block.value_writes == [("Height", "96"), ("Width", "48")]
-    assert "входов 3, выходов 2: высота по сетке 16 px" in text
+    assert block.value_writes == [("Height", "48"), ("Width", "48")]
+    assert "высота 32 → 48 (3 вход(ов) × 16)" in text
 
 
 @pytest.mark.anyio
