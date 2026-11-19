@@ -308,6 +308,10 @@ def test_stuck_com_call_refuses_fast_and_recovers(monkeypatch):
 
     monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
     monkeypatch.setattr(runtime, "_stuck_call", None)
+    # Проба процессов Windows стоит 0.36-0.45 с и делала «мгновенный»
+    # отказ негарантированно медленным; проверяется отсутствие очереди,
+    # а не скорость опроса процессов.
+    monkeypatch.setattr(runtime, "_mmain_state", lambda: "")
 
     @runtime.com_threaded
     def slow():

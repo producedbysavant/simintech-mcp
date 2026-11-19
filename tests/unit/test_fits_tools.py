@@ -296,6 +296,24 @@ async def test_fit_port_blocks_fits_submodel_height(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_fit_height_follows_outputs_when_outputs_are_more(
+        monkeypatch, tmp_path):
+    """1 вход / 5 выходов: высота 16*5 = 80 по большей (выходной) стороне.
+
+    Проба закрывает случай, где старая формула «только входы» дала бы 16.
+    """
+    block = _PortedSubmodelBlock(ports=1, in_ports=1, total_ports=6)
+    project = _FakeProject({"sub_1": block})
+    bridge = _fit_bridge({block.id: block})
+    _install_contour(monkeypatch, tmp_path, project, bridge)
+
+    text = _tool_text(await mcp.call_tool("fit_port_blocks", {}))
+
+    assert ("Height", "80") in block.value_writes
+    assert "входов 1, выходов 5: высота по большей стороне 16 px" in text
+
+
+@pytest.mark.anyio
 async def test_fit_height_follows_the_larger_side(monkeypatch, tmp_path):
     """3 входа / 2 выхода: высота 16*3 = 48, приоритет у большей стороны.
 

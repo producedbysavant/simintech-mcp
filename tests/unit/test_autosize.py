@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from fastmcp.exceptions import ToolError
+
 from simintech_mcp.tools import autosize
 
 
@@ -69,6 +72,7 @@ def test_install_body_writes_only_rule_blocks():
     assert "obj = 11;" in body
     assert "obj = 12;" not in body
     assert "OnInitScript" in body
+    assert 'trim(getpropasstring(obj, "OnInitScript")) = ""' in body
     assert "TOK_SET 11 p_1" in body
     assert "TOK_BUSY 11 p_1" in body
 
@@ -208,3 +212,38 @@ def test_install_scripts_names_unreadable_slot(monkeypatch):
 
     assert result.unreadable == ("sub_c",)
     assert result.skipped == []
+
+
+def test_verify_installed_rejects_mismatch_and_unreadable(monkeypatch):
+    """Сверка записи: расхождение и нечитаемый слот - отказ, не пропуск."""
+    class _B:
+        def __init__(self, script, error=False):
+            self.id = 5
+            self._script = script
+            self._error = error
+
+        def get_name(self):
+            return "sub_x"
+
+        def get_property(self, name):
+            if self._error:
+                raise OSError("COM недоступен")
+            return self._script
+
+    good = autosize.script_text("Субмодель")
+    autosize.verify_installed([(_B(good), "Субмодель")], [5], where="тест")
+
+    with pytest.raises(ToolError, match="не совпал"):
+        autosize.verify_installed([(_B("чужой"), "Субмодель")], [5],
+                                  where="тест")
+    with pytest.raises(ToolError, match="не удалось"):
+        autosize.verify_installed([(_B("", error=True), "Субмодель")], [5],
+                                  where="тест")
+
+
+def test_install_body_escapes_quotes_in_block_name():
+    """Имя блока в метке экранируется: кавычка в имени рвала бы скрипт."""
+    body = autosize.install_body(
+        [(_Block(name='say "hi"', block_id=21), "Порт входа")], "TOK")
+    assert 'chr(34)' in body
+    assert '"say \"hi\""' not in body

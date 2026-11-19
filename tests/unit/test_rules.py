@@ -76,6 +76,40 @@ def test_grid_height_follows_the_larger_side():
     assert rules.grid_height([]) is None
 
 
+def test_read_port_counts_uses_raw_com_without_scene_edit():
+    """Счёт портов идёт сырым COM: API-методы на промахе зовут BlockAfterEdit."""
+    from simintech_mcp.tools.blocks import read_port_counts
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, block_id, index):
+            self.calls.append((method, index))
+            limit = 3 if method == "GetInPort" else 2
+            return index + 1 if index < limit else 0
+
+    class _Block:
+        id = 9
+
+        def __init__(self):
+            self.client = _Client()
+
+        def get_port_count(self):
+            return 5
+
+        def get_in_port_count(self):
+            raise AssertionError("API-путь не должен вызываться при клиенте")
+
+        def get_out_port(self, index):
+            raise AssertionError("API-путь не должен вызываться при клиенте")
+
+    block = _Block()
+    assert read_port_counts(block) == (3, 2)
+    methods = {method for method, _ in block.client.calls}
+    assert methods == {"GetInPort", "GetOutPort"}
+
+
 def test_required_height_accepts_side_counts():
     """Разное число входов и выходов считается по сетке."""
     assert rules.required_height("Субмодель", (3, 2)) == 48

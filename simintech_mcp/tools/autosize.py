@@ -182,7 +182,9 @@ def install_body(targets: Iterable[Tuple[Any, str]], token: str) -> str:
         name = _block_name(block)
         lines += [
             f"obj = {block.id};",
-            'if getpropasstring(obj, "OnInitScript") = "" then begin',
+            # trim: пустой и пробельный слот считаются пустыми так же, как
+            # в `script_state`; иначе отбор и тело решают по-разному.
+            'if trim(getpropasstring(obj, "OnInitScript")) = "" then begin',
             f"  setprop(obj, \"OnInitScript\", "
             f"{runtime_literal(normalize_script(text))});",
             f'  writelnutf8(fid, '

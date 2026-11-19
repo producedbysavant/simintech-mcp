@@ -109,9 +109,11 @@ async def test_save_screenshot_writes_png_by_default(monkeypatch, tmp_path):
     assert f'"{path}", 2);' in _BridgeShoots.body, "в тело ушёл не тип 2 (PNG)"
     assert Path(path).is_file(), "файл снимка не создан"
     assert Path(path).read_bytes() == _BridgeShoots.payload
-    assert str(tmp_path) in path, "снимок вне каталога результатов"
+    assert str(tmp_path).replace("\\", "/") in path, \
+        "снимок вне каталога результатов"
     assert "Снимок схемы (png)" in text
-    assert path in text, "ответ обязан называть путь файла"
+    assert path.replace("\\", "/") in text.replace("\\", "/"), \
+        "ответ обязан называть путь файла"
 
 
 @pytest.mark.anyio
@@ -197,7 +199,8 @@ async def test_save_screenshot_uses_fresh_names(monkeypatch, tmp_path):
 
     assert first_path != second_path, f"имена снимков не уникальны: {first_path}"
     assert Path(first_path).is_file() and Path(second_path).is_file()
-    assert first_path in first_text and second_path in second_text
+    assert (first_path.replace("\\", "/") in first_text.replace("\\", "/")
+            and second_path.replace("\\", "/") in second_text.replace("\\", "/"))
 
 
 def test_png_size_reads_ihdr_and_rejects_other_formats(tmp_path):

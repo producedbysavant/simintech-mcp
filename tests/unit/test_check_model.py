@@ -1044,6 +1044,18 @@ async def test_check_model_warns_unequal_sides_grid_height(monkeypatch,
 
 
 @pytest.mark.anyio
+async def test_check_model_warns_when_outputs_are_more(monkeypatch, tmp_path):
+    """1 вход / 5 выходов: правило по большей стороне ждёт 80, не 16."""
+    block = _CheckBlock("sub_0", center=(0, 0), class_name="Субмодель",
+                        ports=6, width=48.0, height=16.0, in_ports=1)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "входов 1, выходов 5, нужно 80" in text
+
+
+@pytest.mark.anyio
 async def test_check_model_nport_height_ok_is_quiet(monkeypatch, tmp_path):
     """Правильная высота 64 при 4 входах предупреждения не даёт."""
     block = _CheckBlock("or_0", center=(0, 0), class_name="Оператор ИЛИ",
