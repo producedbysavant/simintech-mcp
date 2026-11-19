@@ -31,6 +31,8 @@ from simintech_api import (
     Wire,
 )
 
+from . import com_mutex
+
 
 # ─── Состояние сессии ─────────────────────────────────────────────
 
@@ -236,6 +238,9 @@ def _drop_dead_session() -> None:
     set_project(None)
     set_pack(None)
     _client = None
+    # Замок принадлежит сессии: мёртвый клиент отпускает его, иначе соседний
+    # клиент (раннер) ждал бы освобождения мёртвой сессии.
+    com_mutex.release()
 
 
 def ensure_client() -> COMClient:
@@ -256,8 +261,17 @@ def ensure_client() -> COMClient:
     if _client is not None and not _client_is_alive(_client):
         _drop_dead_session()
     if _client is None:
-        candidate = COMClient(silent_mode=True).connect()
-        _require_owned(candidate)
+        # Замок берётся ДО CreateObject: профиль общий, и второй экземпляр
+        # рядом с чужим клиентом мешал бы обоим.
+        com_mutex.acquire()
+        try:
+            candidate = COMClient(silent_mode=True).connect()
+            _require_owned(candidate)
+        except Exception:
+            # Своей сессии не получилось: замок не нужен и не должен
+            # запирать соседей.
+            com_mutex.release()
+            raise
         _client = candidate
     return _client
 
