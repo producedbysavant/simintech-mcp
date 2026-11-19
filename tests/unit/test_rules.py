@@ -60,23 +60,24 @@ def test_required_height_helper_is_shared_rule():
     assert rules.required_height("Константа", 4) is None
 
 
-def test_grid_height_puts_all_sides_on_8_px_grid():
-    """Сетка 8 px: H = 16*НОК сторон (живой замер 14.11.2026).
+def test_grid_height_follows_the_larger_side():
+    """Высота - по большей стороне (решение владельца 19.11.2026).
 
-    Среда раскладывает порты стороны равномерно, позиции `H*(2k+1)/(2N)`:
-    при 3 входах и 2 выходах высота 96 даёт 16/48/80 и 24/72, все кратны 8.
+    Совпадение сетки 8 px у обеих сторон требует `16*НОК`: у 28/26 это
+    5824 px, блок высотой в шесть экранов. Поэтому приоритет у большей
+    стороны, а меньшая ложится мимо сетки.
     """
-    assert rules.grid_height([3, 2]) == 96
-    # 4/1: НОК(4,1)=4, прежние 64 не меняются.
+    assert rules.grid_height([3, 2]) == 48
     assert rules.grid_height([4, 1]) == 64
     assert rules.grid_height([5]) == 80
     assert rules.grid_height([1, 5]) == 80
+    assert rules.grid_height([28, 26]) == 448
     assert rules.grid_height([0, 0]) is None
     assert rules.grid_height([]) is None
 
 
 def test_required_height_accepts_side_counts():
     """Разное число входов и выходов считается по сетке."""
-    assert rules.required_height("Субмодель", (3, 2)) == 96
+    assert rules.required_height("Субмодель", (3, 2)) == 48
     assert rules.required_height("Субмодель", (6, 1)) == 96
     assert rules.required_height("Субмодель", (0, 4)) == 64

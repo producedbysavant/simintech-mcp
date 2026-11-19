@@ -47,7 +47,7 @@ def test_scripts_use_initialization_and_self():
         assert "beforecompile" not in text
     assert "self.PortNames" in port
     assert "getportinfo" in rows
-    assert "mod" in rows and "div" in rows
+    assert "if __nout > __a then __a = __nout;" in rows
 
 
 def test_script_state_never_overwrites_foreign():
@@ -85,7 +85,7 @@ class _Ports:
     """Блок правила с портами и слотом, который меняется по записи."""
 
     def __init__(self, name, block_id, *, script="", in_ports=3, out_ports=2,
-                 height=48.0):
+                 height=32.0):
         self._name = name
         self.id = block_id
         self._script = script
@@ -176,14 +176,14 @@ def test_install_scripts_sizes_foreign_blocks_too(monkeypatch):
     body = calls["body"]
     assert f"obj = {empty.id};" in body
     assert f"obj = {foreign.id};" not in body
-    # Высота по сетке: 3 входа / 2 выхода -> 96.
-    assert "setprop(blk, \"Height\", 96);" in body
+    # Высота по большей стороне: 3 входа / 2 выхода -> 48.
+    assert "setprop(blk, \"Height\", 48);" in body
 
 
 def test_install_scripts_skips_contour_when_nothing_to_do(monkeypatch):
     """Всё уже сделано: контур не запускается вовсе."""
     ours = _Ports("sub_a", 1,
-                  script=autosize.script_text("Субмодель"), height=96.0)
+                  script=autosize.script_text("Субмодель"), height=48.0)
     calls = _run_stub(monkeypatch, {"sub_a": ours})
 
     result = autosize.install_scripts(
