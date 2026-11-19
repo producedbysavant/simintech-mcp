@@ -146,7 +146,7 @@ def _api_version() -> str:
     },
 )
 @runtime.workflow_tool
-def doctor() -> str:
+def doctor(connect: bool = True) -> str:
     """Проверить окружение SimInTech и назвать следующие шаги.
 
     Кроме версий и каталогов называет две вещи, из-за которых проект в
@@ -162,6 +162,11 @@ def doctor() -> str:
     чтением требуют переоткрыть проект (`reload_project` или
     `close_project` + `open_project`), а до перечитывания не сохранять
     его из MCP.
+
+    `connect=False` не подключается и не поднимает `mmain`: проверка
+    окружения без побочного запуска процесса (для CLI-сценариев и
+    headless-проверок). Строка `com` тогда называется пропущенной, а не
+    проваленной.
     """
     rows: List[tuple[str, str, str]] = []
 
@@ -173,13 +178,34 @@ def doctor() -> str:
     add("platform", "OK" if sys.platform == "win32" else "FAIL",
         sys.platform)
 
-    try:
-        status = project_status()
-        add("com", "OK" if "подключён" in status.lower() else "FAIL", status)
-    except ToolError as exc:
-        add("com", "FAIL", str(exc))
+    if connect:
+        try:
+            status = project_status()
+            add("com", "OK" if "подключён" in status.lower() else "FAIL",
+                status)
+        except ToolError as exc:
+            add("com", "FAIL", str(exc))
+    else:
+        add("com", "WARN",
+            "проверка подключения пропущена (connect=False): mmain не "
+            "поднимался")
 
     client = session.current_client()
+    if client is not None:
+        handle = getattr(client, "job_handle", None)
+        error = getattr(client, "job_error", 0)
+        if handle:
+            add("job", "OK",
+                f"процесс в job-объекте (handle={handle}): смерть клиента "
+                f"снимет mmain силами ядра")
+        elif error:
+            add("job", "WARN",
+                f"назначение процесса в job отказало (код {error}): уборка "
+                f"после аварии клиента не гарантирована")
+        else:
+            add("job", "WARN",
+                "job-объект не назначен: уборка mmain после аварии клиента "
+                "не гарантирована")
     if client is not None and sys.platform == "win32":
         own = client.session_pid
         try:

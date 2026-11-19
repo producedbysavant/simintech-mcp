@@ -243,6 +243,15 @@ def _drop_dead_session() -> None:
     com_mutex.release()
 
 
+def reset_session() -> None:
+    """Сбросить сессию по требованию спасательного пути (без COM).
+
+    Отдельное имя для `runtime._force_rescue`: спасательный путь живёт в
+    `runtime`, а сброс состояния - здесь, одной точкой с `_drop_dead_session`.
+    """
+    _drop_dead_session()
+
+
 def ensure_client() -> COMClient:
     """Подключиться к COM-серверу (лениво), не отдав мёртвый клиент.
 
