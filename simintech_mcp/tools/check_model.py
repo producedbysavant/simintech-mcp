@@ -359,6 +359,7 @@ def check_model_layout() -> str:
     no_geometry: List[str] = []
     label_warnings: List[str] = []
     height_warnings: List[str] = []
+    height_notes: List[str] = []
     height_skipped: List[str] = []
     height_checked = 0
     height_rule_blocks = 0
@@ -438,22 +439,36 @@ def check_model_layout() -> str:
             # Табличный блок алгоритма: высота по позициям таблицы, включая
             # пустые заполнители, без строки-заголовка (канон владельца
             # 21.11.2026). Нечитаемая таблица - «не проверена», а не успех.
+            #
+            # Авторазмер среды считает заголовок и у чужих проектов это
+            # норма: такая высота при AutoChangeHeight=1 называется
+            # примечанием, а не расхождением (замечание fdd002 21.11.2026).
             try:
                 raw = block.get_property("SignalNames") or ""
                 header = str(block.get_property("fExcludeFirst") or "1")
+                auto = str(block.get_property("AutoChangeHeight") or "0")
             except Exception:                                  # noqa: BLE001
                 height_skipped.append(name)
             else:
-                expected = table_height(
-                    raw, header.strip().lower() not in ("0", "false"))
+                with_header = header.strip().lower() not in ("0", "false")
+                expected = table_height(raw, with_header)
                 if expected is not None:
                     height_checked += 1
+                    auto_height = (expected // PORT_ROW_HEIGHT
+                                   + (1 if with_header else 0)) * PORT_ROW_HEIGHT
                     if float(height) != float(expected):
-                        height_warnings.append(
-                            f"{name}: высота {height:g}, позиций "
-                            f"{expected // PORT_ROW_HEIGHT}, нужно "
-                            f"{expected} ({PORT_ROW_HEIGHT} px на позицию "
-                            f"таблицы)")
+                        if (auto.strip().lower() not in ("0", "false")
+                                and float(height) == float(auto_height)):
+                            height_notes.append(
+                                f"{name}: высота {height:g} - авторазмер "
+                                f"среды с заголовком; канон по позициям "
+                                f"{expected}")
+                        else:
+                            height_warnings.append(
+                                f"{name}: высота {height:g}, позиций "
+                                f"{expected // PORT_ROW_HEIGHT}, нужно "
+                                f"{expected} ({PORT_ROW_HEIGHT} px на "
+                                f"позицию таблицы)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
                 in_ports, out_ports = read_port_counts(block)
@@ -626,6 +641,13 @@ def check_model_layout() -> str:
             f"nport-классов число входов меняет "
             f"`set_block_param(nport=N)`; правило: "
             f"simintech://guides/block-sizing.")
+    if height_notes:
+        shown = "; ".join(height_notes[:MAX_REPORTED])
+        more = (f" (и ещё {len(height_notes) - MAX_REPORTED})"
+                if len(height_notes) > MAX_REPORTED else "")
+        lines.append(
+            f"Примечание: {shown}{more}. Так ставит авторазмер среды; "
+            f"канон владельца считает позиции таблицы без заголовка.")
     elif not height_skipped:
         if height_checked:
             lines.append(f"Высота блоков с входными контактами: по правилу "

@@ -48,7 +48,8 @@ class _CheckBlock:
     def __init__(self, name, center=None, portnames="", ports=2,
                  width=32.0, height=16.0, class_name="", in_ports=None,
                  nport="", in_ports_error=False, size_error=False,
-                 signal_names="", exclude_first="1"):
+                 signal_names="", exclude_first="1",
+                 auto_change_height="0"):
         self._name = name
         self._center = center
         self._portnames = portnames
@@ -60,6 +61,7 @@ class _CheckBlock:
         self._nport = nport
         self._signal_names = signal_names
         self._exclude_first = exclude_first
+        self._auto_change_height = auto_change_height
         self._in_ports_error = in_ports_error
         self._size_error = size_error
 
@@ -92,6 +94,8 @@ class _CheckBlock:
             return self._signal_names
         if name == "fExcludeFirst":
             return self._exclude_first
+        if name == "AutoChangeHeight":
+            return self._auto_change_height
         raise AssertionError(f"подделка читает PortNames/nport, а спрошено "
                              f"{name!r}")
 
@@ -1223,4 +1227,24 @@ async def test_check_model_table_height_ok_is_quiet(monkeypatch, tmp_path):
     text = _text(await mcp.call_tool("check_model_layout", {}))
 
     assert "позиций 357" not in text
+    assert "ВНИМАНИЕ: высота не по правилу" not in text
+
+
+@pytest.mark.anyio
+async def test_check_model_table_auto_height_is_note(monkeypatch, tmp_path):
+    """Авторазмер среды с заголовком - примечание, а не расхождение.
+
+    «Сборка ТКМ»: 3 позиции, Height=64 = (3+заголовок)×16; владелец такие
+    блоки не трогает (замечание fdd002 21.11.2026).
+    """
+    table = "Имя сигнала\r\n" + "a\r\nb\r\nc\r\n"
+    block = _CheckBlock("Signal_Block_1", center=(0, 0),
+                        class_name="Вход алгоритма", width=208.0,
+                        height=64.0, signal_names=table,
+                        auto_change_height="1")
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "авторазмер среды с заголовком" in text
     assert "ВНИМАНИЕ: высота не по правилу" not in text
