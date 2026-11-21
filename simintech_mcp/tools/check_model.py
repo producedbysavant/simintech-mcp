@@ -47,9 +47,9 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..rules import (NPORT_BLOCK_WIDTH, NPORT_PARAM, NPORT_SIZE_CLASSES,
-                     PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES,
-                     required_height)
+from ..rules import (ALGORITHM_TABLE_CLASSES, NPORT_BLOCK_WIDTH, NPORT_PARAM,
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT,
+                     ROW_HEIGHT_CLASSES, required_height, table_height)
 from ..geometry import CHAR_WIDTH_ESTIMATE, overlaps, rect_of
 from .blocks import read_port_counts, read_port_names
 from .check_routing import (
@@ -359,6 +359,7 @@ def check_model_layout() -> str:
     no_geometry: List[str] = []
     label_warnings: List[str] = []
     height_warnings: List[str] = []
+    height_notes: List[str] = []
     height_skipped: List[str] = []
     height_checked = 0
     height_rule_blocks = 0
@@ -421,7 +422,8 @@ def check_model_layout() -> str:
         # субмодели и nport-классы - 16 px на входной контакт. Нечитаемые
         # данные дают «не проверена», а не положительный вердикт.
         if height is None and class_name in (*PORT_HEIGHT_CLASSES,
-                                             *ROW_HEIGHT_CLASSES):
+                                             *ROW_HEIGHT_CLASSES,
+                                             *ALGORITHM_TABLE_CLASSES):
             height_skipped.append(name)
         elif class_name in PORT_HEIGHT_CLASSES and names is None:
             height_skipped.append(name)
@@ -433,6 +435,40 @@ def check_model_layout() -> str:
                     height_warnings.append(
                         f"{name}: высота {height:g}, строк {len(names)}, нужно "
                         f"{required} ({PORT_ROW_HEIGHT} px на строку)")
+        if height is not None and class_name in ALGORITHM_TABLE_CLASSES:
+            # Табличный блок алгоритма: высота по позициям таблицы, включая
+            # пустые заполнители, без строки-заголовка (канон владельца
+            # 21.11.2026). Нечитаемая таблица - «не проверена», а не успех.
+            #
+            # Авторазмер среды считает заголовок и у чужих проектов это
+            # норма: такая высота при AutoChangeHeight=1 называется
+            # примечанием, а не расхождением (замечание fdd002 21.11.2026).
+            try:
+                raw = block.get_property("SignalNames") or ""
+                header = str(block.get_property("fExcludeFirst") or "1")
+                auto = str(block.get_property("AutoChangeHeight") or "0")
+            except Exception:                                  # noqa: BLE001
+                height_skipped.append(name)
+            else:
+                with_header = header.strip().lower() not in ("0", "false")
+                expected = table_height(raw, with_header)
+                if expected is not None:
+                    height_checked += 1
+                    auto_height = (expected // PORT_ROW_HEIGHT
+                                   + (1 if with_header else 0)) * PORT_ROW_HEIGHT
+                    if float(height) != float(expected):
+                        if (auto.strip().lower() not in ("0", "false")
+                                and float(height) == float(auto_height)):
+                            height_notes.append(
+                                f"{name}: высота {height:g} - авторазмер "
+                                f"среды с заголовком; канон по позициям "
+                                f"{expected}")
+                        else:
+                            height_warnings.append(
+                                f"{name}: высота {height:g}, позиций "
+                                f"{expected // PORT_ROW_HEIGHT}, нужно "
+                                f"{expected} ({PORT_ROW_HEIGHT} px на "
+                                f"позицию таблицы)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
                 in_ports, out_ports = read_port_counts(block)
@@ -449,7 +485,7 @@ def check_model_layout() -> str:
                         height_warnings.append(
                             f"{name}: высота {height:g}, входов {in_ports}, "
                             f"выходов {out_ports}, нужно {required} "
-                            f"({PORT_ROW_HEIGHT} px × НОК сторон, сетка 8)")
+                            f"({PORT_ROW_HEIGHT} px на большую сторону)")
                 if class_name in NPORT_SIZE_CLASSES:
                     try:
                         nport = block.get_property(NPORT_PARAM)
@@ -605,6 +641,13 @@ def check_model_layout() -> str:
             f"nport-классов число входов меняет "
             f"`set_block_param(nport=N)`; правило: "
             f"simintech://guides/block-sizing.")
+    if height_notes:
+        shown = "; ".join(height_notes[:MAX_REPORTED])
+        more = (f" (и ещё {len(height_notes) - MAX_REPORTED})"
+                if len(height_notes) > MAX_REPORTED else "")
+        lines.append(
+            f"Примечание: {shown}{more}. Так ставит авторазмер среды; "
+            f"канон владельца считает позиции таблицы без заголовка.")
     elif not height_skipped:
         if height_checked:
             lines.append(f"Высота блоков с входными контактами: по правилу "

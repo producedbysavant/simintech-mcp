@@ -216,6 +216,48 @@ def _mark_fatal(exc: BaseException) -> None:
         pass
 
 
+def _force_rescue() -> str:
+    """Снять зависшую сессию **без COM**: свой процесс по PID и сброс.
+
+    Спасательный инструмент (`disconnect`) иначе встал бы в очередь за
+    зависшим вызовом на единственном COM-потоке и не выполнился бы никогда
+    (находка ревью 19.11.2026). COM здесь не трогается: через мёртвый прокси
+    любой вызов только добавил бы ожидания. Снимается **свой** процесс
+    (`ownership=OWNED`); чужой или неподтверждённый не трогается.
+    """
+    global _stuck_call
+    from . import session as _session
+
+    client = _session.current_client()
+    pid = getattr(client, "session_pid", None) if client is not None else None
+    owned = False
+    if client is not None:
+        try:
+            from simintech_api import SessionOwnership
+
+            owned = client.ownership is SessionOwnership.OWNED
+        except Exception:                                      # noqa: BLE001
+            owned = False
+    tail = ""
+    if pid and owned:
+        try:
+            import subprocess
+
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=10)
+            tail = f" Процесс PID {pid} снят."
+        except Exception as exc:                               # noqa: BLE001
+            tail = (f" Процесс PID {pid} снять не удалось "
+                    f"({type(exc).__name__}: {exc}); снимите его вручную.")
+    elif pid:
+        tail = (f" Процесс PID {pid} не снят: владение не подтверждено, "
+                f"чужой процесс не трогается.")
+    _session.reset_session()
+    _stuck_call = None
+    return ("COM-поток занят зависшим вызовом: спасательный путь выполнен "
+            "без COM." + tail + " Сессия сброшена; откройте проект заново.")
+
+
 def _remember_stuck(tool: str, future: "Future[Any]") -> None:
     """Запомнить зависший вызов (future уже завершился — не запоминать)."""
     global _stuck_call
@@ -470,6 +512,10 @@ def com_threaded(fn: Callable[..., Any] | None = None, *,
             refusal = _degraded_gate(rescue=rescue)
         if refusal is not None:
             raise ToolError(refusal)
+        if rescue and _stuck_call is not None:
+            # Не вставать в очередь за зависшим вызовом: снимаем сессию
+            # без COM, иначе спасательный инструмент ждал бы вечно.
+            return _force_rescue()
         if preflight is not None:
             # Проверка идёт в вызывающем потоке, а не в единственном
             # COM-потоке: медленный `isdir`/`access` не должен занимать его и

@@ -17,8 +17,9 @@ from simintech_api.constants import standard_block_size
 
 from .. import catalog, runtime, session
 from ..app import mcp
-from ..rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES, NPORT_PARAM,
-                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT)
+from ..rules import (ALGORITHM_TABLE_CLASSES, NPORT_BLOCK_WIDTH,
+                     NPORT_OTHER_CLASSES, NPORT_PARAM, NPORT_SIZE_CLASSES,
+                     PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT)
 from .block_param_write import (MAX_BLOCK_IN_PORTS, ParamValue,
                                 coerce_param_value as _coerce_param_value,
                                 parse_val as _parse_val,
@@ -67,10 +68,8 @@ MAX_BLOCK_PROPS = 64
 #: Классы, у которых таблица `SignalNames` через COM не ведётся: запись
 #: свойства не применяется, `param='signals'` пуст. Сигнал добавляется только
 #: в GUI (живой замер 05.11.2026).
-ALGORITHM_SIGNAL_CLASSES = frozenset({
-    "Вход алгоритма", "Вход алгоритма (векторный)",
-    "Выход алгоритма", "Выход алгоритма (векторный)",
-})
+# Имена классов общие с правилом высоты табличных блоков (`rules`).
+ALGORITHM_SIGNAL_CLASSES = frozenset(ALGORITHM_TABLE_CLASSES)
 
 
 @mcp.tool(title="Добавить блок", annotations={"readOnlyHint": False})

@@ -464,6 +464,99 @@ async def test_add_block_reports_auto_name(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_add_block_installs_autosize_script(monkeypatch):
+    """Порт-блок: add_block зовёт установку скрипта и называет исход.
+
+    Слот у подделки не читается, поэтому честный исход — «не читается»;
+    тест проверяет сам вызов установки на месте, а не её успех.
+    """
+    monkeypatch.setattr(session, "_project", _FakeProjectWithCreate())
+
+    text = _tool_text(await mcp.call_tool(
+        "add_block", {"class_name": "Порт входа"}))
+
+    assert "Скрипт саморазмера не поставлен" in text
+
+
+class _PortNamesBlock:
+    """Порт-блок для контурной записи PortNames."""
+
+    id = 77
+    class_name = "Порт входа"
+
+    def __init__(self):
+        self._size = [64.0, 16.0]
+        self.props = {"Name": "InputPort_0", "PortNames": "in\r\n"}
+
+    def get_name(self):
+        return "InputPort_0"
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def get_property(self, name):
+        return self.props.get(name, "")
+
+    def set_property(self, name, value):
+        self.props[name] = value
+        return self
+
+
+class _ContourOk:
+    kind = "ok"
+
+    def __init__(self, lines):
+        self.lines = lines
+
+
+@pytest.mark.anyio
+async def test_set_block_param_portnames_contour_and_height(monkeypatch):
+    """PortNames пишется контуром и сразу даёт высоту по числу строк.
+
+    COM-путь для этого свойства молча не применяется (живой замер
+    14.11.2026), поэтому проверяется именно контур: setpropasstring и запись
+    высоты 16 * строки.
+    """
+    import re as _re
+
+    block = _PortNamesBlock()
+    project = _FakeProject({"InputPort_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    calls = {}
+
+    def fake_contour(body, *, failed):
+        calls["body"] = body
+        # Подделка моделирует переход: запись высоты из тела применяется,
+        # иначе успешная запись выглядела бы расхождением.
+        height = _re.search(r'setprop\(blk, "Height", ([0-9.]+)\)', body)
+        if height:
+            block._size[1] = float(height.group(1))
+        token = _re.search(r'"(PN[0-9a-f]+)_BEGIN"', body).group(1)
+        return _ContourOk([f"{token}_BEGIN", "a", "b", f"{token}_END"]), ""
+
+    # `block_param_write` импортирует контурные функции лениво, поэтому
+    # подменяется источник: page_script.
+    from simintech_mcp.tools import page_script
+
+    monkeypatch.setattr(page_script, "run_contour", fake_contour)
+    monkeypatch.setattr(page_script, "activate_or_refuse",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(page_script, "refuse_contour_failure",
+                        lambda *a, **k: None)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "InputPort_0", "param": "PortNames",
+         "value": "a\r\nb", "allow_unknown": True}))
+
+    body = calls["body"]
+    assert "setpropasstring(obj, \"PortNames\"" in body
+    assert 'setprop(blk, "Height", 32);' in body
+    assert "PortNames = a" in text
+    assert "высота по правилу" in text
+
+
+@pytest.mark.anyio
 async def test_add_block_refuses_when_project_is_running(monkeypatch):
     """Расчёт идёт (состояние 3) — отказ ДО COM, с советом `stop`.
 

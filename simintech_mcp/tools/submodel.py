@@ -225,12 +225,24 @@ def _read_prt(path: str) -> Tuple[ModelIR, List[str]]:
     finally:
         shutil.rmtree(root, ignore_errors=True)
         if opened is not None:
+            # Сверка id: если OpenProject вернул тот же проект (файл уже
+            # открыт), закрывать его нельзя - это текущий проект сессии,
+            # а не просмотренная копия.
             try:
-                opened.close()
-            except Exception as exc:                           # noqa: BLE001
+                same = previous is not None and opened.id == previous.id
+            except Exception:                                  # noqa: BLE001
+                same = False
+            if same:
                 warnings.append(
-                    f"открытый для просмотра проект закрыть не удалось "
-                    f"({type(exc).__name__}: {exc})")
+                    "просматриваемый файл открыт как текущий проект: он "
+                    "оставлен открытым (закрытие закрыло бы сессию)")
+            else:
+                try:
+                    opened.close()
+                except Exception as exc:                       # noqa: BLE001
+                    warnings.append(
+                        f"открытый для просмотра проект закрыть не удалось "
+                        f"({type(exc).__name__}: {exc})")
         if previous is not None:
             if _project_alive(previous):
                 if previous_page is not None and previous_page.id:

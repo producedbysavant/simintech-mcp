@@ -609,6 +609,33 @@ def test_degraded_state_can_be_set_and_cleared():
         session.clear_com_degraded()
 
 
+def test_clear_client_releases_com_mutex(monkeypatch):
+    """Забытый клиент отпускает замок COM-сессии.
+
+    Живой случай 20.11.2026: `disconnect` звал `clear_client`, а не
+    `_drop_dead_session`, и замок оставался за сервером до перезапуска.
+    """
+    calls = []
+    monkeypatch.setattr(session, "_client", object())
+    monkeypatch.setattr(session.com_mutex, "release",
+                        lambda: calls.append("release"))
+
+    session.clear_client()
+
+    assert calls == ["release"]
+    assert session.current_client() is None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_com_mutex(monkeypatch):
+    """Тесты сессии не берут настоящий именованный замок.
+
+    На живой машине замок может держать запущенный сервер; проверки
+    `ensure_client` должны зависеть только от подделок COM.
+    """
+    monkeypatch.setattr(session.com_mutex, "acquire", lambda *a, **k: None)
+
+
 @pytest.mark.anyio
 async def test_disconnect_clears_degraded(monkeypatch):
     """disconnect: единственный выход из небезопасной сессии."""

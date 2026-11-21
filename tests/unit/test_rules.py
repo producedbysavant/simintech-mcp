@@ -60,23 +60,68 @@ def test_required_height_helper_is_shared_rule():
     assert rules.required_height("Константа", 4) is None
 
 
-def test_grid_height_puts_all_sides_on_8_px_grid():
-    """Сетка 8 px: H = 16*НОК сторон (живой замер 14.11.2026).
+def test_grid_height_follows_the_larger_side():
+    """Высота - по большей стороне (решение владельца 19.11.2026).
 
-    Среда раскладывает порты стороны равномерно, позиции `H*(2k+1)/(2N)`:
-    при 3 входах и 2 выходах высота 96 даёт 16/48/80 и 24/72, все кратны 8.
+    Совпадение сетки 8 px у обеих сторон требует `16*НОК`: у 28/26 это
+    5824 px, блок высотой в шесть экранов. Поэтому приоритет у большей
+    стороны, а меньшая ложится мимо сетки.
     """
-    assert rules.grid_height([3, 2]) == 96
-    # 4/1: НОК(4,1)=4, прежние 64 не меняются.
+    assert rules.grid_height([3, 2]) == 48
     assert rules.grid_height([4, 1]) == 64
     assert rules.grid_height([5]) == 80
     assert rules.grid_height([1, 5]) == 80
+    assert rules.grid_height([28, 26]) == 448
     assert rules.grid_height([0, 0]) is None
     assert rules.grid_height([]) is None
 
 
+def test_read_port_counts_uses_raw_com_without_scene_edit():
+    """Счёт портов идёт сырым COM: API-методы на промахе зовут BlockAfterEdit."""
+    from simintech_mcp.tools.blocks import read_port_counts
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+
+        def call(self, method, block_id, index):
+            self.calls.append((method, index))
+            limit = 3 if method == "GetInPort" else 2
+            return index + 1 if index < limit else 0
+
+    class _Block:
+        id = 9
+
+        def __init__(self):
+            self.client = _Client()
+
+        def get_port_count(self):
+            return 5
+
+        def get_in_port_count(self):
+            raise AssertionError("API-путь не должен вызываться при клиенте")
+
+        def get_out_port(self, index):
+            raise AssertionError("API-путь не должен вызываться при клиенте")
+
+    block = _Block()
+    assert read_port_counts(block) == (3, 2)
+    methods = {method for method, _ in block.client.calls}
+    assert methods == {"GetInPort", "GetOutPort"}
+
+
 def test_required_height_accepts_side_counts():
     """Разное число входов и выходов считается по сетке."""
-    assert rules.required_height("Субмодель", (3, 2)) == 96
+    assert rules.required_height("Субмодель", (3, 2)) == 48
     assert rules.required_height("Субмодель", (6, 1)) == 96
     assert rules.required_height("Субмодель", (0, 4)) == 64
+
+
+def test_table_height_counts_positions_without_header():
+    """Таблица: позиции без заголовка, пустые заполнители считаются."""
+    table = "Имя сигнала\r\n" + "\r\n".join(["a", "", "b", ""]) + "\r\n"
+    assert rules.table_positions(table) == 4
+    assert rules.table_height(table) == 64
+    assert rules.table_positions(table, header=False) == 5
+    assert rules.table_height("") is None
+    assert rules.table_height("Имя сигнала\r\n") is None

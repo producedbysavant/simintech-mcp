@@ -31,6 +31,8 @@ from simintech_api import (
     Wire,
 )
 
+from . import com_mutex
+
 
 # ─── Состояние сессии ─────────────────────────────────────────────
 
@@ -203,9 +205,15 @@ def clear_client() -> None:
     `disconnect` вызывает это **до** `shutdown`: состояние сессии не должно
     зависеть от того, ответил ли COM, а завершение процесса — забота
     вызывающего (`client.shutdown()`), а не сброса состояния.
+
+    Замок COM-сессии отпускается здесь же: клиент забыт, и держать общий
+    замок дальше нельзя (иначе раннер ждал бы освобождения уже пустой
+    сессии). Живой случай 20.11.2026: `disconnect` шёл этим путём, а
+    `_drop_dead_session` не звался, и файл владельца оставался на диске.
     """
     global _client
     _client = None
+    com_mutex.release()
 
 
 def _client_is_alive(client: COMClient) -> bool:
@@ -236,6 +244,18 @@ def _drop_dead_session() -> None:
     set_project(None)
     set_pack(None)
     _client = None
+    # Замок принадлежит сессии: мёртвый клиент отпускает его, иначе соседний
+    # клиент (раннер) ждал бы освобождения мёртвой сессии.
+    com_mutex.release()
+
+
+def reset_session() -> None:
+    """Сбросить сессию по требованию спасательного пути (без COM).
+
+    Отдельное имя для `runtime._force_rescue`: спасательный путь живёт в
+    `runtime`, а сброс состояния - здесь, одной точкой с `_drop_dead_session`.
+    """
+    _drop_dead_session()
 
 
 def ensure_client() -> COMClient:
@@ -256,8 +276,17 @@ def ensure_client() -> COMClient:
     if _client is not None and not _client_is_alive(_client):
         _drop_dead_session()
     if _client is None:
-        candidate = COMClient(silent_mode=True).connect()
-        _require_owned(candidate)
+        # Замок берётся ДО CreateObject: профиль общий, и второй экземпляр
+        # рядом с чужим клиентом мешал бы обоим.
+        com_mutex.acquire()
+        try:
+            candidate = COMClient(silent_mode=True).connect()
+            _require_owned(candidate)
+        except Exception:
+            # Своей сессии не получилось: замок не нужен и не должен
+            # запирать соседей.
+            com_mutex.release()
+            raise
         _client = candidate
     return _client
 
