@@ -71,6 +71,38 @@ NPORT_OTHER_REASONS = {
 #: (правило владельца 07.10.2026, выход строки не занимает) и nport-классы.
 ROW_HEIGHT_CLASSES = ("Субмодель", *NPORT_SIZE_CLASSES)
 
+#: Классы табличных блоков алгоритма: высота - 16 px на **позицию** таблицы.
+#: Позиции считаются по всей таблице, включая пустые заполнители и строки без
+#: активных портов (канон владельца 21.11.2026, по `Signal_Block_Vec_0` и
+#: `ALG_Vec_0`); строка-заголовок при `fExcludeFirst=1` не считается. Живые
+#: замеры: 357 позиций -> 5712, 8 позиций -> 128... (см. `table_positions`).
+ALGORITHM_TABLE_CLASSES = ("Вход алгоритма", "Вход алгоритма (векторный)",
+                           "Выход алгоритма", "Выход алгоритма (векторный)")
+
+
+def table_positions(raw: str, header: bool = True) -> int:
+    """Число позиций таблицы сигналов по значению `SignalNames`.
+
+    `raw` - свойство `SignalNames` как его отдаёт COM: позиции через CRLF.
+    Завершающая пустая строка отбрасывается, строка-заголовок (`header`)
+    тоже: канон владельца считает позиции, а не заголовок. Пустые
+    заполнители **считаются**: у тестового блока 357 позиций при 112 именах.
+    """
+    text = (raw or "").replace("\r\n", "\n").replace("\r", "\n")
+    parts = text.split("\n")
+    if parts and parts[-1] == "":
+        parts.pop()
+    if header and parts:
+        parts.pop(0)
+    return len(parts)
+
+
+def table_height(raw: str, header: bool = True) -> int | None:
+    """Высота табличного блока: `16 px` на позицию; пустая таблица - `None`."""
+    positions = table_positions(raw, header)
+    return PORT_ROW_HEIGHT * positions if positions > 0 else None
+
+
 #: Классы порт-блоков: высота 16 px на строку сигнала `PortNames`
 #: (правило владельца 01.10.2026).
 PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")

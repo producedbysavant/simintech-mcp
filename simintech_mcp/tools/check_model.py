@@ -47,9 +47,9 @@ from simintech_api.script_probe import (
 
 from .. import runtime, sandbox, session
 from ..app import mcp
-from ..rules import (NPORT_BLOCK_WIDTH, NPORT_PARAM, NPORT_SIZE_CLASSES,
-                     PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT, ROW_HEIGHT_CLASSES,
-                     required_height)
+from ..rules import (ALGORITHM_TABLE_CLASSES, NPORT_BLOCK_WIDTH, NPORT_PARAM,
+                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT,
+                     ROW_HEIGHT_CLASSES, required_height, table_height)
 from ..geometry import CHAR_WIDTH_ESTIMATE, overlaps, rect_of
 from .blocks import read_port_counts, read_port_names
 from .check_routing import (
@@ -421,7 +421,8 @@ def check_model_layout() -> str:
         # субмодели и nport-классы - 16 px на входной контакт. Нечитаемые
         # данные дают «не проверена», а не положительный вердикт.
         if height is None and class_name in (*PORT_HEIGHT_CLASSES,
-                                             *ROW_HEIGHT_CLASSES):
+                                             *ROW_HEIGHT_CLASSES,
+                                             *ALGORITHM_TABLE_CLASSES):
             height_skipped.append(name)
         elif class_name in PORT_HEIGHT_CLASSES and names is None:
             height_skipped.append(name)
@@ -433,6 +434,26 @@ def check_model_layout() -> str:
                     height_warnings.append(
                         f"{name}: высота {height:g}, строк {len(names)}, нужно "
                         f"{required} ({PORT_ROW_HEIGHT} px на строку)")
+        if height is not None and class_name in ALGORITHM_TABLE_CLASSES:
+            # Табличный блок алгоритма: высота по позициям таблицы, включая
+            # пустые заполнители, без строки-заголовка (канон владельца
+            # 21.11.2026). Нечитаемая таблица - «не проверена», а не успех.
+            try:
+                raw = block.get_property("SignalNames") or ""
+                header = str(block.get_property("fExcludeFirst") or "1")
+            except Exception:                                  # noqa: BLE001
+                height_skipped.append(name)
+            else:
+                expected = table_height(
+                    raw, header.strip().lower() not in ("0", "false"))
+                if expected is not None:
+                    height_checked += 1
+                    if float(height) != float(expected):
+                        height_warnings.append(
+                            f"{name}: высота {height:g}, позиций "
+                            f"{expected // PORT_ROW_HEIGHT}, нужно "
+                            f"{expected} ({PORT_ROW_HEIGHT} px на позицию "
+                            f"таблицы)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
                 in_ports, out_ports = read_port_counts(block)

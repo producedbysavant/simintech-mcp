@@ -115,3 +115,13 @@ def test_required_height_accepts_side_counts():
     assert rules.required_height("Субмодель", (3, 2)) == 48
     assert rules.required_height("Субмодель", (6, 1)) == 96
     assert rules.required_height("Субмодель", (0, 4)) == 64
+
+
+def test_table_height_counts_positions_without_header():
+    """Таблица: позиции без заголовка, пустые заполнители считаются."""
+    table = "Имя сигнала\r\n" + "\r\n".join(["a", "", "b", ""]) + "\r\n"
+    assert rules.table_positions(table) == 4
+    assert rules.table_height(table) == 64
+    assert rules.table_positions(table, header=False) == 5
+    assert rules.table_height("") is None
+    assert rules.table_height("Имя сигнала\r\n") is None

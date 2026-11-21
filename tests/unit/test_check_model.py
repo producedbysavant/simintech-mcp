@@ -47,7 +47,8 @@ class _CheckBlock:
 
     def __init__(self, name, center=None, portnames="", ports=2,
                  width=32.0, height=16.0, class_name="", in_ports=None,
-                 nport="", in_ports_error=False, size_error=False):
+                 nport="", in_ports_error=False, size_error=False,
+                 signal_names="", exclude_first="1"):
         self._name = name
         self._center = center
         self._portnames = portnames
@@ -57,6 +58,8 @@ class _CheckBlock:
         self.class_name = class_name
         self._in_ports = ports if in_ports is None else in_ports
         self._nport = nport
+        self._signal_names = signal_names
+        self._exclude_first = exclude_first
         self._in_ports_error = in_ports_error
         self._size_error = size_error
 
@@ -85,6 +88,10 @@ class _CheckBlock:
             return self._portnames
         if name == "nport":
             return self._nport
+        if name == "SignalNames":
+            return self._signal_names
+        if name == "fExcludeFirst":
+            return self._exclude_first
         raise AssertionError(f"подделка читает PortNames/nport, а спрошено "
                              f"{name!r}")
 
@@ -1182,3 +1189,38 @@ async def test_check_model_warns_port_block_height(monkeypatch, tmp_path):
     assert "ВНИМАНИЕ: высота не по правилу" in text
     assert "строк 2" in text and "32" in text
     assert "у nport-классов число входов меняет" in text
+
+
+@pytest.mark.anyio
+async def test_check_model_warns_table_height_by_positions(monkeypatch,
+                                                           tmp_path):
+    """Табличный блок: высота = позиции × 16, включая пустые заполнители.
+
+    Канон владельца 21.11.2026: заголовок не считается, пустые позиции
+    считаются (живой замер: 357 позиций -> 5712).
+    """
+    table = "Имя сигнала\r\n" + "a\r\nb\r\nc\r\n"
+    block = _CheckBlock("Signal_Block_1", center=(0, 0),
+                        class_name="Вход алгоритма", width=208.0,
+                        height=64.0, signal_names=table)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "позиций 3, нужно 48" in text
+
+
+@pytest.mark.anyio
+async def test_check_model_table_height_ok_is_quiet(monkeypatch, tmp_path):
+    """357 позиций и высота 5712 предупреждения не дают."""
+    rows = "\r\n".join(["x"] * 357)
+    table = "Имя сигнала\r\n" + rows + "\r\n"
+    block = _CheckBlock("Signal_Block_Vec_0", center=(0, 0),
+                        class_name="Вход алгоритма (векторный)",
+                        width=464.0, height=5712.0, signal_names=table)
+    _install(monkeypatch, tmp_path, [block])
+
+    text = _text(await mcp.call_tool("check_model_layout", {}))
+
+    assert "позиций 357" not in text
+    assert "ВНИМАНИЕ: высота не по правилу" not in text
