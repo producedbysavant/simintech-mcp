@@ -261,6 +261,8 @@ async def test_set_block_param_signalnames_algorithm_block_names_gui_limit(
     assert "param='signals' у этих классов пуст" in text
     assert "ограничение COM, а не запрет" in text
     assert "Список сигналов" in text
+    assert "setpropasstring" in text
+    assert "в контуре" in text
     assert "Имена сигналов пишите" not in text
     assert "Запись в список сигналов" not in text
     assert "таблица была пуста" not in text
