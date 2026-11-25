@@ -231,7 +231,7 @@ def _client_is_alive(client: COMClient) -> bool:
     return True
 
 
-def _drop_dead_session() -> None:
+def _drop_dead_session(*, release_lock: bool = True) -> None:
     """Сбросить состояние сессии, привязанное к мёртвому COM-клиенту.
 
     Одна точка на три места (`ensure_client`, `ensure_project`,
@@ -239,6 +239,11 @@ def _drop_dead_session() -> None:
     прокси, и сбрасывать их порознь — значит однажды забыть одно из трёх.
     Линии уходят вместе с проектом (`set_project`) — смена проекта и сброс
     линий остаются одной операцией.
+
+    `release_lock=False` нужен спасательному пути: замок держит зависший
+    COM-поток, и отпустить его из потока вызывающего нельзя (Windows
+    отвечает `ERROR_NOT_OWNER`). Состояние сессии сбрасывается, а замок и
+    файл владельца остаются до завершения зависшего вызова или процесса.
     """
     global _client
     set_project(None)
@@ -246,16 +251,17 @@ def _drop_dead_session() -> None:
     _client = None
     # Замок принадлежит сессии: мёртвый клиент отпускает его, иначе соседний
     # клиент (раннер) ждал бы освобождения мёртвой сессии.
-    com_mutex.release()
+    if release_lock:
+        com_mutex.release()
 
 
-def reset_session() -> None:
+def reset_session(*, release_lock: bool = True) -> None:
     """Сбросить сессию по требованию спасательного пути (без COM).
 
     Отдельное имя для `runtime._force_rescue`: спасательный путь живёт в
     `runtime`, а сброс состояния - здесь, одной точкой с `_drop_dead_session`.
     """
-    _drop_dead_session()
+    _drop_dead_session(release_lock=release_lock)
 
 
 def ensure_client() -> COMClient:

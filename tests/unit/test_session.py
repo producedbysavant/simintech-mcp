@@ -609,6 +609,17 @@ def test_degraded_state_can_be_set_and_cleared():
         session.clear_com_degraded()
 
 
+def test_reset_session_can_keep_lock(monkeypatch):
+    """Спасательный путь сбрасывает сессию, но не отпускает чужой замок."""
+    calls = []
+    monkeypatch.setattr(session.com_mutex, "release",
+                        lambda: calls.append("release"))
+
+    session.reset_session(release_lock=False)
+
+    assert calls == []
+
+
 def test_clear_client_releases_com_mutex(monkeypatch):
     """Забытый клиент отпускает замок COM-сессии.
 

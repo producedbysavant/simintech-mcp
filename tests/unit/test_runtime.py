@@ -364,6 +364,29 @@ def test_rescue_bypasses_stuck_executor(monkeypatch):
     assert runtime._stuck_call is None
 
 
+def test_rescue_keeps_lock_held_by_stuck_thread(monkeypatch):
+    """Замок зависшего COM-потока спасательный путь не отпускает.
+
+    Windows отпускает мьютекс только из потока-владельца, поэтому сброс
+    сессии идёт с `release_lock=False`, а ответ называет оставшийся замок,
+    а не выдаёт сброс за освобождение.
+    """
+    from simintech_mcp import com_mutex, session as _session
+
+    monkeypatch.setattr(runtime, "_stuck_call", object())
+    monkeypatch.setattr(_session, "current_client", lambda: None)
+    calls = []
+    monkeypatch.setattr(_session, "reset_session",
+                        lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(com_mutex, "held_by_other_thread", lambda: True)
+
+    text = runtime._force_rescue()
+
+    assert calls == [{"release_lock": False}]
+    assert "Замок COM-сессии остаётся" in text
+    assert "файл владельца называет PID" in text
+
+
 def test_rescue_tool_runs_normally_without_stuck_call(monkeypatch):
     """Без зависания спасательный инструмент идёт обычным путём.
 

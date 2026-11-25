@@ -4,7 +4,10 @@
 `%LOCALAPPDATA%\\DCAD` общий у всех экземпляров, поэтому два клиента без
 замка поднимают два `mmain` и мешают друг другу. Замок берётся **до**
 `CreateObject` и держится до `disconnect` и снятия своего процесса;
-между открытием и закрытием проекта не отпускается.
+между открытием и закрытием проекта не отпускается. Если `disconnect`
+идёт спасательным путём на зависшем COM-вызове, замок остаётся за
+зависшим потоком: Windows отпускает мьютекс только из него, и система
+снимет замок при выходе процесса.
 
 Имя `Local\\sitECRT-com-session` действует в пределах сеанса пользователя.
 Если сервер когда-нибудь пойдёт службой или в другом сеансе, понадобится
@@ -24,6 +27,7 @@ import atexit
 import os
 import sys
 import tempfile
+import threading
 from typing import Any, Optional
 
 from fastmcp.exceptions import ToolError
@@ -40,6 +44,10 @@ _WAIT_ABANDONED = 0x80
 _WAIT_TIMEOUT = 0x102
 
 _handle: Optional[int] = None
+
+#: Поток, который взял замок. Windows отпускает мьютекс только из него:
+#: `ReleaseMutex` из чужого потока даёт `ERROR_NOT_OWNER`, а ctypes молчит.
+_owner_thread: Optional[int] = None
 
 
 def _is_windows() -> bool:
@@ -61,7 +69,7 @@ def acquire(timeout_ms: int = 0) -> None:
 
     Повторный вызов в том же процессе ничего не делает: замок уже наш.
     """
-    global _handle
+    global _handle, _owner_thread
     if not _is_windows() or _handle is not None:
         return
     k32 = _kernel32()
@@ -85,6 +93,7 @@ def acquire(timeout_ms: int = 0) -> None:
             f"свой SimInTech этим отказом не поднимался, чужой процесс не "
             f"тронут.")
     _handle = handle
+    _owner_thread = threading.get_ident()
     try:
         with open(OWNER_FILE, "w", encoding="ascii") as fh:
             fh.write(str(os.getpid()))
@@ -94,19 +103,51 @@ def acquire(timeout_ms: int = 0) -> None:
         pass
 
 
-def release() -> None:
-    """Отпустить замок и убрать файл владельца; идемпотентно."""
-    global _handle
+def release() -> str:
+    """Отпустить замок и убрать файл владельца; идемпотентно.
+
+    Windows привязывает владение мьютексом к потоку: `ReleaseMutex` из
+    чужого потока возвращает 0 (`ERROR_NOT_OWNER`), и закрытие дескриптора
+    владение не снимает. Поэтому из чужого потока замок **не трогается**:
+    дескриптор и файл владельца остаются, а вызывающий получает
+    `"not-owner"` и обязан назвать это состояние, а не «сессия сброшена».
+
+    Возвращает исход: `"released"`, `"no-handle"`, `"not-owner"` или
+    `"release-failed"` (сбой `ReleaseMutex` на своём потоке: дескриптор и
+    файл владельца сохранены для повтора).
+    """
+    global _handle, _owner_thread
     if _handle is None:
-        return
-    handle, _handle = _handle, None
+        return "no-handle"
+    if _is_windows() and _owner_thread != threading.get_ident():
+        return "not-owner"
+    handle = _handle
     if _is_windows():
         try:
             k32 = _kernel32()
-            k32.ReleaseMutex(handle)
+            if not k32.ReleaseMutex(handle):
+                return "release-failed"
             k32.CloseHandle(handle)
         except Exception:                                      # noqa: BLE001
-            pass
+            return "release-failed"
+    _handle = None
+    _owner_thread = None
+    _remove_owner_file()
+    return "released"
+
+
+def held_by_other_thread() -> bool:
+    """Замок держит живой поток, отличный от текущего.
+
+    Так спасательный путь узнаёт, что отпустить замок из него нельзя:
+    владелец - зависший COM-поток, и честный ответ называет это, а не
+    выдаёт сброс за освобождение.
+    """
+    return (_is_windows() and _handle is not None
+            and _owner_thread != threading.get_ident())
+
+
+def _remove_owner_file() -> None:
     try:
         os.remove(OWNER_FILE)
     except OSError:
@@ -126,4 +167,15 @@ def holder_pid() -> Optional[int]:
         return None
 
 
-atexit.register(release)
+def _at_exit() -> None:
+    """На выходе процесса убрать файл владельца, даже если поток чужой.
+
+    Замок снимет сама система вместе с завершением потока; файл владельца
+    не должен пережить процесс и назвать чужому клиенту несуществующего
+    держателя.
+    """
+    if release() in ("not-owner", "release-failed"):
+        _remove_owner_file()
+
+
+atexit.register(_at_exit)
