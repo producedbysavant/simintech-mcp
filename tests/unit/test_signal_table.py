@@ -140,7 +140,9 @@ def test_split_join_roundtrip_and_breaks():
         "A" + chr(0x2028) + "B"]
     assert signal_table.validate_signals("A" + chr(0x2028) + "B") == [
         "A", "B"]
-    assert signal_table.join_rows(["A", "B"]) == "A\r\nB"
+    assert signal_table.join_rows(["A", "B"]) == "A\r\nB\r\n"
+    assert signal_table.split_rows(signal_table.join_rows(
+        ["H", "A", ""])) == ["H", "A", ""]
 
 
 def test_validate_signals_rejects_bad_batches():
