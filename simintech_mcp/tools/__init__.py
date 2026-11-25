@@ -7,8 +7,8 @@
 
 from . import (annotations, block_script, blocks, check_model, experiments,
                files, fits, help, layout, model_ir, model_text, pack,
-               page_script, project, screenshot, simulation, sizes, submodel,
-               system_spec, wires, workflows)
+               page_script, project, screenshot, signal_table, simulation,
+               sizes, submodel, system_spec, wires, workflows)
 
 __all__ = [
     "annotations",
@@ -26,6 +26,7 @@ __all__ = [
     "page_script",
     "project",
     "screenshot",
+    "signal_table",
     "simulation",
     "sizes",
     "submodel",

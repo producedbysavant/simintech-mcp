@@ -62,8 +62,7 @@ SHORT_DESCRIPTIONS = {
         "Собрать модель из ModelSpec: блоки, размеры, провода и раскладка."
     ),
     "build_and_verify": (
-        "Собрать модель по SystemSpec и вердикт; partial не выдаётся "
-        "за passed."
+        "Собрать модель по SystemSpec; вердикт, partial не passed."
     ),
     "inspect_model": (
         "Показать блоки, линии и параметры страницы без запуска расчёта."
@@ -96,8 +95,23 @@ SHORT_DESCRIPTIONS = {
         "Подогнать высоту блоков по входам и ширину порт-блоков по подписям."
     ),
     "import_model_text": (
-        "Импортировать текст модели; верхнеуровневые провода лучше "
-        "создавать connect."
+        "Импортировать текст модели; провода верхнего уровня лучше через "
+        "connect."
+    ),
+    "inspect_project_file": (
+        "Разобрать `.xprt` без COM; годится и для Linux."
+    ),
+    "run_page_script": (
+        "Выполнить скрипт в секции `initialization` текущей страницы."
+    ),
+    "check_model_layout": (
+        "Проверить оформление страницы: наложения, подписи, порты, связи."
+    ),
+    "search_language_functions": (
+        "Найти функцию встроенного языка по имени или по смыслу."
+    ),
+    "summarize_output_file": (
+        "Свести результат к числам: диапазон, min/max, среднее, наклон."
     ),
     "export_model_text": (
         "Выгрузить модель в декларативный текст: блоки, субмодели, концы "
@@ -115,6 +129,9 @@ SHORT_DESCRIPTIONS = {
     ),
     "save_screenshot": (
         "Сохранить снимок схемы PNG/BMP/SVG и посмотреть раскладку."
+    ),
+    "insert_signals": (
+        "Вставить сигналы в SignalNames по позиции."
     ),
 }
 
@@ -138,6 +155,7 @@ _MODULE_TAGS = {
     "pack": "pack",
     "help": "help",
     "screenshot": "screenshot",
+    "signal_table": "blocks",
     "sizes": "blocks",
     "fits": "layout",
     "workflows": "workflow",

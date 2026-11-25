@@ -103,6 +103,24 @@ def table_height(raw: str, header: bool = True) -> int | None:
     return PORT_ROW_HEIGHT * positions if positions > 0 else None
 
 
+def height_kind(actual: float, expected: float, positions: int,
+                header: bool, auto: bool) -> str:
+    """Вид расхождения высоты табличного блока.
+
+    `"rule"` - высота совпала с каноном; `"auto"` - среда поставила
+    авторазмер с заголовком (`AutoChangeHeight=1`), это примечание, а не
+    расхождение; `"mismatch"` - всё остальное. Одна точка правила для
+    `set_signalnames`, `insert_signals` и `check_model_layout`, иначе
+    инструменты называли бы одно состояние по-разному.
+    """
+    if float(actual) == float(expected):
+        return "rule"
+    auto_height = (positions + (1 if header else 0)) * PORT_ROW_HEIGHT
+    if auto and float(actual) == float(auto_height):
+        return "auto"
+    return "mismatch"
+
+
 #: Классы порт-блоков: высота 16 px на строку сигнала `PortNames`
 #: (правило владельца 01.10.2026).
 PORT_HEIGHT_CLASSES = ("Порт входа", "Порт выхода")

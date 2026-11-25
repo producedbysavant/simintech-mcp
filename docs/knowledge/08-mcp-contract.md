@@ -63,7 +63,8 @@
 | `mcp-every-tool-wrapped` | Каждый инструмент обёрнут `com_threaded` или `plain_tool` — иначе отказ уходит успехом и вызова нет в журнале | code-confirmed | `test_surface.py::test_all_tools_have_failure_contract` |
 | `mcp-plain-tools-exactly-twelve` | `plain_tool`: ровно 12 инструментов без COM (список закреплён равенством) | code-confirmed | `test_surface.py::test_plain_tools_are_exactly_the_com_free_ones` |
 | `mcp-tool-annotations-contract` | У каждого инструмента есть `title` и `readOnlyHint`; `destructiveHint: True` - ровно восемь; `save_screenshot` - `readOnlyHint: False` без мутирующей метки | code-confirmed | PR #160: `test_surface.py::test_tool_annotations_contract` |
-| `mcp-readme-counts-contract` | Число инструментов в README (73) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py::test_readme_tool_count_matches_registry` |
+| `mcp-readme-counts-contract` | Число инструментов в README (74) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py::test_readme_tool_count_matches_registry` |
+| `mcp-insert-signals-contract` | `insert_signals` читает `SignalNames` и параллельные колонки контуром, вставляет строки по якорю или `index`, пишет все колонки, пересобирает порты `initobject` и сверяет каждую колонку | code-confirmed | `test_signal_table.py` |
 | `mcp-contour-core-single-entry` | Мост вызывается только через `page_script.run_contour` (исключение — `check_model.py`, отчётным протоколом) — архитектурный тест | code-confirmed | `test_dependency_contract.py:166` |
 
 ## 7. Model IR
@@ -108,6 +109,13 @@
   позицию (строка-заголовок при `fExcludeFirst=1` не считается). Расхождение
   прочитанного с запросом - отказ. В GUI таблица тоже правится, в окне
   «Список сигналов» блока.
+- `insert_signals` вставляет строки на смысловую позицию (`before`/`after`
+  по имени, `index` как запасной путь) во все пять колонок таблицы:
+  `SignalNames`, `Captions`, `SystemNames`, `ParamNames`, `Numbers`. Короткие
+  колонки добиваются пустыми строками, длинные сохраняют хвост. После
+  записи вызывается `initobject`: строка таблицы задаёт порт блока (живой
+  замер 25.11.2026: 459 -> 460 после переоткрытия и 459 -> 461 сразу с
+  `initobject`). Каждая колонка сверяется с записью; расхождение - отказ.
 
 ## 9. Машинный хвост timing
 

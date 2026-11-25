@@ -31,7 +31,7 @@ async def test_project_lifecycle_tools_are_visible_without_search():
 @pytest.mark.anyio
 async def test_catalog_still_has_all_tools():
     tools = await surface.catalog_tools(mcp)
-    assert len(tools) == 73
+    assert len(tools) == 74
 
 
 @pytest.mark.anyio
@@ -124,6 +124,16 @@ async def test_search_finds_set_block_param_by_signalnames():
     data = json.loads(_text(result))
     names = {item["name"] for item in data}
     assert "set_block_param" in names
+
+
+@pytest.mark.anyio
+async def test_search_finds_insert_signals():
+    """Поиск по вставке сигналов ведёт к insert_signals."""
+    result = await mcp.call_tool(
+        "search_tools", {"query": "вставить сигналы SignalNames"})
+    data = json.loads(_text(result))
+    names = {item["name"] for item in data}
+    assert "insert_signals" in names
 
 
 @pytest.mark.anyio

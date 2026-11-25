@@ -195,6 +195,29 @@ def discard_result(path: Path) -> None:
         pass
 
 
+def require_stopped(project: Any, token: str, what: str) -> None:
+    """Отказать, если проект не в остановленном состоянии.
+
+    Одна точка гейта для контурных правок: `nport`, `PortNames`,
+    `SignalNames` и вставка строк. Идущий расчёт среда отвергает сама, но
+    уже после частичной записи, поэтому состояние читается до контура.
+    """
+    try:
+        state = project.simulation().get_state()
+    except Exception as exc:                                   # noqa: BLE001
+        raise ToolError(
+            f"{token}.{what} не записан: состояние проекта не прочитано "
+            f"({type(exc).__name__}: {exc}); в идущем расчёте контурная "
+            f"запись отвергается. Остановите расчёт (`stop`) и повторите."
+        ) from exc
+    if state != 0:
+        raise ToolError(
+            f"{token}.{what} не записан: проект не в остановленном "
+            f"состоянии (состояние {state}; 0 - остановлен, 1 - "
+            f"инициализирован, 3 - идёт расчёт, 7 - пауза). Остановите "
+            f"расчёт (`stop`) и повторите.")
+
+
 def run_contour(body: str, *, failed: str) -> Tuple[ContourOutcome, str]:
     """Выполнить тело контуром: `(исход, прежний скрипт)`, либо отказ `ToolError`.
 
