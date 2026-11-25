@@ -372,7 +372,7 @@ async def test_tools_resource_lists_catalog():
 
     assert "build_model" in text
     assert "search_tools" in text
-    assert len(await surface.catalog_tools(mcp)) == 74
+    assert len(await surface.catalog_tools(mcp)) == 75
 
 
 @pytest.mark.anyio

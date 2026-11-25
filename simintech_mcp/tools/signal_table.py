@@ -466,3 +466,255 @@ def insert_signals(block: str, signals: str,
         return missing_block(block)
     return insert_signal_rows(page, target, block, signals, before=before,
                               after=after, index=index)
+
+
+#: Предел имён в одном удалении: имена сверяются в Python, COM-вызовов не
+#: добавляют, но вход не должен быть безразмерным.
+MAX_REMOVE_SIGNALS = 256
+
+
+def parse_remove_names(text: str) -> List[str]:
+    """Имена для удаления: строки ввода, пустые и повторы отбрасываются."""
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = _BREAKS.sub("\n", text)
+    names = _rows(text)
+    if not names:
+        return []
+    if len(names) > MAX_REMOVE_SIGNALS:
+        raise ToolError(
+            f"signals: {len(names)} имён, предел {MAX_REMOVE_SIGNALS}.")
+    result: List[str] = []
+    seen: set[str] = set()
+    for number, name in enumerate(names, 1):
+        if not name.strip():
+            raise ToolError(f"signals: строка {number} пуста.")
+        if name != name.strip():
+            raise ToolError(
+                f"signals: строка {number} имеет пробелы по краям "
+                f"({name!r}).")
+        if len(name) > MAX_SIGNAL_NAME:
+            raise ToolError(
+                f"signals: строка {number} длиннее {MAX_SIGNAL_NAME}.")
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
+def _check_removal_mode(names: Sequence[str], duplicates: bool,
+                        index: Optional[int], count: Any) -> None:
+    modes = int(bool(names)) + int(bool(duplicates)) + int(index is not None)
+    if modes != 1:
+        raise ToolError(
+            "нужен ровно один режим: signals (имена), duplicates=true "
+            "или index (с count).")
+    if index is None and count != 1:
+        raise ToolError("count используется только вместе с index.")
+    if isinstance(count, bool) or not isinstance(count, int):
+        raise ToolError("count должен быть целым числом.")
+    if count < 1:
+        raise ToolError("count должен быть не меньше 1.")
+
+
+def _check_removal_range(index: Any, count: int, positions: int) -> None:
+    if isinstance(index, bool) or not isinstance(index, int):
+        raise ToolError("index должен быть целым числом.")
+    if not 0 <= index < positions:
+        raise ToolError(
+            f"index={index} вне диапазона 0..{positions - 1}: удалять "
+            f"можно только существующие позиции.")
+    if index + count > positions:
+        raise ToolError(
+            f"index={index} + count={count} выходит за {positions} позиций.")
+
+
+def select_removals(body: Sequence[str], names: Sequence[str],
+                    duplicates: bool, index: Optional[int],
+                    count: int) -> List[int]:
+    """Позиции body (без заголовка), которые надо удалить."""
+    if names:
+        wanted = set(names)
+        return [number for number, row in enumerate(body)
+                if row.strip() in wanted]
+    if duplicates:
+        seen: set[str] = set()
+        remove: List[int] = []
+        for number, row in enumerate(body):
+            name = row.strip()
+            if not name:
+                continue
+            if name in seen:
+                remove.append(number)
+            else:
+                seen.add(name)
+        return remove
+    assert index is not None
+    return list(range(index, index + count))
+
+
+def remove_rows(rows: Sequence[str], physical: Sequence[int]) -> List[str]:
+    """Убрать строки по физическим номерам; чужие номера пропускаются."""
+    drop = set(physical)
+    return [row for number, row in enumerate(rows) if number not in drop]
+
+
+def remove_signal_rows(page: Page, target: Block, token: str, *,
+                       signals: str = "", duplicates: bool = False,
+                       index: Optional[int] = None,
+                       count: int = 1) -> str:
+    """Ядро удаления: прочитать таблицу, убрать строки, записать, проверить."""
+    names = parse_remove_names(signals)
+    _check_removal_mode(names, duplicates, index, count)
+    try:
+        class_name = (target.class_name or "").strip()
+    except Exception:                                          # noqa: BLE001
+        class_name = ""
+    header = exclude_first(target)
+    if header is None:
+        raise ToolError(
+            f"{token}: fExcludeFirst не прочитан, роль первой строки "
+            f"неизвестна. Удалять вслепую нельзя: запишите таблицу целиком "
+            f"через set_block_param.")
+    project = session.ensure_project()
+    require_stopped(project, token, "SignalNames")
+    raw, skipped, ports_before = read_columns(target, token)
+    rows = {column: split_rows(raw[column]) for column in raw}
+    body = {column: (rows[column][1:] if header and rows[column]
+                     else rows[column])
+            for column in raw}
+    signal_rows = body[SIGNAL_COLUMN]
+    positions = table_positions(raw[SIGNAL_COLUMN], header)
+    if len(signal_rows) != positions:
+        raise ToolError(
+            f"{token}: разбор таблицы дал {len(signal_rows)} позиций, канон "
+            f"насчитал {positions}; это расхождение парсера, удаление "
+            f"отменено.")
+    if index is not None:
+        _check_removal_range(index, count, positions)
+    removals = select_removals(signal_rows, names, duplicates, index, count)
+    if not removals:
+        reason = ("совпадений нет" if names
+                  else "дублей нет" if duplicates else "диапазон пуст")
+        raise ToolError(
+            f"{token}.SignalNames: нечего удалять: {reason}. "
+            f"Проект не изменён, таблица не менялась.")
+    physical = [number + (1 if header else 0) for number in removals]
+    expected: Dict[str, str] = {}
+    for column in raw:
+        expected[column] = join_rows(remove_rows(rows[column], physical))
+    positions_after = positions - len(removals)
+    want: Optional[float] = None
+    before_size: Optional[Tuple[float, float]] = None
+    if class_name in ALGORITHM_TABLE_CLASSES:
+        want = float(PORT_ROW_HEIGHT * positions_after)
+        try:
+            before_size = target.get_size()
+        except Exception:                                      # noqa: BLE001
+            before_size = None
+    height: Optional[float] = None
+    if (want is not None and before_size is not None
+            and float(before_size[1]) != want):
+        height = want
+    written, ports_after = write_columns(target, token, expected, height)
+    for column, want_text in expected.items():
+        difference = _different(split_rows(want_text),
+                                split_rows(written[column]))
+        if difference is not None:
+            number, want_row, got_row = difference
+            raise ToolError(
+                f"{token}: колонка {column} не совпала с записью в строке "
+                f"{number + 1}: ожидалось {want_row!r}, получено "
+                f"{got_row!r}. Проект уже изменён: другие колонки могли "
+                f"записаться; повторное удаление опасно.")
+    notes: List[str] = []
+    if names:
+        matched = {signal_rows[number].strip() for number in removals}
+        missing = [name for name in names if name not in matched]
+        if missing:
+            notes.append("не найдены: " + ", ".join(missing[:20]))
+    if duplicates:
+        notes.append("оставлено первых вхождений")
+    if skipped:
+        notes.append("колонки не читаются и не писались: "
+                     + ", ".join(skipped))
+    if class_name not in ALGORITHM_TABLE_CLASSES:
+        notes.append("класс вне правила высоты: высота не менялась")
+    try:
+        after_size = target.get_size()
+    except Exception:                                          # noqa: BLE001
+        after_size = None
+    height_note = _height_note(before_size, after_size, want,
+                               positions_after, auto_change_height(target),
+                               header)
+    if height_note:
+        notes.append(height_note.lstrip("; ").strip("; "))
+    if ports_before is not None and ports_after is not None:
+        notes.append(f"портов {ports_before} -> {ports_after}")
+        if (class_name in ALGORITHM_TABLE_CLASSES
+                and "векторный" not in class_name
+                and ports_after - ports_before != -len(removals)):
+            notes.append(
+                f"ожидалось -{len(removals)}: строка таблицы задаёт порт; "
+                f"проверьте блок и линии")
+        elif "векторный" in class_name:
+            notes.append("векторный класс: строки таблицы не равны портам")
+    tail = set(range(positions - len(removals), positions))
+    if set(removals) != tail:
+        try:
+            wired = bool(page.get_wires())
+        except Exception:                                      # noqa: BLE001
+            wired = False
+        if wired:
+            notes.append(
+                "удаление не с конца: порты после позиции сдвинулись; "
+                "проверьте провода блока")
+    head = (f"{token}.SignalNames: удалено {len(removals)} поз.; позиций "
+            f"{positions} -> {positions_after}; колонки: "
+            f"{', '.join(expected)}")
+    tail_text = f" {'; '.join(notes)}" if notes else ""
+    return head + tail_text
+
+
+@mcp.tool(title="Удалить сигналы из таблицы",
+          annotations={"readOnlyHint": False, "destructiveHint": True})
+@runtime.com_threaded(mutates_project=True)
+def remove_signals(block: str, signals: str = "",
+                   duplicates: bool = False,
+                   index: Optional[int] = None,
+                   count: int = 1) -> str:
+    """Удалить строки таблицы сигналов на позицию.
+
+    Режимы, ровно один за вызов:
+
+    * `signals` - имена по одному на строку, удаляются все совпадения;
+    * `duplicates=True` - повторные имена, остаётся первое вхождение;
+    * `index` + `count` - диапазон позиций без заголовка (0-based).
+
+    Строка удаляется на одном номере во всех пяти колонках таблицы:
+    `SignalNames`, `Captions`, `SystemNames`, `ParamNames`, `Numbers`.
+    Короткая колонка не добивается: удалить можно только существующую
+    строку. После записи вызывается `initobject`: строка таблицы задаёт
+    порт блока, поэтому порты после удалённых строк пересобираются и
+    сдвигаются. Высота пересчитывается по канону 16 px на позицию только
+    для табличных классов алгоритма.
+
+    Проект должен быть остановлен (`stop`). Успех подтверждается точным
+    совпадением каждой колонки с записью; расхождение даёт отказ. Откат при
+    частичной записи невозможен. Удаление не с конца сдвигает порты: если
+    на странице есть провода, ответ просит их проверить.
+
+    Args:
+        block: имя блока на главной странице или его числовой id.
+        signals: имена сигналов по одному на строку; пустые строки
+            отвергаются, повторы ввода схлопываются.
+        duplicates: True - удалить повторные имена, оставить первое.
+        index: 0-based позиция начала диапазона; только вместе с count.
+        count: сколько строк удалить, начиная с index; по умолчанию одна.
+    """
+    page = session.ensure_project().get_main_page()
+    target = resolve_block(page, block)
+    if target is None:
+        return missing_block(block)
+    return remove_signal_rows(page, target, block, signals=signals,
+                              duplicates=duplicates, index=index,
+                              count=count)
