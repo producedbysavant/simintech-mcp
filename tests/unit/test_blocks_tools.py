@@ -627,7 +627,7 @@ async def test_add_block_reports_auto_name(monkeypatch):
 async def test_add_block_installs_autosize_script(monkeypatch):
     """Порт-блок: add_block зовёт установку скрипта и называет исход.
 
-    Слот у подделки не читается, поэтому честный исход — «не читается»;
+    Слот у подделки не читается, поэтому честный исход: «не читается»;
     тест проверяет сам вызов установки на месте, а не её успех.
     """
     monkeypatch.setattr(session, "_project", _FakeProjectWithCreate())
