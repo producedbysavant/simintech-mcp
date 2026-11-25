@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from fastmcp.exceptions import ToolError
 from simintech_api import Block, Page
@@ -99,7 +99,7 @@ def validate_signals(text: str) -> List[str]:
     if len(names) > MAX_INSERT_SIGNALS:
         raise ToolError(
             f"signals: {len(names)} имён, предел {MAX_INSERT_SIGNALS} за вызов.")
-    seen = set()
+    seen: set[str] = set()
     for number, name in enumerate(names, 1):
         if not name.strip():
             raise ToolError(
@@ -119,7 +119,7 @@ def validate_signals(text: str) -> List[str]:
     return names
 
 
-def _check_index(index: int, length: int) -> int:
+def _check_index(index: Any, length: int) -> int:
     if isinstance(index, bool) or not isinstance(index, int):
         raise ToolError("index должен быть целым числом.")
     if not 0 <= index <= length:
