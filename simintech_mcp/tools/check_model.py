@@ -648,7 +648,7 @@ def check_model_layout() -> str:
         lines.append(
             f"Примечание: {shown}{more}. Так ставит авторазмер среды; "
             f"канон владельца считает позиции таблицы без заголовка.")
-    elif not height_skipped:
+    if not height_warnings and not height_notes and not height_skipped:
         if height_checked:
             lines.append(f"Высота блоков с входными контактами: по правилу "
                          f"{PORT_ROW_HEIGHT} px на вход/строку.")

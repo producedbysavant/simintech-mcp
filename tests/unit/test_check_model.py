@@ -1052,6 +1052,7 @@ async def test_check_model_warns_unequal_sides_grid_height(monkeypatch,
 
     assert "ВНИМАНИЕ: высота не по правилу" in text
     assert "входов 3, выходов 2, нужно 48" in text
+    assert "Высота блоков с входными контактами: по правилу" not in text
 
 
 @pytest.mark.anyio
