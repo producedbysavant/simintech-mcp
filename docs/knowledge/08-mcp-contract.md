@@ -63,8 +63,9 @@
 | `mcp-every-tool-wrapped` | Каждый инструмент обёрнут `com_threaded` или `plain_tool` — иначе отказ уходит успехом и вызова нет в журнале | code-confirmed | `test_surface.py::test_all_tools_have_failure_contract` |
 | `mcp-plain-tools-exactly-twelve` | `plain_tool`: ровно 12 инструментов без COM (список закреплён равенством) | code-confirmed | `test_surface.py::test_plain_tools_are_exactly_the_com_free_ones` |
 | `mcp-tool-annotations-contract` | У каждого инструмента есть `title` и `readOnlyHint`; `destructiveHint: True` - ровно восемь; `save_screenshot` - `readOnlyHint: False` без мутирующей метки | code-confirmed | PR #160: `test_surface.py::test_tool_annotations_contract` |
-| `mcp-readme-counts-contract` | Число инструментов в README (74) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py::test_readme_tool_count_matches_registry` |
+| `mcp-readme-counts-contract` | Число инструментов в README (75) и перечень имён сверяются с `tools/list` тестами | code-confirmed | `test_surface.py::test_readme_tool_count_matches_registry` |
 | `mcp-insert-signals-contract` | `insert_signals` читает `SignalNames` и параллельные колонки контуром, вставляет строки по якорю или `index`, пишет все колонки, пересобирает порты `initobject` и сверяет каждую колонку | code-confirmed | `test_signal_table.py` |
+| `mcp-remove-signals-contract` | `remove_signals` удаляет строки по именам, дублям или диапазону во всех колонках, пересобирает порты и сверяет каждую колонку | code-confirmed | `test_signal_table.py` |
 | `mcp-contour-core-single-entry` | Мост вызывается только через `page_script.run_contour` (исключение — `check_model.py`, отчётным протоколом) — архитектурный тест | code-confirmed | `test_dependency_contract.py:166` |
 
 ## 7. Model IR
@@ -116,6 +117,12 @@
   записи вызывается `initobject`: строка таблицы задаёт порт блока (живой
   замер 25.11.2026: 459 -> 460 после переоткрытия и 459 -> 461 сразу с
   `initobject`). Каждая колонка сверяется с записью; расхождение - отказ.
+- `remove_signals` удаляет строки по именам (`signals`), по повторным именам
+  (`duplicates`, остаётся первое вхождение) или по диапазону (`index` +
+  `count`). Строки удаляются на одном номере во всех пяти колонках;
+  `initobject` пересобирает порты, высота пересчитывается по позициям.
+  Удаление не с конца сдвигает порты: инструмент предупреждает, если на
+  странице есть провода. Каждая колонка сверяется с записью.
 
 ## 9. Машинный хвост timing
 

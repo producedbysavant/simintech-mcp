@@ -92,26 +92,19 @@ SHORT_DESCRIPTIONS = {
         "пересобирает пины."
     ),
     "fit_port_blocks": (
-        "Подогнать высоту блоков по входам и ширину порт-блоков по подписям."
+        "Подогнать высоту по входам, ширину порт-блоков по подписям."
     ),
-    "import_model_text": (
-        "Импортировать текст модели; провода верхнего уровня лучше через "
-        "connect."
-    ),
+    "import_model_text": "Импортировать текст модели; провода через connect.",
     "inspect_project_file": (
         "Разобрать `.xprt` без COM; годится и для Linux."
     ),
-    "run_page_script": (
-        "Выполнить скрипт в секции `initialization` текущей страницы."
-    ),
+    "run_page_script": "Выполнить скрипт в `initialization` страницы.",
     "check_model_layout": (
-        "Проверить оформление страницы: наложения, подписи, порты, связи."
+        "Проверить оформление страницы: наложения, подписи, порты."
     ),
-    "search_language_functions": (
-        "Найти функцию встроенного языка по имени или по смыслу."
-    ),
+    "search_language_functions": "Найти функцию языка по имени или смыслу.",
     "summarize_output_file": (
-        "Свести результат к числам: диапазон, min/max, среднее, наклон."
+        "Свести результат: диапазон, min/max, среднее, наклон."
     ),
     "export_model_text": (
         "Выгрузить модель в декларативный текст: блоки, субмодели, концы "
@@ -127,12 +120,14 @@ SHORT_DESCRIPTIONS = {
     "layout_place": (
         "Расставить блоки по слоям и нормализовать линии."
     ),
-    "save_screenshot": (
-        "Сохранить снимок схемы PNG/BMP/SVG и посмотреть раскладку."
-    ),
+    "save_screenshot": "Снимок схемы PNG/BMP/SVG для проверки раскладки.",
     "insert_signals": (
         "Вставить сигналы в SignalNames по позиции."
     ),
+    "remove_signals": (
+        "Удалить строки SignalNames: имена, дубли, диапазон."
+    ),
+    "connect_branch": "Ветвление от выхода src к входу dst.",
 }
 
 #: Группа инструмента для поиска. Ключ: имя модуля инструмента.
@@ -179,6 +174,7 @@ IDEMPOTENT_TOOLS = frozenset({
 DESTRUCTIVE_TOOLS = frozenset({
     "remove_block", "disconnect_wire", "disconnect", "close_project",
     "close_pack", "save_project", "reload_project", "forget_experiment",
+    "remove_signals",
 })
 
 

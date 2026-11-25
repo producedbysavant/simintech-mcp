@@ -152,7 +152,7 @@ claude mcp add simintech -- simintech-mcp
 | Пакет проектов | `create_pack`, `open_pack`, `close_pack`, `list_pack_projects`, `select_pack_project`, `pack_run`, `pack_step`, `pack_stop` |
 | Настройки проекта | `get_project_config`, `set_project_config` |
 | Блоки и связи | `add_block`, `remove_block`, `connect`, `connect_branch`, `connect_ports`, `disconnect_wire`, `list_blocks`, `list_wires` |
-| Параметры | `get_block_params`, `set_block_param`, `insert_signals`, `set_block_size`, `fit_port_blocks`, `fit_value_labels` |
+| Параметры | `get_block_params`, `set_block_param`, `insert_signals`, `remove_signals`, `set_block_size`, `fit_port_blocks`, `fit_value_labels` |
 | Расчёт | `run`, `step`, `stop`, `get_time` |
 | Сигналы | `list_signals`, `get_signal`, `set_signal`, `export_signal_db` |
 | Результаты | `read_output_file`, `summarize_output_file` |
@@ -166,9 +166,9 @@ claude mcp add simintech -- simintech-mcp
 | Справка | `help_text`, `search_language_functions`, `get_language_function` |
 | Композиты | `doctor`, `build_model`, `build_and_verify`, `inspect_model`, `simulate`, `format_model` |
 
-Всего инструментов: 74. Видимое ядро в `tools/list`; полный каталог в
+Всего инструментов: 75. Видимое ядро в `tools/list`; полный каталог в
 `simintech://tools` и через `search_tools`; `SIMINTECH_MCP_DISCOVERY=all`
-возвращает все 74.
+возвращает все 75.
 
 `record_experiment` прикрепляет запись `experiment-record/1` к снимку по
 полным `structure_hash` и `content_hash`. Ledger живёт в памяти сервера,

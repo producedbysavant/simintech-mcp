@@ -308,3 +308,151 @@ async def test_tool_is_registered_and_searchable():
     assert tool is not None
     short = surface.SHORT_DESCRIPTIONS["insert_signals"]
     assert "SignalNames" in short
+
+
+def _remove_block():
+    block = _block(signals="H\r\nA\r\nB\r\nA\r\nC\r\nB\r\n", ports=5)
+    block.props.update({
+        "Captions": "CH\r\nCa\r\nCb\r\nCa2\r\nCc\r\nCb2\r\n",
+        "SystemNames": "SH\r\nSa\r\nSb\r\nSa2\r\nSc\r\nSb2\r\n",
+        "ParamNames": "PH\r\nPa\r\nPb\r\nPa2\r\nPc\r\nPb2\r\n",
+        "Numbers": "ID\r\n\r\n\r\n\r\n\r\n\r\n",
+    })
+    return block
+
+
+def test_select_removals_modes():
+    body = ["A", "B", "A", "C", "B"]
+    assert signal_table.select_removals(
+        body, [], True, None, 1) == [2, 4]
+    assert signal_table.select_removals(
+        body, ["A"], False, None, 1) == [0, 2]
+    assert signal_table.select_removals(
+        body, [], False, 1, 2) == [1, 2]
+    assert signal_table.remove_rows(["H", "A", "B"], [1]) == ["H", "B"]
+    assert signal_table.parse_remove_names("A\nB\nA") == ["A", "B"]
+
+
+@pytest.mark.anyio
+async def test_remove_duplicates_keeps_first_in_all_columns(monkeypatch):
+    block = _remove_block()
+    _install(monkeypatch, block)
+    calls = _install_contour(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "remove_signals", {"block": "Signal_Block_0", "duplicates": True}))
+
+    assert signal_table.split_rows(block.props["SignalNames"]) == [
+        "H", "A", "B", "C"]
+    assert signal_table.split_rows(block.props["Captions"]) == [
+        "CH", "Ca", "Cb", "Cc"]
+    assert block.ports == 3
+    assert block._size[1] == 48.0
+    assert "удалено 2" in text
+    assert "позиций 5 -> 3" in text
+    assert len(calls) == 2
+
+
+@pytest.mark.anyio
+async def test_remove_by_names_and_range(monkeypatch):
+    block = _remove_block()
+    _install(monkeypatch, block)
+    _install_contour(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "remove_signals",
+        {"block": "Signal_Block_0", "signals": "A"}))
+
+    assert signal_table.split_rows(block.props["SignalNames"]) == [
+        "H", "B", "C", "B"]
+    assert "удалено 2" in text
+
+    block2 = _remove_block()
+    _install(monkeypatch, block2)
+    _install_contour(monkeypatch, block2)
+    text2 = _tool_text(await mcp.call_tool(
+        "remove_signals",
+        {"block": "Signal_Block_0", "index": 1, "count": 2}))
+
+    assert signal_table.split_rows(block2.props["SignalNames"]) == [
+        "H", "A", "C", "B"]
+    assert "удалено 2" in text2
+
+
+@pytest.mark.anyio
+async def test_remove_noop_is_error(monkeypatch):
+    block = _block(signals="H\r\nA\r\nB\r\n", ports=2)
+    _install(monkeypatch, block)
+    calls = _install_contour(monkeypatch, block)
+
+    text = await _error("remove_signals",
+                        {"block": "Signal_Block_0", "duplicates": True})
+
+    assert "нечего удалять" in text
+    assert len(calls) == 1, "после чтения запись не начинается"
+
+
+@pytest.mark.anyio
+async def test_remove_mode_conflict_and_range(monkeypatch):
+    block = _remove_block()
+    _install(monkeypatch, block)
+    _install_contour(monkeypatch, block)
+
+    text = await _error("remove_signals",
+                        {"block": "Signal_Block_0", "signals": "A",
+                         "duplicates": True})
+    assert "ровно один режим" in text
+
+    text2 = await _error("remove_signals",
+                         {"block": "Signal_Block_0", "index": 4,
+                          "count": 2})
+    assert "выходит за" in text2
+
+
+@pytest.mark.anyio
+async def test_remove_wired_middle_refused(monkeypatch):
+    block = _remove_block()
+    project = _FakeProject({"Signal_Block_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    page = project.get_main_page()
+    monkeypatch.setattr(page, "get_wires", lambda: [object()])
+    calls = _install_contour(monkeypatch, block)
+
+    text = await _error("remove_signals",
+                        {"block": "Signal_Block_0", "duplicates": True})
+
+    assert "провода остаются на прежних индексах" in text
+    assert "allow_shift=True" in text
+    assert len(calls) == 1, "после чтения запись не начинается"
+
+
+@pytest.mark.anyio
+async def test_remove_wired_middle_allows_with_flag(monkeypatch):
+    block = _remove_block()
+    project = _FakeProject({"Signal_Block_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    page = project.get_main_page()
+    monkeypatch.setattr(page, "get_wires", lambda: [object()])
+    _install_contour(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "remove_signals",
+        {"block": "Signal_Block_0", "duplicates": True,
+         "allow_shift": True}))
+
+    assert signal_table.split_rows(block.props["SignalNames"]) == [
+        "H", "A", "B", "C"]
+    assert "переразведите" in text
+
+
+@pytest.mark.anyio
+async def test_remove_verification_mismatch_names_column(monkeypatch):
+    block = _remove_block()
+    _install(monkeypatch, block)
+    _install_contour(monkeypatch, block, ignore=("Captions",))
+
+    text = await _error("remove_signals",
+                        {"block": "Signal_Block_0", "duplicates": True})
+
+    assert "колонка Captions" in text
+    assert "повторное удаление" in text
