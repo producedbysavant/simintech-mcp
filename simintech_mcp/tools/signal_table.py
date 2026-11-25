@@ -560,8 +560,8 @@ def remove_rows(rows: Sequence[str], physical: Sequence[int]) -> List[str]:
 
 def remove_signal_rows(page: Page, target: Block, token: str, *,
                        signals: str = "", duplicates: bool = False,
-                       index: Optional[int] = None,
-                       count: int = 1) -> str:
+                       index: Optional[int] = None, count: int = 1,
+                       allow_shift: bool = False) -> str:
     """Ядро удаления: прочитать таблицу, убрать строки, записать, проверить."""
     names = parse_remove_names(signals)
     _check_removal_mode(names, duplicates, index, count)
@@ -599,6 +599,19 @@ def remove_signal_rows(page: Page, target: Block, token: str, *,
             f"{token}.SignalNames: нечего удалять: {reason}. "
             f"Проект не изменён, таблица не менялась.")
     physical = [number + (1 if header else 0) for number in removals]
+    tail_positions = set(range(positions - len(removals), positions))
+    middle = set(removals) != tail_positions
+    try:
+        wired = bool(page.get_wires()) if middle else False
+    except Exception:                                          # noqa: BLE001
+        wired = False
+    if middle and wired and not allow_shift:
+        raise ToolError(
+            f"{token}: удаление не с конца, на странице есть провода. "
+            f"Порты пересоздаются, а провода остаются на прежних индексах: "
+            f"живой замер 593 провода -> 482, большинство вели не к тем "
+            f"пинам. Снимите провода, удаляйте с конца или повторите с "
+            f"allow_shift=True и переразведите провода. Проект не изменён.")
     expected: Dict[str, str] = {}
     for column in raw:
         expected[column] = join_rows(remove_rows(rows[column], physical))
@@ -658,16 +671,10 @@ def remove_signal_rows(page: Page, target: Block, token: str, *,
                 f"проверьте блок и линии")
         elif "векторный" in class_name:
             notes.append("векторный класс: строки таблицы не равны портам")
-    tail = set(range(positions - len(removals), positions))
-    if set(removals) != tail:
-        try:
-            wired = bool(page.get_wires())
-        except Exception:                                      # noqa: BLE001
-            wired = False
-        if wired:
-            notes.append(
-                "удаление не с конца: порты после позиции сдвинулись; "
-                "проверьте провода блока")
+    if middle and wired:
+        notes.append(
+            "удаление не с конца: порты сдвинулись, провода остались на "
+            "прежних индексах; переразведите их")
     head = (f"{token}.SignalNames: удалено {len(removals)} поз.; позиций "
             f"{positions} -> {positions_after}; колонки: "
             f"{', '.join(expected)}")
@@ -681,7 +688,8 @@ def remove_signal_rows(page: Page, target: Block, token: str, *,
 def remove_signals(block: str, signals: str = "",
                    duplicates: bool = False,
                    index: Optional[int] = None,
-                   count: int = 1) -> str:
+                   count: int = 1,
+                   allow_shift: bool = False) -> str:
     """Удалить строки таблицы сигналов на позицию.
 
     Режимы, ровно один за вызов:
@@ -700,8 +708,13 @@ def remove_signals(block: str, signals: str = "",
 
     Проект должен быть остановлен (`stop`). Успех подтверждается точным
     совпадением каждой колонки с записью; расхождение даёт отказ. Откат при
-    частичной записи невозможен. Удаление не с конца сдвигает порты: если
-    на странице есть провода, ответ просит их проверить.
+    частичной записи невозможен.
+
+    Удаление не с конца сдвигает порты, а провода остаются на прежних
+    индексах (живой замер: 593 провода -> 482, большинство вели не к тем
+    пинам). Поэтому при проводах на странице такой вызов отвергается;
+    `allow_shift=True` разрешает его с предупреждением, и провода нужно
+    переразвести.
 
     Args:
         block: имя блока на главной странице или его числовой id.
@@ -710,6 +723,9 @@ def remove_signals(block: str, signals: str = "",
         duplicates: True - удалить повторные имена, оставить первое.
         index: 0-based позиция начала диапазона; только вместе с count.
         count: сколько строк удалить, начиная с index; по умолчанию одна.
+        allow_shift: True - разрешить удаление не с конца при проводах на
+            странице; провода останутся на прежних индексах и их нужно
+            переразвести.
     """
     page = session.ensure_project().get_main_page()
     target = resolve_block(page, block)
@@ -717,4 +733,4 @@ def remove_signals(block: str, signals: str = "",
         return missing_block(block)
     return remove_signal_rows(page, target, block, signals=signals,
                               duplicates=duplicates, index=index,
-                              count=count)
+                              count=count, allow_shift=allow_shift)

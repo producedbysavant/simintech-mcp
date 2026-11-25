@@ -410,6 +410,42 @@ async def test_remove_mode_conflict_and_range(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_remove_wired_middle_refused(monkeypatch):
+    block = _remove_block()
+    project = _FakeProject({"Signal_Block_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    page = project.get_main_page()
+    monkeypatch.setattr(page, "get_wires", lambda: [object()])
+    calls = _install_contour(monkeypatch, block)
+
+    text = await _error("remove_signals",
+                        {"block": "Signal_Block_0", "duplicates": True})
+
+    assert "провода остаются на прежних индексах" in text
+    assert "allow_shift=True" in text
+    assert len(calls) == 1, "после чтения запись не начинается"
+
+
+@pytest.mark.anyio
+async def test_remove_wired_middle_allows_with_flag(monkeypatch):
+    block = _remove_block()
+    project = _FakeProject({"Signal_Block_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    page = project.get_main_page()
+    monkeypatch.setattr(page, "get_wires", lambda: [object()])
+    _install_contour(monkeypatch, block)
+
+    text = _tool_text(await mcp.call_tool(
+        "remove_signals",
+        {"block": "Signal_Block_0", "duplicates": True,
+         "allow_shift": True}))
+
+    assert signal_table.split_rows(block.props["SignalNames"]) == [
+        "H", "A", "B", "C"]
+    assert "переразведите" in text
+
+
+@pytest.mark.anyio
 async def test_remove_verification_mismatch_names_column(monkeypatch):
     block = _remove_block()
     _install(monkeypatch, block)
