@@ -16,7 +16,7 @@ from simintech_api import Block, Page
 
 from .. import session
 from ..rules import (NPORT_BLOCK_WIDTH, NPORT_PARAM, PORT_ROW_HEIGHT,
-                     required_height, table_positions)
+                     height_kind, required_height, table_positions)
 from .block_size import size_value, write_block_size
 
 #: Предел числа входов в `in_ports`: `SetPortCount` - один COM-вызов, который
@@ -67,21 +67,9 @@ def set_nport(page: Page, target: Block, class_name: str, token: str,
     """
     count = nport_value(value)
     project = session.ensure_project()
-    try:
-        state = project.simulation().get_state()
-    except Exception as exc:                                      # noqa: BLE001
-        raise ToolError(
-            f"число входов не изменено: состояние проекта не прочитано "
-            f"({type(exc).__name__}: {exc}); в идущем расчёте запись размера "
-            f"отвергается. Остановите расчёт (`stop`) и повторите."
-        ) from exc
-    if state != 0:
-        raise ToolError(
-            f"число входов не изменено: проект не в остановленном состоянии "
-            f"(состояние {state}; 0 - остановлен, 1 - инициализирован, "
-            f"3 - идёт расчёт, 7 - пауза). Остановите расчёт (`stop`) и "
-            f"повторите: контурная запись размера на идущем расчёте "
-            f"отвергается средой.")
+    from .page_script import require_stopped
+
+    require_stopped(project, token, "nport")
     try:
         name = target.get_name()
     except Exception:                                             # noqa: BLE001
@@ -230,24 +218,13 @@ def set_portnames(page: Page, target: Block, class_name: str,
     """
     from .block_script import normalize_script, runtime_literal
     from .block_size import size_pair_lines
-    from .page_script import refuse_contour_failure, run_contour
+    from .page_script import (refuse_contour_failure, require_stopped,
+                              run_contour)
 
     # Тот же гейт, что у `set_nport`: контурная запись на идущем расчёте
     # отвергается средой, и частично применённая правка выглядела бы отказом.
     project = session.ensure_project()
-    try:
-        state = project.simulation().get_state()
-    except Exception as exc:                                   # noqa: BLE001
-        raise ToolError(
-            f"{token}.PortNames не записан: состояние проекта не прочитано "
-            f"({type(exc).__name__}: {exc}); в идущем расчёте запись "
-            f"отвергается. Остановите расчёт (`stop`) и повторите."
-        ) from exc
-    if state != 0:
-        raise ToolError(
-            f"{token}.PortNames не записан: проект не в остановленном "
-            f"состоянии (состояние {state}; 0 - остановлен). Остановите "
-            f"расчёт (`stop`) и повторите.")
+    require_stopped(project, token, "PortNames")
     normalized = normalize_script(value)
     lines = len([line for line in normalized.splitlines() if line.strip()])
     try:
@@ -350,22 +327,11 @@ def set_signalnames(target: Block, token: str, value: str) -> str:
     """
     from .block_script import normalize_script, runtime_literal
     from .block_size import size_pair_lines, size_value
-    from .page_script import refuse_contour_failure, run_contour
+    from .page_script import (refuse_contour_failure, require_stopped,
+                              run_contour)
 
     project = session.ensure_project()
-    try:
-        state = project.simulation().get_state()
-    except Exception as exc:                                      # noqa: BLE001
-        raise ToolError(
-            f"{token}.SignalNames не записан: состояние проекта не прочитано "
-            f"({type(exc).__name__}: {exc}); в идущем расчёте контурная запись "
-            f"отвергается. Остановите расчёт (`stop`) и повторите."
-        ) from exc
-    if state != 0:
-        raise ToolError(
-            f"{token}.SignalNames не записан: проект не в остановленном "
-            f"состоянии (состояние {state}; 0 - остановлен). Остановите "
-            f"расчёт (`stop`) и повторите.")
+    require_stopped(project, token, "SignalNames")
     normalized = normalize_script(value)
     header = _exclude_first(target)
     exclude_header = True if header is None else header
@@ -429,14 +395,13 @@ def set_signalnames(target: Block, token: str, value: str) -> str:
         after_size = None
     if (want is not None and before_size is not None
             and after_size is not None):
-        if float(after_size[1]) == want:
+        kind = height_kind(float(after_size[1]), want, after_positions,
+                           bool(header), _auto_change_height(target))
+        if kind == "rule":
             notes.append(f"высота по правилу: {size_value(before_size[1])} -> "
                          f"{size_value(after_size[1])} "
                          f"({after_positions} поз. x {PORT_ROW_HEIGHT} px)")
-        elif (_auto_change_height(target)
-              and float(after_size[1]) == float(
-                  (after_positions + (1 if header else 0))
-                  * PORT_ROW_HEIGHT)):
+        elif kind == "auto":
             notes.append(
                 f"высота {size_value(after_size[1])} - авторазмер среды с "
                 f"заголовком; канон по позициям {size_value(want)}")
@@ -462,6 +427,12 @@ def _between(lines: List[str], begin: str, end: str) -> Optional[str]:
     if last < first:
         return None
     return "\n".join(lines[first + 1:last])
+
+
+#: Публичные имена для `signal_table`: рецепт таблиц общий, копий не заводим.
+exclude_first = _exclude_first
+auto_change_height = _auto_change_height
+between_markers = _between
 
 
 #: Значение параметра блока: скаляр или массив скаляров (стиль SimInTech).

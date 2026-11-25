@@ -49,7 +49,8 @@ from .. import runtime, sandbox, session
 from ..app import mcp
 from ..rules import (ALGORITHM_TABLE_CLASSES, NPORT_BLOCK_WIDTH, NPORT_PARAM,
                      NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT,
-                     ROW_HEIGHT_CLASSES, required_height, table_height)
+                     ROW_HEIGHT_CLASSES, height_kind, required_height,
+                     table_height)
 from ..geometry import CHAR_WIDTH_ESTIMATE, overlaps, rect_of
 from .blocks import read_port_counts, read_port_names
 from .check_routing import (
@@ -454,21 +455,21 @@ def check_model_layout() -> str:
                 expected = table_height(raw, with_header)
                 if expected is not None:
                     height_checked += 1
-                    auto_height = (expected // PORT_ROW_HEIGHT
-                                   + (1 if with_header else 0)) * PORT_ROW_HEIGHT
-                    if float(height) != float(expected):
-                        if (auto.strip().lower() not in ("0", "false")
-                                and float(height) == float(auto_height)):
-                            height_notes.append(
-                                f"{name}: высота {height:g} - авторазмер "
-                                f"среды с заголовком; канон по позициям "
-                                f"{expected}")
-                        else:
-                            height_warnings.append(
-                                f"{name}: высота {height:g}, позиций "
-                                f"{expected // PORT_ROW_HEIGHT}, нужно "
-                                f"{expected} ({PORT_ROW_HEIGHT} px на "
-                                f"позицию таблицы)")
+                    kind = height_kind(
+                        float(height), float(expected),
+                        expected // PORT_ROW_HEIGHT, with_header,
+                        auto.strip().lower() not in ("0", "false"))
+                    if kind == "auto":
+                        height_notes.append(
+                            f"{name}: высота {height:g} - авторазмер "
+                            f"среды с заголовком; канон по позициям "
+                            f"{expected}")
+                    elif kind == "mismatch":
+                        height_warnings.append(
+                            f"{name}: высота {height:g}, позиций "
+                            f"{expected // PORT_ROW_HEIGHT}, нужно "
+                            f"{expected} ({PORT_ROW_HEIGHT} px на "
+                            f"позицию таблицы)")
         if height is not None and class_name in ROW_HEIGHT_CLASSES:
             try:
                 in_ports, out_ports = read_port_counts(block)
