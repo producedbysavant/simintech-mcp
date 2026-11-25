@@ -308,6 +308,10 @@ def test_stuck_com_call_refuses_fast_and_recovers(monkeypatch):
 
     monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
     monkeypatch.setattr(runtime, "_stuck_call", None)
+    # Проба процессов Windows стоит 0.36-0.45 с и делала «мгновенный»
+    # отказ негарантированно медленным; проверяется отсутствие очереди,
+    # а не скорость опроса процессов.
+    monkeypatch.setattr(runtime, "_mmain_state", lambda: "")
 
     @runtime.com_threaded
     def slow():
@@ -329,33 +333,73 @@ def test_stuck_com_call_refuses_fast_and_recovers(monkeypatch):
     assert fast() == "ок"     # гейт снят
 
 
-def test_rescue_tool_waits_for_stuck_call(monkeypatch):
-    """Спасательный инструмент не отсекается: встаёт в очередь и выполняется.
+def test_rescue_bypasses_stuck_executor(monkeypatch):
+    """Спасательный вызов не встаёт в очередь за зависшим COM.
 
-    Единственный такой — `disconnect`: иначе зависшую сессию нечем сбросить.
+    Находка ревью 19.11.2026: rescue шёл в тот же единственный поток и при
+    незавершившемся вызове ждал бы вечно. Теперь снимается без COM: сессия
+    сбрасывается, свой процесс снимается по PID (здесь клиента нет).
     """
     import time as _time
 
-    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.01)
+    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 0.05)
     monkeypatch.setattr(runtime, "_stuck_call", None)
+    monkeypatch.setattr(runtime, "_mmain_state", lambda: "")
 
     @runtime.com_threaded
     def slow():
-        _time.sleep(0.3)
+        _time.sleep(0.5)
         return "готово"
+
+    @runtime.com_threaded(rescue=True)
+    def rescue():
+        raise AssertionError("спасательный путь не должен идти в COM-поток")
+
+    with pytest.raises(ToolError, match="не ответил"):
+        slow()
+    started = _time.monotonic()
+    text = rescue()
+    assert _time.monotonic() - started < 0.3, "спасательный путь ждал очередь"
+    assert "без COM" in text
+    assert runtime._stuck_call is None
+
+
+def test_rescue_keeps_lock_held_by_stuck_thread(monkeypatch):
+    """Замок зависшего COM-потока спасательный путь не отпускает.
+
+    Windows отпускает мьютекс только из потока-владельца, поэтому сброс
+    сессии идёт с `release_lock=False`, а ответ называет оставшийся замок,
+    а не выдаёт сброс за освобождение.
+    """
+    from simintech_mcp import com_mutex, session as _session
+
+    monkeypatch.setattr(runtime, "_stuck_call", object())
+    monkeypatch.setattr(_session, "current_client", lambda: None)
+    calls = []
+    monkeypatch.setattr(_session, "reset_session",
+                        lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(com_mutex, "held_by_other_thread", lambda: True)
+
+    text = runtime._force_rescue()
+
+    assert calls == [{"release_lock": False}]
+    assert "Замок COM-сессии остаётся" in text
+    assert "файл владельца называет PID" in text
+
+
+def test_rescue_tool_runs_normally_without_stuck_call(monkeypatch):
+    """Без зависания спасательный инструмент идёт обычным путём.
+
+    Спасательный путь без COM включается только при зависшем вызове;
+    в здоровой сессии `disconnect` работает как раньше.
+    """
+    monkeypatch.setattr(runtime, "_stuck_call", None)
 
     @runtime.com_threaded(rescue=True)
     def rescue():
         return "ок"
 
-    with pytest.raises(ToolError, match="не ответил"):
-        slow()
-    # Обычный вызов в этом состоянии отказал бы мгновенно; спасательный —
-    # дождётся медленного (свой таймаут возвращаем на рабочий).
-    monkeypatch.setattr(runtime, "COM_CALL_TIMEOUT", 5.0)
-    started = _time.monotonic()
     assert rescue() == "ок"
-    assert _time.monotonic() - started < 1.0
 
 
 def test_disconnect_is_marked_rescue():

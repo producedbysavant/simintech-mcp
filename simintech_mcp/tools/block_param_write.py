@@ -1,9 +1,9 @@
 """Запись параметров блока: nport, PortNames и разбор значений.
 
 Выделено из `blocks.py` при разборе монолитов: инструмент `set_block_param`
-остаётся там, а тяжёлые ветки записи (`nport`, `PortNames`) и разбор
-значений живут здесь. Правила размеров читаются из `rules`, запись размера
-идёт общей парой `block_size` (`setpropformula` + `setprop`).
+остаётся там, а тяжёлые ветки записи (`nport`, `PortNames`, `SignalNames`)
+и разбор значений живут здесь. Правила размеров читаются из `rules`, запись
+размера идёт общей парой `block_size` (`setpropformula` + `setprop`).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from simintech_api import Block, Page
 
 from .. import session
 from ..rules import (NPORT_BLOCK_WIDTH, NPORT_PARAM, PORT_ROW_HEIGHT,
-                     required_height)
+                     required_height, table_positions)
 from .block_size import size_value, write_block_size
 
 #: Предел числа входов в `in_ports`: `SetPortCount` - один COM-вызов, который
@@ -306,6 +306,150 @@ def set_portnames(page: Page, target: Block, class_name: str,
                 f"{want}: среда приняла не то значение")
     tail = f" {'; '.join(notes)}" if notes else ""
     return f"{token}.PortNames = {after}{tail}"
+
+
+def _exclude_first(target: Block) -> Optional[bool]:
+    """Прочитать `fExcludeFirst`: True - первая строка таблицы заголовок.
+
+    `None` - свойство не прочитано. Тогда число позиций неизвестно: таблицу
+    писать можно, а высоту по правилу - нельзя, иначе первая строка была бы
+    посчитана вслепую.
+    """
+    try:
+        raw = target.get_property("fExcludeFirst")
+    except Exception:                                             # noqa: BLE001
+        return None
+    return str(raw or "1").strip().lower() not in ("0", "false")
+
+
+def _auto_change_height(target: Block) -> bool:
+    """Прочитать `AutoChangeHeight`: True - среда сама ведёт высоту таблицы."""
+    try:
+        raw = target.get_property("AutoChangeHeight")
+    except Exception:                                             # noqa: BLE001
+        return False
+    return str(raw or "0").strip().lower() not in ("0", "false")
+
+
+def set_signalnames(target: Block, token: str, value: str) -> str:
+    """Записать `SignalNames` табличного блока алгоритма контуром.
+
+    COM `SetProp` для этого свойства у «Входа алгоритма»/«Выхода алгоритма»
+    и их векторных вариантов - no-op (живой замер 24.11.2026). Рабочий путь -
+    `setpropasstring` в контуре страницы; тогда же таблица читается обратно:
+    COM-чтение сразу после контура отдаёт прежнее значение, и сверка объявила
+    бы состоявшуюся запись отказом (тот же замер, что у `PortNames`).
+
+    Высота по канону (16 px на позицию таблицы, строка-заголовок при
+    `fExcludeFirst=1` не считается) пишется тем же прогоном. Нечитаемый
+    `fExcludeFirst` оставляет высоту прежней: число позиций неизвестно, а
+    угадывать его - значит испортить габарит.
+
+    Успех подтверждается только совпадением прочитанной таблицы с запросом:
+    расхождение - отказ, а не «записано».
+    """
+    from .block_script import normalize_script, runtime_literal
+    from .block_size import size_pair_lines, size_value
+    from .page_script import refuse_contour_failure, run_contour
+
+    project = session.ensure_project()
+    try:
+        state = project.simulation().get_state()
+    except Exception as exc:                                      # noqa: BLE001
+        raise ToolError(
+            f"{token}.SignalNames не записан: состояние проекта не прочитано "
+            f"({type(exc).__name__}: {exc}); в идущем расчёте контурная запись "
+            f"отвергается. Остановите расчёт (`stop`) и повторите."
+        ) from exc
+    if state != 0:
+        raise ToolError(
+            f"{token}.SignalNames не записан: проект не в остановленном "
+            f"состоянии (состояние {state}; 0 - остановлен). Остановите "
+            f"расчёт (`stop`) и повторите.")
+    normalized = normalize_script(value)
+    header = _exclude_first(target)
+    exclude_header = True if header is None else header
+    positions = table_positions(normalized, exclude_header)
+    try:
+        before_size = target.get_size()
+    except Exception:                                             # noqa: BLE001
+        before_size = None
+    # Пустая таблица высоты не задаёт: правило считает позиции, а их нет.
+    want = (float(PORT_ROW_HEIGHT * positions)
+            if header is not None and positions > 0 else None)
+    sn_token = "SN" + uuid.uuid4().hex[:12]
+    body = (f"obj = {target.id};\n"
+            f'setpropasstring(obj, "SignalNames", '
+            f'{runtime_literal(normalized)});\n'
+            f'writelnutf8(fid, "{sn_token}_BEGIN");\n'
+            'writelnutf8(fid, getpropasstring(obj, "SignalNames"));\n'
+            f'writelnutf8(fid, "{sn_token}_END");\n')
+    if (want is not None and before_size is not None
+            and float(before_size[1]) != want):
+        body += "\n".join(size_pair_lines(target.id, "Height", want)) + "\n"
+    outcome, _restored = run_contour(
+        body, failed=f"{token}: записать SignalNames не удалось")
+    refuse_contour_failure(
+        outcome, failed="SignalNames не записан",
+        unsure="запись SignalNames не подтверждена",
+        project_note=(f"Проект уже изменён: {token}.SignalNames мог "
+                      f"записаться, высота не записана - сверьте значение."))
+    written = _between(outcome.lines, f"{sn_token}_BEGIN",
+                       f"{sn_token}_END")
+    if written is None:
+        try:
+            written = target.get_property("SignalNames") or ""
+        except Exception as exc:                                  # noqa: BLE001
+            raise ToolError(
+                f"{token}.SignalNames записан контуром, но перечитать не "
+                f"удалось ({type(exc).__name__}: {exc}); сверьте таблицу "
+                f"в GUI.") from exc
+    if normalize_script(written).rstrip("\r\n") != normalized.rstrip("\r\n"):
+        got = table_positions(written, exclude_header)
+        raise ToolError(
+            f"{token}.SignalNames не записан: контур вернул таблицу на "
+            f"{got} позиций, а запрошено {positions}. Среда запись не "
+            f"приняла; повторите вызов, а если не помогает - сообщите среду "
+            f"и версию.")
+    after_positions = table_positions(written, exclude_header)
+    notes: List[str] = []
+    if header is None:
+        notes.append(
+            "fExcludeFirst не прочитан: высота по позициям не записана, "
+            "сверьте габарит вручную")
+    elif header:
+        notes.append("первая строка - заголовок (fExcludeFirst=1); позиций "
+                     f"{after_positions}")
+    else:
+        notes.append("строка-заголовок не исключается (fExcludeFirst=0); "
+                     f"позиций {after_positions}")
+    try:
+        after_size = target.get_size()
+    except Exception:                                             # noqa: BLE001
+        after_size = None
+    if (want is not None and before_size is not None
+            and after_size is not None):
+        if float(after_size[1]) == want:
+            notes.append(f"высота по правилу: {size_value(before_size[1])} -> "
+                         f"{size_value(after_size[1])} "
+                         f"({after_positions} поз. x {PORT_ROW_HEIGHT} px)")
+        elif (_auto_change_height(target)
+              and float(after_size[1]) == float(
+                  (after_positions + (1 if header else 0))
+                  * PORT_ROW_HEIGHT)):
+            notes.append(
+                f"высота {size_value(after_size[1])} - авторазмер среды с "
+                f"заголовком; канон по позициям {size_value(want)}")
+        else:
+            notes.append(f"высота {size_value(after_size[1])}, а по правилу "
+                         f"{size_value(want)}: среда приняла не то значение")
+    elif want is None and header is not None:
+        notes.append("таблица пуста: высота не менялась")
+    elif want is not None:
+        notes.append("габарит до или после записи не прочитан: высота "
+                     "не сверена")
+    tail = f" {'; '.join(notes)}" if notes else ""
+    return f"{token}.SignalNames записан{tail}"
 
 
 def _between(lines: List[str], begin: str, end: str) -> Optional[str]:

@@ -647,7 +647,8 @@ def set_project_config(param: str, value: str) -> str:
     },
 )
 @runtime.com_threaded(preflight=_save_preflight)
-def save_project(path: str, binary: bool = False) -> str:
+def save_project(path: str, binary: bool = False,
+                 visible: bool = True) -> str:
     """Сохранить текущий проект в файл.
 
     Два формата, и назначение у них разное:
@@ -746,6 +747,11 @@ def save_project(path: str, binary: bool = False) -> str:
     Args:
         path: путь к файлу (абсолютный).
         binary: True — нативный бинарный `.prt`; False — XML `.xprt`.
+        visible: True (по умолчанию): перед записью показать форму проекта
+            и требовать признак окна в файле: так сохранённый проект
+            открывается в GUI с окном модели. False: для headless и
+            параллельных кейсов: форма не показывается, признак окна не
+            проверяется, файл открывается в GUI без окна модели.
     """
     project = session.ensure_project()
     try:
@@ -766,9 +772,15 @@ def save_project(path: str, binary: bool = False) -> str:
             f"`SaveProjectBinary` может зависнуть вместе с COM-потоком, а "
             f"спасательный `disconnect` встанет за ним в очередь. Остановите "
             f"расчёт (`stop`) и повторите; файл не тронут.")
-    project.show_form()
-    tail = (" Форма проекта показана: без этого файл открывался бы в GUI "
-            "без окна модели.")
+    if visible:
+        project.show_form()
+        tail = (" Форма проекта показана: без этого файл открывался бы в GUI "
+                "без окна модели.")
+    else:
+        # Headless: форму не показываем и признак окна не требуем - иначе
+        # молчаливый прогон и параллельные кейсы упирались бы в отказ.
+        tail = (" Headless-сохранение: форма не показывается, файл "
+                "откроется в GUI без окна модели.")
 
     # Запись — во временный файл рядом и атомарная замена после проверки.
     # Так обрыв (зависание, AV, убийство процесса) не может обрезать боевой
@@ -782,7 +794,8 @@ def save_project(path: str, binary: bool = False) -> str:
         else:
             project.save_xml(tmp)
         _verify_saved(tmp, before)
-        _require_visible(tmp, binary)
+        if visible:
+            _require_visible(tmp, binary)
     except _UnverifiedSave as exc:
         # Запись состоялась, но проверка не прочитала файл (антивирус,
         # индексатор). Временный файл оставляем: это единственная копия

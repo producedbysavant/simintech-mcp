@@ -262,7 +262,7 @@ async def test_set_block_size_notes_accepted_difference(monkeypatch, tmp_path):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("width,height", [(0, 10), (-5, 10), (10, 0),
-                                          (10001, 10), (10, 10001)])
+                                          (100001, 10), (10, 100001)])
 async def test_set_block_size_bounds(monkeypatch, tmp_path, width, height):
     """Пределы проверяются до контура: ни одной записи в блок."""
     block = _SizeBlock()
@@ -274,6 +274,25 @@ async def test_set_block_size_bounds(monkeypatch, tmp_path, width, height):
 
     assert "вне пределов" in text
     assert bridge.body == "", "запись ушла, хотя размер вне пределов"
+
+
+@pytest.mark.anyio
+async def test_set_block_size_accepts_table_height(monkeypatch, tmp_path):
+    """Табличный блок: 1000 позиций x 16 = 16000 принимается.
+
+    Канон владельца 21.11.2026; прежний предел 10000 отвергал эту высоту
+    (живой замер fdd002, test_AM_Train).
+    """
+    block = _SizeBlock()
+    bridge = _size_bridge(block)
+    _install_size_contour(monkeypatch, tmp_path, {"kx_0": block}, bridge)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_size",
+        {"block": "kx_0", "width": 544, "height": 16000}))
+
+    assert "16000" in text
+    assert "512x16000" in text or "544x16000" in text
 
 
 @pytest.mark.anyio
@@ -440,7 +459,8 @@ async def test_set_block_size_port_refuses_unsatisfiable_rule(monkeypatch,
     Иначе отказ правила и отказ «вне пределов» выглядели бы по отдельности
     капризами, а вместе — тупиком без объяснения (находка ревью).
     """
-    names = "\r\n".join(f"sig{i}" for i in range(700)) + "\r\n"
+    # Строк больше предела: 6251 x 16 = 100016 > MAX_BLOCK_SIZE (100000).
+    names = "\r\n".join(f"sig{i}" for i in range(6251)) + "\r\n"
     block = _PortBlock(names=names)
     bridge = _size_bridge(block)
     _install_size_contour(monkeypatch, tmp_path, {"InputPort_0": block}, bridge)
@@ -456,18 +476,19 @@ async def test_set_block_size_port_refuses_unsatisfiable_rule(monkeypatch,
 async def test_set_block_size_port_unsat_also_at_bounds(monkeypatch, tmp_path):
     """Тупик назван и на непредельной ветке: высота правила — сама за пределом.
 
-    Запрос ровно правила (11200 при 700 строках) не доходит до отказов
+    Запрос ровно правила (100016 при 6251 строке) не доходит до отказов
     правила и упирается в предел размера — и тот обязан объяснить, что
     задать нельзя вовсе (находка ревью: предельная проверка стояла выше
     правила и молчала об этом пути).
     """
-    names = "\r\n".join(f"sig{i}" for i in range(700)) + "\r\n"
+    names = "\r\n".join(f"sig{i}" for i in range(6251)) + "\r\n"
     block = _PortBlock(names=names)
     bridge = _size_bridge(block)
     _install_size_contour(monkeypatch, tmp_path, {"InputPort_0": block}, bridge)
 
     text = await _error("set_block_size",
-                        {"block": "InputPort_0", "width": 200, "height": 11200})
+                        {"block": "InputPort_0", "width": 200,
+                         "height": 100016})
 
     assert "нельзя вовсе" in text
     assert bridge.body == ""

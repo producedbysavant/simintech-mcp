@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from fastmcp.exceptions import ToolError
+
 from simintech_mcp.tools import autosize
 
 
@@ -47,7 +50,7 @@ def test_scripts_use_initialization_and_self():
         assert "beforecompile" not in text
     assert "self.PortNames" in port
     assert "getportinfo" in rows
-    assert "mod" in rows and "div" in rows
+    assert "if __nout > __a then __a = __nout;" in rows
 
 
 def test_script_state_never_overwrites_foreign():
@@ -69,6 +72,7 @@ def test_install_body_writes_only_rule_blocks():
     assert "obj = 11;" in body
     assert "obj = 12;" not in body
     assert "OnInitScript" in body
+    assert 'trim(getpropasstring(obj, "OnInitScript")) = ""' in body
     assert "TOK_SET 11 p_1" in body
     assert "TOK_BUSY 11 p_1" in body
 
@@ -85,7 +89,7 @@ class _Ports:
     """Блок правила с портами и слотом, который меняется по записи."""
 
     def __init__(self, name, block_id, *, script="", in_ports=3, out_ports=2,
-                 height=48.0):
+                 height=32.0):
         self._name = name
         self.id = block_id
         self._script = script
@@ -176,14 +180,14 @@ def test_install_scripts_sizes_foreign_blocks_too(monkeypatch):
     body = calls["body"]
     assert f"obj = {empty.id};" in body
     assert f"obj = {foreign.id};" not in body
-    # Высота по сетке: 3 входа / 2 выхода -> 96.
-    assert "setprop(blk, \"Height\", 96);" in body
+    # Высота по большей стороне: 3 входа / 2 выхода -> 48.
+    assert "setprop(blk, \"Height\", 48);" in body
 
 
 def test_install_scripts_skips_contour_when_nothing_to_do(monkeypatch):
     """Всё уже сделано: контур не запускается вовсе."""
     ours = _Ports("sub_a", 1,
-                  script=autosize.script_text("Субмодель"), height=96.0)
+                  script=autosize.script_text("Субмодель"), height=48.0)
     calls = _run_stub(monkeypatch, {"sub_a": ours})
 
     result = autosize.install_scripts(
@@ -208,3 +212,38 @@ def test_install_scripts_names_unreadable_slot(monkeypatch):
 
     assert result.unreadable == ("sub_c",)
     assert result.skipped == []
+
+
+def test_verify_installed_rejects_mismatch_and_unreadable(monkeypatch):
+    """Сверка записи: расхождение и нечитаемый слот - отказ, не пропуск."""
+    class _B:
+        def __init__(self, script, error=False):
+            self.id = 5
+            self._script = script
+            self._error = error
+
+        def get_name(self):
+            return "sub_x"
+
+        def get_property(self, name):
+            if self._error:
+                raise OSError("COM недоступен")
+            return self._script
+
+    good = autosize.script_text("Субмодель")
+    autosize.verify_installed([(_B(good), "Субмодель")], [5], where="тест")
+
+    with pytest.raises(ToolError, match="не совпал"):
+        autosize.verify_installed([(_B("чужой"), "Субмодель")], [5],
+                                  where="тест")
+    with pytest.raises(ToolError, match="не удалось"):
+        autosize.verify_installed([(_B("", error=True), "Субмодель")], [5],
+                                  where="тест")
+
+
+def test_install_body_escapes_quotes_in_block_name():
+    """Имя блока в метке экранируется: кавычка в имени рвала бы скрипт."""
+    body = autosize.install_body(
+        [(_Block(name='say "hi"', block_id=21), "Порт входа")], "TOK")
+    assert 'chr(34)' in body
+    assert '"say \"hi\""' not in body

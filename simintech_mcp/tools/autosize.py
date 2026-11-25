@@ -14,7 +14,8 @@
 * чужой `OnInitScript` не перетирается: пишем только в пустой слот.
 
 Правило высоты - общее с `rules.grid_height` (16 px на контакт, при разном
-числе входов и выходов - `16*НОК`), чтобы скрипт и подгонка не спорили:
+числе входов и выходов - по большей стороне), чтобы скрипт и подгонка
+не спорили:
 иначе блок переставлял бы размер при каждом старте расчёта.
 """
 
@@ -61,8 +62,8 @@ _PORT_SCRIPT = "\n".join([
     "end;",
 ])
 
-#: Скрипт блока с контактами: высота по сетке 8 px, `16*НОК(входы, выходы)`.
-#: Ноль заменяется единицей перед НОК - сторона без портов не участвует.
+#: Скрипт блока с контактами: `16 px` на порт большей стороны
+#: (решение владельца 19.11.2026: НОК давал 5824 px у субмодели 28/26).
 _ROWS_SCRIPT = "\n".join([
     MARKER,
     "var",
@@ -73,9 +74,7 @@ _ROWS_SCRIPT = "\n".join([
     "  __lt: integer,",
     "  __nin: integer,",
     "  __nout: integer,",
-    "  __a: integer,",
-    "  __b: integer,",
-    "  __g: integer;",
+    "  __a: integer;",
     "initialization",
     "  __nin = 0;",
     "  __nout = 0;",
@@ -89,15 +88,8 @@ _ROWS_SCRIPT = "\n".join([
     "  end;",
     "  if (__nin > 0) or (__nout > 0) then begin",
     "    __a = __nin;",
-    "    if __a < 1 then __a = 1;",
-    "    __b = __nout;",
-    "    if __b < 1 then __b = 1;",
-    "    while __b > 0 do begin",
-    "      __g = __a mod __b;",
-    "      __a = __b;",
-    "      __b = __g;",
-    "    end;",
-    "    self.Height = 16 * (__nin * __nout div __a);",
+    "    if __nout > __a then __a = __nout;",
+    "    self.Height = 16 * __a;",
     "  end;",
     "end;",
 ])
@@ -190,7 +182,9 @@ def install_body(targets: Iterable[Tuple[Any, str]], token: str) -> str:
         name = _block_name(block)
         lines += [
             f"obj = {block.id};",
-            'if getpropasstring(obj, "OnInitScript") = "" then begin',
+            # trim: пустой и пробельный слот считаются пустыми так же, как
+            # в `script_state`; иначе отбор и тело решают по-разному.
+            'if trim(getpropasstring(obj, "OnInitScript")) = "" then begin',
             f"  setprop(obj, \"OnInitScript\", "
             f"{runtime_literal(normalize_script(text))});",
             f'  writelnutf8(fid, '

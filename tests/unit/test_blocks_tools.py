@@ -230,38 +230,198 @@ async def test_set_block_param_signalnames_empty_table_not_one_shot(
     assert "только в пустую таблицу" not in text
 
 
+class _SignalNamesBlock:
+    """Табличный блок алгоритма: COM `SetProp` - no-op, пишет контур.
+
+    `set_property` записывает вызов в журнал и значение не меняет: так же
+    вела себя среда в живом замере 24.11.2026. Если бы ветка снова пошла
+    через COM, таблица осталась бы прежней и тест это увидел бы.
+    """
+
+    id = 78
+
+    def __init__(self, class_name="Вход алгоритма", table="old\r\n",
+                 header="1", auto="0"):
+        self.class_name = class_name
+        self._size = [64.0, 160.0]
+        self.props = {"Name": "ALG_0", "SignalNames": table,
+                      "fExcludeFirst": header, "AutoChangeHeight": auto}
+        self.com_writes = []
+
+    def get_name(self):
+        return "ALG_0"
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def get_property(self, name):
+        return self.props.get(name, "")
+
+    def set_property(self, name, value):
+        self.com_writes.append((name, value))
+        return self
+
+    def init(self):
+        return self
+
+
+def _install_signalnames_contour(monkeypatch, block, applied, *,
+                                 auto_height=None):
+    """Подменить контур и смоделировать переход среды.
+
+    `applied` - значение, которое среда оставит в блоке после
+    `setpropasstring`; `None` - среда запись не приняла и вернула прежнюю
+    таблицу. Высота применяется из тела, если контур её написал, либо
+    задаётся `auto_height` (авторазмер среды с заголовком).
+    """
+    import re as _re
+
+    from simintech_mcp.tools import page_script
+
+    calls = {}
+
+    def fake_contour(body, *, failed):
+        calls["body"] = body
+        token = _re.search(r'"(SN[0-9a-f]+)_BEGIN"', body).group(1)
+        if applied is not None:
+            block.props["SignalNames"] = applied
+        written = block.props["SignalNames"]
+        height = _re.search(r'setprop\(blk, "Height", ([0-9.]+)\)', body)
+        if height and applied is not None:
+            block._size[1] = (float(auto_height) if auto_height is not None
+                              else float(height.group(1)))
+        return _ContourOk([f"{token}_BEGIN", written.rstrip("\r\n"),
+                           f"{token}_END"]), ""
+
+    monkeypatch.setattr(page_script, "run_contour", fake_contour)
+    monkeypatch.setattr(page_script, "refuse_contour_failure",
+                        lambda *a, **k: None)
+    return calls
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("class_name", [
     "Вход алгоритма", "Вход алгоритма (векторный)",
     "Выход алгоритма", "Выход алгоритма (векторный)",
 ])
-@pytest.mark.parametrize("previous", ["old", ""])
-async def test_set_block_param_signalnames_algorithm_block_names_gui_limit(
-        monkeypatch, class_name, previous):
-    """У блоков алгоритма SignalNames через COM не ведётся: назвать GUI.
+async def test_set_block_param_signalnames_algorithm_writes_by_contour(
+        monkeypatch, class_name):
+    """SignalNames пишется контуром, а не COM, и даёт высоту по позициям.
 
-    Запись моделируется «липкой», как в живом замере: значение не меняется.
-    Ответ не должен одновременно предлагать `param='signals'` или объяснять
-    расхождение пустой таблицей.
+    Четыре класса алгоритма идут одной веткой: COM `SetProp` у них no-op
+    (замер 24.11.2026), а `setpropasstring` в контуре таблицу пишет.
+    Таблица читается внутри контура, поэтому сверка видит новое значение.
     """
-    class _Sticky(_FakeBlock):
-        def set_property(self, name, value):
-            return self
-
-    block = _Sticky(class_name, {"SignalNames": previous})
+    block = _SignalNamesBlock(class_name=class_name)
     _install_fake_project(monkeypatch, {"ALG_0": block})
+    calls = _install_signalnames_contour(monkeypatch, block, "Time\r\nA\r\nB")
 
     text = _tool_text(await mcp.call_tool(
         "set_block_param",
-        {"block": "ALG_0", "param": "SignalNames", "value": "new",
+        {"block": "ALG_0", "param": "SignalNames", "value": "Time\nA\nB",
          "allow_unknown": True}))
 
-    assert "через COM не ведётся" in text
-    assert "GUI" in text
-    assert "param='signals' у этих классов пуст" in text
-    assert "Имена сигналов пишите" not in text
-    assert "Запись в список сигналов" not in text
-    assert "таблица была пуста" not in text
+    assert 'setpropasstring(obj, "SignalNames"' in calls["body"]
+    assert 'setprop(blk, "Height", 32);' in calls["body"]
+    assert block.com_writes == [], "COM-путь не должен трогать SignalNames"
+    assert block._size[1] == 32.0, "высота 16 px на позицию без заголовка"
+    assert "позиций 2" in text
+    assert "высота по правилу" in text
+    assert "GUI" not in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_signalnames_header_not_excluded(monkeypatch):
+    """fExcludeFirst=0: заголовок не отбрасывается, позиций на одну больше."""
+    block = _SignalNamesBlock(header="0")
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+    calls = _install_signalnames_contour(monkeypatch, block, "A\r\nB\r\nC")
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "A\nB\nC",
+         "allow_unknown": True}))
+
+    assert 'setprop(blk, "Height", 48);' in calls["body"]
+    assert "позиций 3" in text
+    assert "fExcludeFirst=0" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_signalnames_auto_height_is_note(monkeypatch):
+    """Авторазмер среды с заголовком называется, а не выдаётся за канон."""
+    block = _SignalNamesBlock(auto="1")
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+    _install_signalnames_contour(monkeypatch, block, "Time\r\nA\r\nB",
+                                 auto_height=48)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "Time\nA\nB",
+         "allow_unknown": True}))
+
+    assert "авторазмер среды с заголовком" in text
+    assert "канон по позициям 32" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_signalnames_refused_write_is_error(monkeypatch):
+    """Среда вернула прежнюю таблицу: отказ, а не «записано»."""
+    block = _SignalNamesBlock(table="old\r\n")
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+    _install_signalnames_contour(monkeypatch, block, None)
+
+    text = await _error("set_block_param",
+                        {"block": "ALG_0", "param": "SignalNames",
+                         "value": "Time\nA\nB", "allow_unknown": True})
+
+    assert "SignalNames не записан" in text
+    assert "Среда запись не приняла" in text
+
+
+@pytest.mark.anyio
+async def test_set_block_param_signalnames_refuses_running_project(monkeypatch):
+    """Идущий расчёт: отказ до контура, как у nport и PortNames."""
+    from simintech_mcp.tools import page_script
+
+    block = _SignalNamesBlock()
+    project = _FakeProject({"ALG_0": block})
+    project._simulation = _StateStub(3)
+    monkeypatch.setattr(session, "_project", project)
+    monkeypatch.setattr(page_script, "run_contour",
+                        lambda *a, **k: pytest.fail("контур на идущем расчёте"))
+
+    text = await _error("set_block_param",
+                        {"block": "ALG_0", "param": "SignalNames",
+                         "value": "Time\nA\nB", "allow_unknown": True})
+
+    assert "не в остановленном состоянии" in text
+    assert "stop" in text
+    assert block.com_writes == []
+
+
+@pytest.mark.anyio
+async def test_set_block_param_signalnames_unreadable_header_keeps_height(
+        monkeypatch):
+    """fExcludeFirst не прочитан: таблица пишется, высота остаётся прежней."""
+    class _NoHeader(_SignalNamesBlock):
+        def get_property(self, name):
+            if name == "fExcludeFirst":
+                raise OSError("COM недоступен")
+            return super().get_property(name)
+
+    block = _NoHeader()
+    _install_fake_project(monkeypatch, {"ALG_0": block})
+    calls = _install_signalnames_contour(monkeypatch, block, "Time\r\nA\r\nB")
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "ALG_0", "param": "SignalNames", "value": "Time\nA\nB",
+         "allow_unknown": True}))
+
+    assert 'setprop(blk, "Height"' not in calls["body"]
+    assert block._size[1] == 160.0
+    assert "fExcludeFirst не прочитан" in text
 
 
 @pytest.mark.anyio
@@ -461,6 +621,99 @@ async def test_add_block_reports_auto_name(monkeypatch):
 
     assert "k_0" in text
     assert "НЕ применилось" not in text
+
+
+@pytest.mark.anyio
+async def test_add_block_installs_autosize_script(monkeypatch):
+    """Порт-блок: add_block зовёт установку скрипта и называет исход.
+
+    Слот у подделки не читается, поэтому честный исход: «не читается»;
+    тест проверяет сам вызов установки на месте, а не её успех.
+    """
+    monkeypatch.setattr(session, "_project", _FakeProjectWithCreate())
+
+    text = _tool_text(await mcp.call_tool(
+        "add_block", {"class_name": "Порт входа"}))
+
+    assert "Скрипт саморазмера не поставлен" in text
+
+
+class _PortNamesBlock:
+    """Порт-блок для контурной записи PortNames."""
+
+    id = 77
+    class_name = "Порт входа"
+
+    def __init__(self):
+        self._size = [64.0, 16.0]
+        self.props = {"Name": "InputPort_0", "PortNames": "in\r\n"}
+
+    def get_name(self):
+        return "InputPort_0"
+
+    def get_size(self):
+        return tuple(self._size)
+
+    def get_property(self, name):
+        return self.props.get(name, "")
+
+    def set_property(self, name, value):
+        self.props[name] = value
+        return self
+
+
+class _ContourOk:
+    kind = "ok"
+
+    def __init__(self, lines):
+        self.lines = lines
+
+
+@pytest.mark.anyio
+async def test_set_block_param_portnames_contour_and_height(monkeypatch):
+    """PortNames пишется контуром и сразу даёт высоту по числу строк.
+
+    COM-путь для этого свойства молча не применяется (живой замер
+    14.11.2026), поэтому проверяется именно контур: setpropasstring и запись
+    высоты 16 * строки.
+    """
+    import re as _re
+
+    block = _PortNamesBlock()
+    project = _FakeProject({"InputPort_0": block})
+    monkeypatch.setattr(session, "_project", project)
+    calls = {}
+
+    def fake_contour(body, *, failed):
+        calls["body"] = body
+        # Подделка моделирует переход: запись высоты из тела применяется,
+        # иначе успешная запись выглядела бы расхождением.
+        height = _re.search(r'setprop\(blk, "Height", ([0-9.]+)\)', body)
+        if height:
+            block._size[1] = float(height.group(1))
+        token = _re.search(r'"(PN[0-9a-f]+)_BEGIN"', body).group(1)
+        return _ContourOk([f"{token}_BEGIN", "a", "b", f"{token}_END"]), ""
+
+    # `block_param_write` импортирует контурные функции лениво, поэтому
+    # подменяется источник: page_script.
+    from simintech_mcp.tools import page_script
+
+    monkeypatch.setattr(page_script, "run_contour", fake_contour)
+    monkeypatch.setattr(page_script, "activate_or_refuse",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(page_script, "refuse_contour_failure",
+                        lambda *a, **k: None)
+
+    text = _tool_text(await mcp.call_tool(
+        "set_block_param",
+        {"block": "InputPort_0", "param": "PortNames",
+         "value": "a\r\nb", "allow_unknown": True}))
+
+    body = calls["body"]
+    assert "setpropasstring(obj, \"PortNames\"" in body
+    assert 'setprop(blk, "Height", 32);' in body
+    assert "PortNames = a" in text
+    assert "высота по правилу" in text
 
 
 @pytest.mark.anyio

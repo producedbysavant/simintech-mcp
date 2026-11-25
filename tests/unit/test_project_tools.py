@@ -494,9 +494,13 @@ async def test_set_calc_time_delegates_to_project(monkeypatch):
 
 
 def _temp_of(target) -> str:
-    """Временный путь записи, каким его строит инструмент (`<имя>.tmp.<ext>`)."""
+    """Временный путь записи (`<имя>.tmp<PID><ext>`).
+
+    PID в имени разделяет параллельные процессы: у каждого свой временный
+    файл, и проверка одного не читает запись другого.
+    """
     stem, ext = os.path.splitext(str(target))
-    return f"{stem}.tmp{ext}"
+    return f"{stem}.tmp{os.getpid()}{ext}"
 
 
 @pytest.mark.anyio

@@ -156,7 +156,11 @@ def temp_save_path(path: str) -> str:
     одной файловой системы.
     """
     stem, ext = os.path.splitext(path)
-    return f"{stem}.tmp{ext}"
+    # Хвост с PID: два процесса, сохраняющих в один файл, больше не пишут
+    # один и тот же временный файл. Внутри процесса сохранения сериализованы
+    # единственным COM-потоком, так что гонки вызовов там нет. Имя остаётся
+    # предсказуемым для тестов и для поиска хвостов после сбоя.
+    return f"{stem}.tmp{os.getpid()}{ext}"
 
 
 #: Имена устройств Windows, которые нельзя использовать как файл проекта.
@@ -253,8 +257,14 @@ def refuse_external_change(path: str) -> None:
         "сохранить в другой файл можно и без перечитывания.")
 
 
-def save_preflight(path: str, binary: bool = False) -> None:
-    """Проверки `save_project` до постановки в COM-поток."""
+def save_preflight(path: str, binary: bool = False,
+                   visible: bool = True) -> None:
+    """Проверки `save_project` до постановки в COM-поток.
+
+    `visible` принимается ради общего контракта preflight (аргументы
+    инструмента передаются целиком) и здесь не нужен: признак окна
+    проверяется после записи.
+    """
     refuse_format_extension_mismatch(path, binary)
     check_save_target(path)
     refuse_external_change(path)

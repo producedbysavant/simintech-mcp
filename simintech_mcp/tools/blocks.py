@@ -17,13 +17,15 @@ from simintech_api.constants import standard_block_size
 
 from .. import catalog, runtime, session
 from ..app import mcp
-from ..rules import (NPORT_BLOCK_WIDTH, NPORT_OTHER_CLASSES, NPORT_PARAM,
-                     NPORT_SIZE_CLASSES, PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT)
+from ..rules import (ALGORITHM_TABLE_CLASSES, NPORT_BLOCK_WIDTH,
+                     NPORT_OTHER_CLASSES, NPORT_PARAM, NPORT_SIZE_CLASSES,
+                     PORT_HEIGHT_CLASSES, PORT_ROW_HEIGHT)
 from .block_param_write import (MAX_BLOCK_IN_PORTS, ParamValue,
                                 coerce_param_value as _coerce_param_value,
                                 parse_val as _parse_val,
                                 set_nport as _set_nport,
                                 set_portnames as _set_portnames,
+                                set_signalnames as _set_signalnames,
                                 split_props as _split_props)
 
 
@@ -64,13 +66,12 @@ def missing_block(name: str) -> str:
 MAX_BLOCK_PROPS = 64
 
 
-#: Классы, у которых таблица `SignalNames` через COM не ведётся: запись
-#: свойства не применяется, `param='signals'` пуст. Сигнал добавляется только
-#: в GUI (живой замер 05.11.2026).
-ALGORITHM_SIGNAL_CLASSES = frozenset({
-    "Вход алгоритма", "Вход алгоритма (векторный)",
-    "Выход алгоритма", "Выход алгоритма (векторный)",
-})
+#: Классы, у которых таблица `SignalNames` через COM `SetProp` не ведётся:
+#: запись свойства не применяется, `param='signals'` пуст. Рабочий путь -
+#: `setpropasstring` в контуре страницы (живой замер 24.11.2026); GUI тоже
+#: правит таблицу. Ветка `set_block_param` ходит контуром.
+# Имена классов общие с правилом высоты табличных блоков (`rules`).
+ALGORITHM_SIGNAL_CLASSES = frozenset(ALGORITHM_TABLE_CLASSES)
 
 
 @mcp.tool(title="Добавить блок", annotations={"readOnlyHint": False})
@@ -617,11 +618,13 @@ def set_block_param(block: str, param: str, value: str,
     нет в каталоге блоков, поэтому запись идёт с `allow_unknown=True`. Если
     прежняя таблица была непустой, ответ называет причину и рабочий обход:
     блоки «Запись в список сигналов» и «Чтение из списка сигналов»
-    (`param='signals'`). У блоков «Вход алгоритма»/«Выход алгоритма» этого
-    обхода нет: `param='signals'` у них пуст, сигнал добавляется только в GUI;
-    ответ называет это ограничение. Если таблица была пуста, расхождение
-    объясняется приведением формы, и одноразовая запись за причину не
-    выдаётся.
+    (`param='signals'`). У блоков «Вход алгоритма»/«Выход алгоритма» и их
+    векторных вариантов `param='signals'` пуст, зато `SignalNames` пишется
+    контуром страницы (`setpropasstring`): инструмент делает это сам, читает
+    таблицу обратно в том же прогоне и ставит высоту 16 px на позицию.
+    Расхождение прочитанного с запросом - отказ, а не «записано». Если
+    таблица была пуста, расхождение объясняется приведением формы, и
+    одноразовая запись за причину не выдаётся.
 
     **`nport` у блоков с переменным числом входов.** Для «Мультиплексора»,
     «Оператора И», «Оператора ИЛИ», «Перемножителя», «Минимума по входам»
@@ -644,7 +647,9 @@ def set_block_param(block: str, param: str, value: str,
             его числовой id.
         param: имя параметра блока (см. `get_block_params`).
         value: значение строкой; массивы - в стиле SimInTech, напр. '[1, -1]';
-            для `nport` - целое число входов.
+            для `nport` - целое число входов; для `SignalNames` у блоков
+            алгоритма - таблица целиком, строки через перевод строки (первая
+            строка считается заголовком при `fExcludeFirst=1`).
         allow_unknown: True — не сверять имя с каталогом (для параметров,
             которых в каталоге нет).
     """
@@ -672,17 +677,16 @@ def set_block_param(block: str, param: str, value: str,
         # рабочий путь - `setpropasstring` в контуре; высота по новому числу
         # строк пишется тем же прогоном.
         return _set_portnames(page, target, class_name, block, value)
+    if (param.strip().lower() == "signalnames"
+            and class_name in ALGORITHM_SIGNAL_CLASSES):
+        # COM SetProp для SignalNames - no-op (замер 24.11.2026), рабочий
+        # путь - `setpropasstring` в контуре; таблица читается и высота
+        # пишется тем же прогоном.
+        return _set_signalnames(target, block, value)
     if param.strip().lower() == NPORT_PARAM and class_name in NPORT_OTHER_CLASSES:
         notes.append("класс вне правила высоты: nport здесь не число входных "
                      "контактов, пины и размер не пересобираются")
     signalnames = param.strip().lower() == "signalnames"
-    algorithm_signal = (signalnames
-                        and class_name in ALGORITHM_SIGNAL_CLASSES)
-    if algorithm_signal:
-        notes.append(
-            "у блоков «Вход алгоритма»/«Выход алгоритма» таблица SignalNames "
-            "через COM не ведётся: запись свойства не применяется, "
-            "param='signals' у этих классов пуст. Добавьте сигнал в GUI.")
     previous = None
     if signalnames:
         # Прежнее значение нужно только для честного диагноза: одноразовая
@@ -716,7 +720,7 @@ def set_block_param(block: str, param: str, value: str,
         # ('0.000041' → '4.1e-05'), и неприменённой записью, а объявить одну
         # из них — тот же неверный диагноз, от которого чинит эта правка.
         notes.append(f"в блоке '{param}' = '{actual}', а запрошено '{value}'")
-        if signalnames and not algorithm_signal:
+        if signalnames:
             # Живой замер 02.11.2026: таблица сигналов материализуется при
             # первой записи, и повторная запись свойства её уже не меняет.
             # Это не кеш базы сигналов: перезапуск среды не помогал. Но
