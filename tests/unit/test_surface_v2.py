@@ -117,6 +117,16 @@ async def test_search_finds_set_block_param_by_nport():
 
 
 @pytest.mark.anyio
+async def test_search_finds_set_block_param_by_signalnames():
+    """Поиск по SignalNames ведёт к set_block_param с контурной записью."""
+    result = await mcp.call_tool(
+        "search_tools", {"query": "SignalNames таблица сигналов"})
+    data = json.loads(_text(result))
+    names = {item["name"] for item in data}
+    assert "set_block_param" in names
+
+
+@pytest.mark.anyio
 async def test_short_descriptions_name_size_fit_and_nport():
     """Краткие описания композитов и параметра называют размеры и nport."""
     tools = await surface.catalog_tools(mcp)
