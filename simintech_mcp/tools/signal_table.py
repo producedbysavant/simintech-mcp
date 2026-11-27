@@ -80,8 +80,13 @@ def split_rows(raw: str) -> List[str]:
 
 
 def join_rows(rows: Sequence[str]) -> str:
-    """Текст таблицы: строки через CRLF, без концевого перевода."""
-    return "\r\n".join(rows)
+    """Текст таблицы: строки через CRLF и концевой CRLF, как у среды.
+
+    Концевой перевод обязателен: без него сериализатор `.xprt` теряет
+    последнюю пустую строку (у `Numbers` она пропадала), а у колонок
+    разъезжается число разделителей `#13#10`.
+    """
+    return "\r\n".join(rows) + ("\r\n" if rows else "")
 
 
 def validate_signals(text: str) -> List[str]:
